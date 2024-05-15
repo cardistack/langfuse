@@ -6,7 +6,7 @@ services:
     depends_on:
       - db
     ports:
-      - "3000:3000"
+      - "3333:3000"
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
       - NEXTAUTH_SECRET=mysecret
