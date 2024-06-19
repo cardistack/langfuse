@@ -21,11 +21,7 @@ import {
   withDefault,
 } from "use-query-params";
 import { useQueryFilterState } from "@/src/features/filters/hooks/useFilterState";
-import {
-  formatIntervalSeconds,
-  intervalInSeconds,
-  utcDateOffsetByDays,
-} from "@/src/utils/dates";
+import { formatIntervalSeconds, utcDateOffsetByDays } from "@/src/utils/dates";
 import useColumnVisibility from "@/src/features/column-visibility/hooks/useColumnVisibility";
 import { type LangfuseColumnDef } from "@/src/components/table/types";
 import {
@@ -39,7 +35,7 @@ import { LevelColors } from "@/src/components/level-colors";
 import { usdFormatter } from "@/src/utils/numbers";
 import {
   exportOptions,
-  type ExportFileFormats,
+  type BatchExportFileFormat,
   observationsTableColsWithOptions,
 } from "@langfuse/shared";
 import { useOrderByState } from "@/src/features/orderBy/hooks/useOrderByState";
@@ -48,7 +44,7 @@ import { type ScoreSimplified } from "@/src/server/api/routers/generations/getAl
 import { useRowHeightLocalStorage } from "@/src/components/table/data-table-row-height-switch";
 import { IOTableCell } from "@/src/components/ui/CodeJsonViewer";
 import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePostHogClientCapture";
-import { useSession } from "next-auth/react";
+import { useLookBackDays } from "@/src/hooks/useLookBackDays";
 
 export type GenerationsTableRow = {
   id: string;
@@ -59,6 +55,7 @@ export type GenerationsTableRow = {
   endTime?: string;
   completionStartTime?: Date;
   latency?: number;
+  timeToFirstToken?: number;
   name?: string;
   model?: string;
   // i/o not set explicitly, but fetched from the server from the cell
@@ -93,7 +90,6 @@ export default function GenerationsTable({
   promptVersion,
   omittedFilter = [],
 }: GenerationsTableProps) {
-  const session = useSession();
   const capture = usePostHogClientCapture();
   const [isExporting, setIsExporting] = useState(false);
   const [searchQuery, setSearchQuery] = useQueryParam(
@@ -117,9 +113,7 @@ export default function GenerationsTable({
         column: "Start Time",
         type: "datetime",
         operator: ">",
-        value: utcDateOffsetByDays(
-          session.data?.environment.defaultTableDateTimeOffset ?? -14,
-        ),
+        value: utcDateOffsetByDays(-useLookBackDays(projectId)),
       },
     ],
     "generations",
@@ -189,15 +183,11 @@ export default function GenerationsTable({
     );
   };
 
-  const handleExport = async (fileFormat: ExportFileFormats) => {
+  const handleExport = async (fileFormat: BatchExportFileFormat) => {
     if (isExporting) return;
 
     setIsExporting(true);
     capture("generations:export", { file_format: fileFormat });
-    if (fileFormat === "OPENAI-JSONL")
-      alert(
-        "When exporting in OpenAI-JSONL, only generations that exactly match the `ChatML` format will be exported. For any questions, reach out to support.",
-      );
     try {
       const fileData = await directApi.generations.export.query({
         projectId,
@@ -310,21 +300,12 @@ export default function GenerationsTable({
       enableHiding: true,
       enableSorting: true,
       cell: ({ row }) => {
-        const startTime: Date = row.getValue("startTime");
-        const completionStartTime: Date | undefined =
+        const timeToFirstToken: number | undefined =
           row.getValue("timeToFirstToken");
 
-        if (!completionStartTime) {
-          return undefined;
-        }
-
-        const latencyInSeconds =
-          intervalInSeconds(startTime, completionStartTime) || "-";
         return (
           <span>
-            {typeof latencyInSeconds === "number"
-              ? formatIntervalSeconds(latencyInSeconds)
-              : latencyInSeconds}
+            {timeToFirstToken ? formatIntervalSeconds(timeToFirstToken) : "-"}
           </span>
         );
       },
@@ -623,7 +604,7 @@ export default function GenerationsTable({
           traceName: generation.traceName ?? "",
           startTime: generation.startTime,
           endTime: generation.endTime?.toLocaleString() ?? undefined,
-          timeToFirstToken: generation.completionStartTime ?? undefined,
+          timeToFirstToken: generation.timeToFirstToken ?? undefined,
           latency: generation.latency ?? undefined,
           totalCost: generation.calculatedTotalCost ?? undefined,
           inputCost: generation.calculatedInputCost ?? undefined,
@@ -648,7 +629,7 @@ export default function GenerationsTable({
     : [];
 
   return (
-    <div>
+    <>
       <DataTableToolbar
         columns={columns}
         filterColumnDefinition={transformFilterOptions(filterOptions.data)}
@@ -685,7 +666,9 @@ export default function GenerationsTable({
                 <DropdownMenuItem
                   key={key}
                   className="capitalize"
-                  onClick={() => void handleExport(key as ExportFileFormats)}
+                  onClick={() =>
+                    void handleExport(key as BatchExportFileFormat)
+                  }
                 >
                   as {options.label}
                 </DropdownMenuItem>
@@ -722,7 +705,7 @@ export default function GenerationsTable({
         onColumnVisibilityChange={setColumnVisibilityState}
         rowHeight={rowHeight}
       />
-    </div>
+    </>
   );
 }
 
@@ -758,7 +741,7 @@ const GenerationsIOCell = ({
       data={
         io === "output" ? observation.data?.output : observation.data?.input
       }
-      className={cn(io === "output" && "bg-green-50")}
+      className={cn(io === "output" && "bg-accent-light-green")}
       singleLine={singleLine}
     />
   );

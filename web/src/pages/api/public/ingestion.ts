@@ -10,7 +10,10 @@ import {
   type ingestionApiSchema,
   eventTypes,
   ingestionEvent,
-} from "@/src/features/public-api/server/ingestion-api-schema";
+  type TraceUpsertEventType,
+  type EventBodyType,
+  EventName,
+} from "@langfuse/shared";
 import { type ApiAccessScope } from "@/src/features/public-api/server/types";
 import { persistEventMiddleware } from "@/src/server/api/services/event-service";
 import { backOff } from "exponential-backoff";
@@ -24,7 +27,7 @@ import { ObservationProcessor } from "../../../server/api/services/EventProcesso
 import { ScoreProcessor } from "../../../server/api/services/EventProcessor";
 import { isNotNullOrUndefined } from "@/src/utils/types";
 import { telemetry } from "@/src/features/telemetry";
-import { jsonSchema } from "@/src/utils/zod";
+import { jsonSchema } from "@langfuse/shared";
 import * as Sentry from "@sentry/nextjs";
 import { isPrismaException } from "@/src/utils/exceptions";
 import { env } from "@/src/env.mjs";
@@ -258,15 +261,21 @@ const handleSingleEvent = async (
   req: NextApiRequest,
   apiScope: ApiAccessScope,
 ) => {
-  if ("body" in event && "input" in event.body && "output" in event.body) {
+  const { body } = event;
+  let restEvent = body;
+  if ("input" in body) {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { input, output, ...restEvent } = event.body;
-    console.log(
-      `handling single event ${event.id} ${JSON.stringify({ event, body: restEvent })}`,
-    );
-  } else {
-    console.log(`handling single event ${event.id} ${JSON.stringify(event)}`);
+    const { input, ...rest } = body;
+    restEvent = rest;
   }
+  if ("output" in restEvent) {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { output, ...rest } = restEvent;
+    restEvent = rest;
+  }
+  console.log(
+    `handling single event ${event.id} ${JSON.stringify({ body: restEvent })}`,
+  );
 
   const cleanedEvent = ingestionEvent.parse(cleanEvent(event));
 
@@ -440,17 +449,22 @@ export const sendToWorkerIfEnvironmentConfigured = async (
       env.LANGFUSE_WORKER_PASSWORD &&
       env.NEXT_PUBLIC_LANGFUSE_CLOUD_REGION
     ) {
-      const traceEvents = batchResults
+      const traceEvents: TraceUpsertEventType[] = batchResults
         .filter((result) => result.type === eventTypes.TRACE_CREATE) // we only have create, no update.
         .map((result) =>
           result.result &&
           typeof result.result === "object" &&
           "id" in result.result
             ? // ingestion API only gets traces for one projectId
-              { traceId: result.result.id, projectId: projectId }
+              { traceId: result.result.id as string, projectId }
             : null,
         )
         .filter(isNotNullOrUndefined);
+
+      const body: EventBodyType = {
+        name: EventName.TraceUpsert,
+        payload: traceEvents,
+      };
 
       if (traceEvents.length > 0) {
         await fetch(`${env.LANGFUSE_WORKER_HOST}/api/events`, {
@@ -463,7 +477,7 @@ export const sendToWorkerIfEnvironmentConfigured = async (
                 "admin" + ":" + env.LANGFUSE_WORKER_PASSWORD,
               ).toString("base64"),
           },
-          body: JSON.stringify(traceEvents),
+          body: JSON.stringify(body),
         });
       }
     }

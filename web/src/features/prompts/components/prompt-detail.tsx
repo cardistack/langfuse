@@ -1,9 +1,8 @@
-import { Pencil, Terminal } from "lucide-react";
+import { Pencil } from "lucide-react";
 import Link from "next/link";
-import router, { useRouter } from "next/router";
+import { useRouter } from "next/router";
 import { NumberParam, useQueryParam } from "use-query-params";
 import type { z } from "zod";
-
 import Header from "@/src/components/layouts/header";
 import {
   ChatMlArraySchema,
@@ -16,11 +15,9 @@ import { CodeView, JSONView } from "@/src/components/ui/CodeJsonViewer";
 import { DetailPageNav } from "@/src/features/navigate-detail-pages/DetailPageNav";
 import { DeletePromptVersion } from "@/src/features/prompts/components/delete-prompt-version";
 import { PromptType } from "@/src/features/prompts/server/utils/validation";
-import { useHasAccess } from "@/src/features/rbac/utils/checkAccess";
 import useProjectIdFromURL from "@/src/hooks/useProjectIdFromURL";
 import { api } from "@/src/utils/api";
 import { extractVariables } from "@/src/utils/string";
-import { type Prompt } from "@langfuse/shared";
 import { ScrollArea } from "@radix-ui/react-scroll-area";
 import { TagPromptDetailsPopover } from "@/src/features/tag/components/TagPromptDetailsPopover";
 import { PromptHistoryNode } from "./prompt-history";
@@ -33,6 +30,7 @@ import {
   AccordionTrigger,
 } from "@/src/components/ui/accordion";
 import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePostHogClientCapture";
+import { JumpToPlaygroundButton } from "@/src/ee/features/playground/page/components/JumpToPlaygroundButton";
 
 export const PromptDetail = () => {
   const projectId = useProjectIdFromURL();
@@ -112,21 +110,11 @@ export const PromptDetail = () => {
               <>
                 <SetPromptVersionLabels prompt={prompt} />
 
-                <Button
-                  variant="outline"
-                  title="Test in prompt playground"
-                  size="icon"
-                  onClick={() =>
-                    capture("prompt_detail:test_in_playground_button_click")
-                  }
-                  asChild
-                >
-                  <Link
-                    href={`/project/${projectId}/playground?promptId=${encodeURIComponent(prompt.id)}`}
-                  >
-                    <Terminal className="h-5 w-5" />
-                  </Link>
-                </Button>
+                <JumpToPlaygroundButton
+                  source="prompt"
+                  prompt={prompt}
+                  analyticsEventName="prompt_detail:test_in_playground_button_click"
+                />
 
                 <Button
                   variant="outline"
@@ -178,6 +166,7 @@ export const PromptDetail = () => {
                 promptName={prompt.name}
                 tags={prompt.tags}
                 availableTags={allTags}
+                className="flex-wrap"
               />
             </div>
           </div>
@@ -210,7 +199,7 @@ export const PromptDetail = () => {
           {prompt.config && JSON.stringify(prompt.config) !== "{}" && (
             <JSONView className="mt-5" json={prompt.config} title="Config" />
           )}
-          <p className="mt-6 text-xs text-gray-600">
+          <p className="mt-6 text-xs text-muted-foreground">
             Fetch prompts via Python or JS/TS SDKs. See{" "}
             <a
               href="https://langfuse.com/docs/prompts"
@@ -228,12 +217,14 @@ export const PromptDetail = () => {
                 Generations using this prompt version
               </AccordionTrigger>
               <AccordionContent>
-                <Generations
-                  projectId={prompt.projectId}
-                  promptName={prompt.name}
-                  promptVersion={prompt.version}
-                  omittedFilter={["Prompt Name", "Prompt Version"]}
-                />
+                <div className="flex max-h-[calc(100vh-20rem)] flex-col">
+                  <Generations
+                    projectId={prompt.projectId}
+                    promptName={prompt.name}
+                    promptVersion={prompt.version}
+                    omittedFilter={["Prompt Name", "Prompt Version"]}
+                  />
+                </div>
               </AccordionContent>
             </AccordionItem>
           </Accordion>
@@ -253,37 +244,3 @@ export const PromptDetail = () => {
     </div>
   );
 };
-
-export function UpdatePrompt({
-  projectId,
-  prompt,
-  isLoading,
-}: {
-  projectId: string;
-  prompt: Prompt | undefined;
-  isLoading: boolean;
-}) {
-  const hasAccess = useHasAccess({ projectId, scope: "prompts:CUD" });
-
-  const handlePromptEdit = () => {
-    void router.push(
-      `/project/${projectId}/prompts/${prompt?.id}/edit`,
-      undefined,
-      {
-        shallow: true,
-      },
-    );
-  };
-
-  return (
-    <Button
-      variant="outline"
-      size="icon"
-      onClick={() => handlePromptEdit()}
-      disabled={!hasAccess}
-      loading={isLoading}
-    >
-      <Pencil className="h-5 w-5" />
-    </Button>
-  );
-}

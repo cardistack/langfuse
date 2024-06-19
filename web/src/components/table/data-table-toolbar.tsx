@@ -31,6 +31,7 @@ interface DataTableToolbarProps<TData, TValue> {
   setColumnVisibility?: Dispatch<SetStateAction<VisibilityState>>;
   rowHeight?: RowHeight;
   setRowHeight?: Dispatch<SetStateAction<RowHeight>>;
+  columnsWithCustomSelect?: string[];
 }
 
 export function DataTableToolbar<TData, TValue>({
@@ -44,6 +45,7 @@ export function DataTableToolbar<TData, TValue>({
   setColumnVisibility,
   rowHeight,
   setRowHeight,
+  columnsWithCustomSelect,
 }: DataTableToolbarProps<TData, TValue>) {
   const [searchString, setSearchString] = useState(
     searchConfig?.currentQuery ?? "",
@@ -51,7 +53,7 @@ export function DataTableToolbar<TData, TValue>({
   const capture = usePostHogClientCapture();
 
   return (
-    <div className="my-2 flex flex-1 flex-wrap items-center gap-2 @container">
+    <div className="my-2 flex flex-wrap items-center gap-2 @container">
       {searchConfig && (
         <div className="flex max-w-md items-center">
           <Input
@@ -84,9 +86,10 @@ export function DataTableToolbar<TData, TValue>({
           columns={filterColumnDefinition}
           filterState={filterState}
           onChange={setFilterState}
+          columnsWithCustomSelect={columnsWithCustomSelect}
         />
       )}
-      <div className="flex flex-row flex-wrap gap-2 @6xl:ml-auto">
+      <div className="flex flex-row flex-wrap gap-2 pr-0.5 @6xl:ml-auto">
         {!!columnVisibility && !!setColumnVisibility && (
           <DataTableColumnVisibilityFilter
             columns={columns}

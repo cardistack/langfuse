@@ -25,7 +25,7 @@ import {
   filterOperators,
   singleFilter,
 } from "@langfuse/shared";
-import { NonEmptyString } from "@/src/utils/zod";
+import { NonEmptyString } from "@langfuse/shared";
 import { cn } from "@/src/utils/tailwind";
 import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePostHogClientCapture";
 
@@ -34,10 +34,12 @@ export function PopoverFilterBuilder({
   columns,
   filterState,
   onChange,
+  columnsWithCustomSelect = [],
 }: {
   columns: ColumnDefinition[];
   filterState: FilterState;
   onChange: Dispatch<SetStateAction<FilterState>>;
+  columnsWithCustomSelect?: string[];
 }) {
   const capture = usePostHogClientCapture();
   const [wipFilterState, _setWipFilterState] =
@@ -101,7 +103,7 @@ export function PopoverFilterBuilder({
             {filterState.length > 0 && (
               <span
                 className={cn(
-                  "ml-3 rounded-md bg-slate-200 px-2 py-1 text-xs @6xl:hidden",
+                  "ml-3 rounded-md bg-input px-2 py-1 text-xs @6xl:hidden",
                   filterState.length > 2 && "@6xl:inline",
                 )}
               >
@@ -118,6 +120,7 @@ export function PopoverFilterBuilder({
             columns={columns}
             filterState={wipFilterState}
             onChange={setWipFilterState}
+            columnsWithCustomSelect={columnsWithCustomSelect}
           />
         </PopoverContent>
       </Popover>
@@ -144,7 +147,7 @@ export function InlineFilterState({
     return (
       <span
         key={i}
-        className="ml-2 hidden whitespace-nowrap rounded-md bg-slate-200 px-2 py-1 text-xs @6xl:block"
+        className="ml-2 hidden whitespace-nowrap rounded-md bg-input px-2 py-1 text-xs @6xl:block"
       >
         {filter.column}
         {filter.type === "stringObject" || filter.type === "numberObject"
@@ -211,11 +214,13 @@ function FilterBuilderForm({
   filterState,
   onChange,
   disabled,
+  columnsWithCustomSelect = [],
 }: {
   columns: ColumnDefinition[];
   filterState: WipFilterState;
   onChange: Dispatch<SetStateAction<WipFilterState>>;
   disabled?: boolean;
+  columnsWithCustomSelect?: string[];
 }) {
   const handleFilterChange = (filter: WipFilterCondition, i: number) => {
     onChange((prev) => {
@@ -419,6 +424,10 @@ function FilterBuilderForm({
                       }
                       values={Array.isArray(filter.value) ? filter.value : []}
                       disabled={disabled}
+                      isCustomSelectEnabled={
+                        column?.type === filter.type &&
+                        columnsWithCustomSelect.includes(column.id)
+                      }
                     />
                   ) : filter.type === "boolean" ? (
                     <Select

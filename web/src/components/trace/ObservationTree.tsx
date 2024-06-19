@@ -1,6 +1,6 @@
 import { type NestedObservation } from "@/src/utils/types";
 import { cn } from "@/src/utils/tailwind";
-import { type Trace, type Score, $Enums } from "@langfuse/shared";
+import { type Trace, type Score, type $Enums } from "@langfuse/shared";
 import { GroupedScoreBadges } from "@/src/components/grouped-score-badge";
 import { Fragment } from "react";
 import { type ObservationReturnType } from "@/src/server/api/routers/traces";
@@ -10,6 +10,10 @@ import { MinusCircle, MinusIcon, PlusCircleIcon, PlusIcon } from "lucide-react";
 import { Toggle } from "@/src/components/ui/toggle";
 import { Button } from "@/src/components/ui/button";
 import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePostHogClientCapture";
+import {
+  nestObservations,
+  treeItemColors,
+} from "@/src/components/trace/lib/helpers";
 
 export const ObservationTree = (props: {
   observations: ObservationReturnType[];
@@ -68,13 +72,13 @@ const ObservationTreeTraceNode = (props: {
       "group mb-0.5 flex cursor-pointer flex-col gap-1 rounded-sm p-1",
       props.currentObservationId === undefined ||
         props.currentObservationId === ""
-        ? "bg-gray-100"
-        : "hover:bg-gray-50",
+        ? "bg-muted"
+        : "hover:bg-primary-foreground",
     )}
     onClick={() => props.setCurrentObservationId(undefined)}
   >
     <div className="flex gap-2">
-      <span className={cn("rounded-sm bg-gray-200 p-1 text-xs")}>TRACE</span>
+      <span className={cn("rounded-sm bg-input p-1 text-xs")}>TRACE</span>
       <span className="flex-1 break-all text-sm">{props.trace.name}</span>
       <Button
         onClick={(ev) => (ev.stopPropagation(), props.expandAll())}
@@ -96,7 +100,7 @@ const ObservationTreeTraceNode = (props: {
 
     {props.showMetrics && props.trace.latency ? (
       <div className="flex gap-2">
-        <span className="text-xs text-gray-500">
+        <span className="text-xs text-muted-foreground">
           {formatIntervalSeconds(props.trace.latency)}
         </span>
       </div>
@@ -141,8 +145,8 @@ const ObservationTreeNode = (props: {
                   className={cn(
                     "group my-0.5 flex flex-1 cursor-pointer flex-col gap-1 rounded-sm p-1",
                     props.currentObservationId === observation.id
-                      ? "bg-gray-100"
-                      : "hover:bg-gray-50",
+                      ? "bg-muted"
+                      : "hover:bg-primary-foreground",
                   )}
                   onClick={() => props.setCurrentObservationId(observation.id)}
                 >
@@ -188,7 +192,7 @@ const ObservationTreeNode = (props: {
                       observation.endTime) && (
                       <div className="flex gap-2">
                         {observation.endTime ? (
-                          <span className="text-xs text-gray-500">
+                          <span className="text-xs text-muted-foreground">
                             {formatIntervalSeconds(
                               (observation.endTime.getTime() -
                                 observation.startTime.getTime()) /
@@ -199,7 +203,7 @@ const ObservationTreeNode = (props: {
                         {observation.promptTokens ||
                         observation.completionTokens ||
                         observation.totalTokens ? (
-                          <span className="text-xs text-gray-500">
+                          <span className="text-xs text-muted-foreground">
                             {observation.promptTokens} →{" "}
                             {observation.completionTokens} (∑{" "}
                             {observation.totalTokens})
@@ -257,53 +261,14 @@ const ObservationTreeNode = (props: {
 const ColorCodedObservationType = (props: {
   observationType: $Enums.ObservationType;
 }) => {
-  const colors: Record<$Enums.ObservationType, string> = {
-    [$Enums.ObservationType.SPAN]: "bg-blue-100",
-    [$Enums.ObservationType.GENERATION]: "bg-orange-100",
-    [$Enums.ObservationType.EVENT]: "bg-green-100",
-  };
-
   return (
     <span
       className={cn(
         "self-start rounded-sm p-1 text-xs",
-        colors[props.observationType],
+        treeItemColors.get(props.observationType),
       )}
     >
       {props.observationType}
     </span>
   );
 };
-
-export function nestObservations(
-  list: ObservationReturnType[],
-): NestedObservation[] {
-  if (list.length === 0) return [];
-
-  // Step 1: Create a map where the keys are object IDs, and the values are
-  // the corresponding objects with an added 'children' property.
-  const map = new Map<string, NestedObservation>();
-  for (const obj of list) {
-    map.set(obj.id, { ...obj, children: [] });
-  }
-
-  // Step 2: Create another map for the roots of all trees.
-  const roots = new Map<string, NestedObservation>();
-
-  // Step 3: Populate the 'children' arrays and root map.
-  for (const obj of map.values()) {
-    if (obj.parentObservationId) {
-      const parent = map.get(obj.parentObservationId);
-      if (parent) {
-        parent.children.push(obj);
-      }
-    } else {
-      roots.set(obj.id, obj);
-    }
-  }
-
-  // TODO sum token amounts per level
-
-  // Step 4: Return the roots.
-  return Array.from(roots.values());
-}

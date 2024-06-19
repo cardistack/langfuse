@@ -17,6 +17,9 @@ const scopes = [
 
   "scores:CUD",
 
+  "scoreConfigs:CUD",
+  "scoreConfigs:read",
+
   "project:delete",
   "project:update",
   "project:transfer",
@@ -28,6 +31,8 @@ const scopes = [
   "prompts:read",
 
   "models:CUD",
+
+  "batchExport:create",
 
   "evalTemplate:create",
   "evalTemplate:read",
@@ -57,6 +62,8 @@ export const roleAccessRights: Record<ProjectRole, Scope[]> = {
     "objects:tag",
     "traces:delete",
     "scores:CUD",
+    "scoreConfigs:CUD",
+    "scoreConfigs:read",
     "project:delete",
     "project:update",
     "project:transfer",
@@ -72,6 +79,7 @@ export const roleAccessRights: Record<ProjectRole, Scope[]> = {
     "llmApiKeys:read",
     "llmApiKeys:create",
     "llmApiKeys:delete",
+    "batchExport:create",
   ],
   ADMIN: [
     "project:update",
@@ -87,6 +95,8 @@ export const roleAccessRights: Record<ProjectRole, Scope[]> = {
     "objects:tag",
     "traces:delete",
     "scores:CUD",
+    "scoreConfigs:CUD",
+    "scoreConfigs:read",
     "datasets:CUD",
     "prompts:CUD",
     "prompts:read",
@@ -99,6 +109,7 @@ export const roleAccessRights: Record<ProjectRole, Scope[]> = {
     "llmApiKeys:read",
     "llmApiKeys:create",
     "llmApiKeys:delete",
+    "batchExport:create",
   ],
   MEMBER: [
     "members:read",
@@ -107,6 +118,8 @@ export const roleAccessRights: Record<ProjectRole, Scope[]> = {
     "objects:bookmark",
     "objects:tag",
     "scores:CUD",
+    "scoreConfigs:CUD",
+    "scoreConfigs:read",
     "datasets:CUD",
     "prompts:CUD",
     "prompts:read",
@@ -116,11 +129,14 @@ export const roleAccessRights: Record<ProjectRole, Scope[]> = {
     "evalJob:CUD",
     "evalJobExecution:read",
     "llmApiKeys:read",
+    "batchExport:create",
   ],
   VIEWER: [
     "prompts:read",
     "evalTemplate:read",
+    "scoreConfigs:read",
     "evalJob:read",
     "evalJobExecution:read",
+    "llmApiKeys:read",
   ],
 };

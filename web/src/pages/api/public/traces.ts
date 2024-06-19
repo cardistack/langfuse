@@ -4,20 +4,15 @@ import { cors, runMiddleware } from "@/src/features/public-api/server/cors";
 import { prisma } from "@langfuse/shared/src/db";
 import { verifyAuthHeaderAndReturnScope } from "@/src/features/public-api/server/apiAuth";
 import { Prisma, type Trace } from "@langfuse/shared/src/db";
-import { paginationZod } from "@/src/utils/zod";
+import { paginationZod } from "@langfuse/shared";
 import {
   handleBatch,
   handleBatchResultLegacy,
 } from "@/src/pages/api/public/ingestion";
-import {
-  TraceBody,
-  eventTypes,
-  stringDate,
-} from "@/src/features/public-api/server/ingestion-api-schema";
+import { TraceBody, eventTypes, stringDate } from "@langfuse/shared";
 import { v4 } from "uuid";
 import { telemetry } from "@/src/features/telemetry";
-import { orderByToPrismaSql } from "@/src/features/orderBy/server/orderByToPrisma";
-import { tracesTableCols, orderBy } from "@langfuse/shared";
+import { tracesTableCols, orderBy, orderByToPrismaSql } from "@langfuse/shared";
 import { isPrismaException } from "@/src/utils/exceptions";
 
 const GetTracesSchema = z.object({
@@ -25,6 +20,7 @@ const GetTracesSchema = z.object({
   userId: z.string().nullish(),
   name: z.string().nullish(),
   tags: z.union([z.array(z.string()), z.string()]).nullish(),
+  sessionId: z.string().nullish(),
   fromTimestamp: stringDate,
   orderBy: z
     .string() // orderBy=timestamp.asc
@@ -105,6 +101,9 @@ export default async function handler(
             ", ",
           )}] <@ t."tags"`
         : Prisma.empty;
+      const sessionCondition = obj.sessionId
+        ? Prisma.sql`AND t."session_id" = ${obj.sessionId}`
+        : Prisma.empty;
       const fromTimestampCondition = obj.fromTimestamp
         ? Prisma.sql`AND t."timestamp" >= ${obj.fromTimestamp}::timestamp with time zone at time zone 'UTC'`
         : Prisma.empty;
@@ -133,27 +132,43 @@ export default async function handler(
             t.version,
             t.public,
             t.tags,
-            COALESCE(SUM(o.calculated_total_cost), 0)::DOUBLE PRECISION AS "totalCost",
-            COALESCE(EXTRACT(EPOCH FROM COALESCE(MAX(o."end_time"), MAX(o."start_time"))) - EXTRACT(EPOCH FROM MIN(o."start_time")), 0)::double precision AS "latency",
-            COALESCE(ARRAY_AGG(DISTINCT o.id) FILTER (WHERE o.id IS NOT NULL), ARRAY[]::text[]) AS "observations",
-            COALESCE(ARRAY_AGG(DISTINCT s.id) FILTER (WHERE s.id IS NOT NULL), ARRAY[]::text[]) AS "scores"
-          FROM "traces" AS t
-          LEFT JOIN "observations_view" AS o ON t.id = o.trace_id AND o.project_id = ${authCheck.scope.projectId}
-          LEFT JOIN "scores" AS s ON t.id = s.trace_id
-          WHERE t.project_id = ${authCheck.scope.projectId}
-          ${userCondition}
-          ${nameCondition}
-          ${tagsCondition}
-          ${fromTimestampCondition}
-          GROUP BY t.id
-          ${orderByCondition}
-          LIMIT ${obj.limit} OFFSET ${skipValue}
+            COALESCE(o."totalCost", 0)::DOUBLE PRECISION AS "totalCost",
+            COALESCE(o."latency", 0)::double precision AS "latency",
+            COALESCE(o."observations", ARRAY[]::text[]) AS "observations",
+            COALESCE(s."scores", ARRAY[]::text[]) AS "scores"
+          FROM (
+            SELECT *
+            FROM "traces" t
+            WHERE project_id = ${authCheck.scope.projectId}
+            ${fromTimestampCondition}
+            ${userCondition}
+            ${nameCondition}
+            ${tagsCondition}
+            ${sessionCondition}
+            ${orderByCondition}
+            LIMIT ${obj.limit} OFFSET ${skipValue}
+          ) AS t
+          LEFT JOIN LATERAL (
+            SELECT
+              SUM(o.calculated_total_cost)::DOUBLE PRECISION AS "totalCost",
+              EXTRACT(EPOCH FROM COALESCE(MAX(o."end_time"), MAX(o."start_time"))) - EXTRACT(EPOCH FROM MIN(o."start_time"))::DOUBLE PRECISION AS "latency",
+              ARRAY_AGG(DISTINCT o.id) FILTER (WHERE o.id IS NOT NULL) AS "observations"
+            FROM "observations_view" AS o
+            WHERE o.trace_id = t.id AND o.project_id = ${authCheck.scope.projectId}
+          ) AS o ON true
+          LEFT JOIN LATERAL (
+            SELECT
+              ARRAY_AGG(DISTINCT s.id) FILTER (WHERE s.id IS NOT NULL) AS "scores"
+            FROM "scores" AS s
+            WHERE s.trace_id = t.id AND s.project_id = ${authCheck.scope.projectId}
+          ) AS s ON true
           `);
       const totalItems = await prisma.trace.count({
         where: {
           projectId: authCheck.scope.projectId,
           name: obj.name ? obj.name : undefined,
           userId: obj.userId ? obj.userId : undefined,
+          sessionId: obj.sessionId ? obj.sessionId : undefined,
           timestamp: obj.fromTimestamp
             ? { gte: new Date(obj.fromTimestamp) }
             : undefined,
