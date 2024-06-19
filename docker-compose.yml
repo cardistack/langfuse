@@ -6,6 +6,7 @@ services:
       db:
         condition: service_healthy
     environment:
+      - DB_PASSWORD=${DB_PASSWORD}
       - DATABASE_URL=postgresql://postgres:${DB_PASSWORD}@db:5432/postgres
       - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
       - SALT=${SALT}
