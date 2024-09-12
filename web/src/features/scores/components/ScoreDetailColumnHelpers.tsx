@@ -28,7 +28,7 @@ const prefixScoreColKey = (
   prefix: "Trace" | "Generation",
 ): string => `${prefix}-${key}`;
 
-const getScoreDataTypeIcon = (dataType: ScoreDataType): string => {
+export const getScoreDataTypeIcon = (dataType: ScoreDataType): string => {
   switch (dataType) {
     case "NUMERIC":
     default:
@@ -99,11 +99,13 @@ export const constructIndividualScoreColumns = <
   scoreColumnKey,
   showAggregateViewOnly = false,
   scoreColumnPrefix,
+  cellsLoading = false,
 }: {
   scoreColumnProps: ScoreDetailColumnProps[];
   scoreColumnKey: keyof T & string;
   showAggregateViewOnly?: boolean;
   scoreColumnPrefix?: "Trace" | "Generation";
+  cellsLoading?: boolean;
 }): LangfuseColumnDef<T>[] => {
   return scoreColumnProps.map((col) => {
     const { accessorKey, header, size, enableHiding } = parseScoreColumn<T>(
@@ -118,6 +120,8 @@ export const constructIndividualScoreColumns = <
       enableHiding,
       cell: ({ row }: { row: Row<T> }) => {
         const scoresData: ScoreAggregate = row.getValue(scoreColumnKey) ?? {};
+
+        if (cellsLoading) return <Skeleton className="h-3 w-1/2" />;
 
         if (!Boolean(Object.keys(scoresData).length)) return null;
         if (!scoresData.hasOwnProperty(accessorKey)) return null;
@@ -137,11 +141,13 @@ export const constructIndividualScoreColumns = <
   });
 };
 
-export const SCORE_GROUP_COLUMN_PROPS = {
+export const getScoreGroupColumnProps = (isLoading: boolean) => ({
   accessorKey: "scores",
-  header: "Individual Scores",
+  header: "Scores",
   id: "scores",
+  enableHiding: true,
+  hideByDefault: true,
   cell: () => {
-    return <Skeleton className="h-3 w-1/2"></Skeleton>;
+    return isLoading ? <Skeleton className="h-3 w-1/2" /> : null;
   },
-};
+});

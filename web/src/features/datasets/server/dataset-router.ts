@@ -9,13 +9,13 @@ import {
   Prisma,
   type Dataset,
 } from "@langfuse/shared/src/db";
-import { throwIfNoAccess } from "@/src/features/rbac/utils/checkAccess";
+import { throwIfNoProjectAccess } from "@/src/features/rbac/utils/checkProjectAccess";
 import { auditLog } from "@/src/features/audit-logs/auditLog";
 import { DB } from "@/src/server/db";
-import { paginationZod } from "@langfuse/shared";
-import { filterAndValidateDbScoreList } from "@/src/features/public-api/types/scores";
+import { filterAndValidateDbScoreList, paginationZod } from "@langfuse/shared";
 import { aggregateScores } from "@/src/features/scores/lib/aggregateScores";
 import { type ScoreSimplified } from "@/src/features/scores/lib/types";
+import { traceException } from "@langfuse/shared/src/server";
 
 export const datasetRouter = createTRPCRouter({
   allDatasetMeta: protectedProjectProcedure
@@ -319,7 +319,7 @@ export const datasetRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      throwIfNoAccess({
+      throwIfNoProjectAccess({
         session: ctx.session,
         projectId: input.projectId,
         scope: "datasets:CUD",
@@ -360,7 +360,6 @@ export const datasetRouter = createTRPCRouter({
         session: ctx.session,
         resourceType: "datasetItem",
         resourceId: input.datasetItemId,
-        projectId: input.projectId,
         action: "update",
         after: datasetItem,
       });
@@ -376,7 +375,7 @@ export const datasetRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      throwIfNoAccess({
+      throwIfNoProjectAccess({
         session: ctx.session,
         projectId: input.projectId,
         scope: "datasets:CUD",
@@ -399,7 +398,6 @@ export const datasetRouter = createTRPCRouter({
         session: ctx.session,
         resourceType: "dataset",
         resourceId: dataset.id,
-        projectId: input.projectId,
         action: "create",
         after: dataset,
       });
@@ -417,7 +415,7 @@ export const datasetRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      throwIfNoAccess({
+      throwIfNoProjectAccess({
         session: ctx.session,
         projectId: input.projectId,
         scope: "datasets:CUD",
@@ -444,7 +442,6 @@ export const datasetRouter = createTRPCRouter({
         session: ctx.session,
         resourceType: "dataset",
         resourceId: dataset.id,
-        projectId: input.projectId,
         action: "update",
         after: dataset,
       });
@@ -454,7 +451,7 @@ export const datasetRouter = createTRPCRouter({
   deleteDataset: protectedProjectProcedure
     .input(z.object({ projectId: z.string(), datasetId: z.string() }))
     .mutation(async ({ input, ctx }) => {
-      throwIfNoAccess({
+      throwIfNoProjectAccess({
         session: ctx.session,
         projectId: input.projectId,
         scope: "datasets:CUD",
@@ -471,11 +468,102 @@ export const datasetRouter = createTRPCRouter({
         session: ctx.session,
         resourceType: "dataset",
         resourceId: deletedDataset.id,
-        projectId: input.projectId,
         action: "delete",
         before: deletedDataset,
       });
       return deletedDataset;
+    }),
+  duplicateDataset: protectedProjectProcedure
+    .input(
+      z.object({
+        projectId: z.string(),
+        datasetId: z.string(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      throwIfNoProjectAccess({
+        session: ctx.session,
+        projectId: input.projectId,
+        scope: "datasets:CUD",
+      });
+      const dataset = await ctx.prisma.dataset.findUnique({
+        where: {
+          id_projectId: {
+            id: input.datasetId,
+            projectId: input.projectId,
+          },
+        },
+        include: {
+          datasetItems: {
+            orderBy: {
+              createdAt: "asc",
+            },
+          },
+        },
+      });
+      if (!dataset) {
+        throw new Error("Dataset not found");
+      }
+
+      // find a unique name for the new dataset
+      // by appending a counter to the name in case of the name already exists
+      // e.g. "Copy of dataset" -> "Copy of dataset (1)"
+      const existingDatasetNames = (
+        await ctx.prisma.dataset.findMany({
+          select: {
+            name: true,
+          },
+          where: {
+            projectId: input.projectId,
+            name: {
+              startsWith: "Copy of " + dataset.name,
+            },
+          },
+        })
+      ).map((d) => d.name);
+      let counter: number = 0;
+      const duplicateDatasetName = (pCounter: number) =>
+        pCounter === 0
+          ? `Copy of ${dataset.name}`
+          : `Copy of ${dataset.name} (${counter})`;
+      while (true) {
+        if (!existingDatasetNames.includes(duplicateDatasetName(counter))) {
+          break;
+        }
+        counter++;
+      }
+
+      const newDataset = await ctx.prisma.dataset.create({
+        data: {
+          name: duplicateDatasetName(counter),
+          description: dataset.description,
+          projectId: input.projectId,
+          metadata: dataset.metadata ?? undefined,
+          datasetItems: {
+            createMany: {
+              data: dataset.datasetItems.map((item) => ({
+                // the items get new ids as they need to be unique on project level
+                input: item.input ?? undefined,
+                expectedOutput: item.expectedOutput ?? undefined,
+                metadata: item.metadata ?? undefined,
+                sourceTraceId: item.sourceTraceId,
+                sourceObservationId: item.sourceObservationId,
+                status: item.status,
+              })),
+            },
+          },
+        },
+      });
+
+      await auditLog({
+        session: ctx.session,
+        resourceType: "dataset",
+        resourceId: newDataset.id,
+        action: "create",
+        after: newDataset,
+      });
+
+      return { id: newDataset.id };
     }),
   createDatasetItem: protectedProjectProcedure
     .input(
@@ -490,7 +578,7 @@ export const datasetRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      throwIfNoAccess({
+      throwIfNoProjectAccess({
         session: ctx.session,
         projectId: input.projectId,
         scope: "datasets:CUD",
@@ -537,7 +625,6 @@ export const datasetRouter = createTRPCRouter({
         session: ctx.session,
         resourceType: "datasetItem",
         resourceId: datasetItem.id,
-        projectId: input.projectId,
         action: "create",
         after: datasetItem,
       });
@@ -650,9 +737,14 @@ export const datasetRouter = createTRPCRouter({
         `,
       );
 
-      const validatedTraceScores = filterAndValidateDbScoreList(traceScores);
-      const validatedObservationScores =
-        filterAndValidateDbScoreList(observationScores);
+      const validatedTraceScores = filterAndValidateDbScoreList(
+        traceScores,
+        traceException,
+      );
+      const validatedObservationScores = filterAndValidateDbScoreList(
+        observationScores,
+        traceException,
+      );
 
       const items = runItems.map((ri) => {
         return {
@@ -708,5 +800,36 @@ export const datasetRouter = createTRPCRouter({
           },
         },
       });
+    }),
+  deleteDatasetRun: protectedProjectProcedure
+    .input(
+      z.object({
+        projectId: z.string(),
+        datasetRunId: z.string(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      throwIfNoProjectAccess({
+        session: ctx.session,
+        projectId: input.projectId,
+        scope: "datasets:CUD",
+      });
+
+      const deletedDatasetRun = await ctx.prisma.datasetRuns.delete({
+        where: {
+          id_projectId: {
+            id: input.datasetRunId,
+            projectId: input.projectId,
+          },
+        },
+      });
+      await auditLog({
+        session: ctx.session,
+        resourceType: "datasetRun",
+        resourceId: deletedDatasetRun.id,
+        action: "delete",
+        before: deletedDatasetRun,
+      });
+      return deletedDatasetRun;
     }),
 });

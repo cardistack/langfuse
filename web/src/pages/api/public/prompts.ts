@@ -17,9 +17,15 @@ import {
   ForbiddenError,
   type Prompt,
 } from "@langfuse/shared";
-import { PromptService, redis } from "@langfuse/shared/src/server";
+import {
+  PromptService,
+  redis,
+  recordIncrement,
+  traceException,
+  logger,
+} from "@langfuse/shared/src/server";
 import { PRODUCTION_LABEL } from "@/src/features/prompts/constants";
-import * as Sentry from "@sentry/node";
+import { RateLimitService } from "@/src/features/public-api/server/RateLimitService";
 
 export default async function handler(
   req: NextApiRequest,
@@ -47,11 +53,16 @@ export default async function handler(
       const promptName = searchParams.name;
       const version = searchParams.version ?? undefined;
 
-      const promptService = new PromptService(
-        prisma,
-        redis,
-        Sentry.metrics.increment,
+      const rateLimitCheck = await new RateLimitService(redis).rateLimitRequest(
+        authCheck.scope,
+        "prompts",
       );
+
+      if (rateLimitCheck?.isRateLimited()) {
+        return rateLimitCheck.sendRestResponseIfLimited(res);
+      }
+
+      const promptService = new PromptService(prisma, redis, recordIncrement);
 
       let prompt: Prompt | null = null;
 
@@ -101,9 +112,8 @@ export default async function handler(
 
     throw new MethodNotAllowedError();
   } catch (error: unknown) {
-    console.error(error);
-
-    Sentry.captureException(error);
+    logger.error(error);
+    traceException(error);
 
     if (error instanceof BaseError) {
       return res.status(error.httpCode).json({

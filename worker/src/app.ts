@@ -1,23 +1,26 @@
-import "./sentry"; // this is required to make instrumentation work
 import express from "express";
 import cors from "cors";
-import * as Sentry from "@sentry/node";
 import * as middlewares from "./middlewares";
 import api from "./api";
 import MessageResponse from "./interfaces/MessageResponse";
 
 require("dotenv").config();
 
-import logger from "./logger";
-
-import { evalJobCreator, evalJobExecutor } from "./queues/evalQueue";
-import { batchExportJobExecutor } from "./queues/batchExportQueue";
-import { flushIngestionQueueExecutor } from "./queues/ingestionFlushQueue";
-import { repeatQueueExecutor } from "./queues/repeatQueue";
-import { logQueueWorkerError } from "./utils/logQueueWorkerError";
+import {
+  evalJobCreatorQueueProcessor,
+  evalJobExecutorQueueProcessor,
+} from "./queues/evalQueue";
+import { batchExportQueueProcessor } from "./queues/batchExportQueue";
+import { ingestionFlushQueueProcessor } from "./queues/ingestionFlushQueueExecutor";
+import { repeatQueueProcessor } from "./queues/repeatQueue";
 import { onShutdown } from "./utils/shutdown";
 
 import helmet from "helmet";
+import { legacyIngestionQueueProcessor } from "./queues/legacyIngestionQueue";
+import { cloudUsageMeteringQueueProcessor } from "./queues/cloudUsageMeteringQueue";
+import { WorkerManager } from "./queues/workerManager";
+import { QueueName } from "@langfuse/shared/src/server";
+import { env } from "./env";
 
 const app = express();
 
@@ -32,29 +35,57 @@ app.get<{}, MessageResponse>("/", (req, res) => {
 
 app.use("/api", api);
 
-// The error handler must be before any other error middleware and after all controllers
-app.use(Sentry.expressErrorHandler());
-
 app.use(middlewares.notFound);
 app.use(middlewares.errorHandler);
 
-logger.info("Eval Job Creator started", evalJobCreator?.isRunning());
-logger.info("Eval Job Executor started", evalJobExecutor?.isRunning());
-logger.info(
-  "Batch Export Job Executor started",
-  batchExportJobExecutor?.isRunning()
-);
-logger.info("Repeat Queue Executor started", repeatQueueExecutor?.isRunning());
-logger.info(
-  "Flush Ingestion Queue Executor started",
-  flushIngestionQueueExecutor?.isRunning()
+WorkerManager.register(QueueName.RepeatQueue, repeatQueueProcessor);
+
+WorkerManager.register(QueueName.TraceUpsert, evalJobCreatorQueueProcessor, {
+  concurrency: env.LANGFUSE_EVAL_CREATOR_WORKER_CONCURRENCY,
+});
+
+WorkerManager.register(
+  QueueName.EvaluationExecution,
+  evalJobExecutorQueueProcessor,
+  {
+    concurrency: env.LANGFUSE_EVAL_EXECUTION_WORKER_CONCURRENCY,
+  },
 );
 
-evalJobCreator?.on("failed", logQueueWorkerError);
-evalJobExecutor?.on("failed", logQueueWorkerError);
-batchExportJobExecutor?.on("failed", logQueueWorkerError);
-repeatQueueExecutor?.on("failed", logQueueWorkerError);
-flushIngestionQueueExecutor?.on("failed", logQueueWorkerError);
+WorkerManager.register(QueueName.BatchExport, batchExportQueueProcessor, {
+  concurrency: 1, // only 1 job at a time
+  limiter: {
+    // execute 1 batch export in 5 seconds to avoid overloading the DB
+    max: 1,
+    duration: 5_000,
+  },
+});
+
+WorkerManager.register(
+  QueueName.IngestionFlushQueue,
+  ingestionFlushQueueProcessor,
+  {
+    concurrency: env.LANGFUSE_INGESTION_FLUSH_PROCESSING_CONCURRENCY,
+  },
+);
+
+if (env.STRIPE_SECRET_KEY) {
+  WorkerManager.register(
+    QueueName.CloudUsageMeteringQueue,
+    cloudUsageMeteringQueueProcessor,
+    {
+      concurrency: 1,
+    },
+  );
+}
+
+if (env.QUEUE_CONSUMER_LEGACY_INGESTION_QUEUE_IS_ENABLED === "true") {
+  WorkerManager.register(
+    QueueName.LegacyIngestionQueue,
+    legacyIngestionQueueProcessor,
+    { concurrency: env.LANGFUSE_LEGACY_INGESTION_WORKER_CONCURRENCY }, // n ingestion batches at a time
+  );
+}
 
 process.on("SIGINT", () => onShutdown("SIGINT"));
 process.on("SIGTERM", () => onShutdown("SIGTERM"));

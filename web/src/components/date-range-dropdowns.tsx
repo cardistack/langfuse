@@ -9,21 +9,20 @@ import {
 } from "@/src/components/ui/select";
 
 import {
-  DEFAULT_AGGREGATION_SELECTION,
-  tableDateRangeAggregationSettings,
   dashboardDateRangeAggregationSettings,
   DASHBOARD_AGGREGATION_PLACEHOLDER,
   type DashboardDateRangeOptions,
   type TableDateRangeOptions,
   DASHBOARD_AGGREGATION_OPTIONS,
-  TABLE_AGGREGATION_OPTIONS,
   type DashboardDateRange,
+  TABLE_AGGREGATION_OPTIONS,
+  getDateFromOption,
 } from "@/src/utils/date-range-utils";
 import { Clock } from "lucide-react";
 
 type BaseDateRangeDropdownProps<T> = {
   selectedOption: T;
-  options: T[];
+  options: readonly T[];
   onSelectionChange: (value: T) => void;
 };
 
@@ -101,24 +100,22 @@ export const TableDateRangeDropdown: React.FC<TableDateRangeDropdownProps> = ({
   setDateRangeAndOption,
 }) => {
   const onDropDownSelection = (value: TableDateRangeOptions) => {
-    if (value === DEFAULT_AGGREGATION_SELECTION) {
-      setDateRangeAndOption(DEFAULT_AGGREGATION_SELECTION, undefined);
-      return;
-    }
-    const setting =
-      tableDateRangeAggregationSettings[
-        value as keyof typeof tableDateRangeAggregationSettings
-      ];
-    setDateRangeAndOption(value, {
-      from: addMinutes(new Date(), -setting),
-      to: new Date(),
+    const dateFromOption = getDateFromOption({
+      filterSource: "TABLE",
+      option: value,
     });
+
+    const initialDateRange = !!dateFromOption
+      ? { from: dateFromOption, to: new Date() }
+      : undefined;
+
+    setDateRangeAndOption(value, initialDateRange);
   };
 
   return (
     <BaseDateRangeDropdown
       selectedOption={selectedOption}
-      options={[...TABLE_AGGREGATION_OPTIONS, DEFAULT_AGGREGATION_SELECTION]}
+      options={TABLE_AGGREGATION_OPTIONS}
       onSelectionChange={onDropDownSelection}
     />
   );

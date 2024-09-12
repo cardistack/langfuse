@@ -35,6 +35,7 @@ RUN pnpm install --frozen-lockfile
 
 # pass public variables in build step
 ARG NEXT_PUBLIC_LANGFUSE_CLOUD_REGION
+ARG NEXT_PUBLIC_DEMO_ORG_ID
 ARG NEXT_PUBLIC_DEMO_PROJECT_ID
 ARG NEXT_PUBLIC_POSTHOG_KEY
 ARG NEXT_PUBLIC_POSTHOG_HOST
@@ -60,9 +61,14 @@ RUN addgroup --system --gid 1001 expressjs
 RUN adduser --system --uid 1001 expressjs
 USER expressjs
 COPY --from=builder --chown=expressjs:expressjs /app .
+COPY --chown=expressjs:expressjs ./worker/entrypoint.sh ./worker/entrypoint.sh
+RUN chmod +x ./worker/entrypoint.sh
 
 EXPOSE 3030
 ENV PORT=3030
 
-ENTRYPOINT ["dumb-init", "--", "node", "worker/dist/index.js"]
+ENTRYPOINT ["dumb-init", "--", "./worker/entrypoint.sh"]
+
+# startup command
+CMD ["node", "worker/dist/index.js"]
 

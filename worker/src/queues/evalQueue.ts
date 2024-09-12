@@ -1,106 +1,162 @@
-import { Job, Queue, Worker } from "bullmq";
-import {
-  ApiError,
-  BaseError,
-  QueueName,
-  TQueueJobTypes,
-} from "@langfuse/shared";
+import { Job, Queue } from "bullmq";
+import { ApiError, BaseError } from "@langfuse/shared";
 import { evaluate, createEvalJobs } from "../features/evaluation/eval-service";
 import { kyselyPrisma } from "@langfuse/shared/src/db";
-import logger from "../logger";
 import { sql } from "kysely";
-import { redis } from "@langfuse/shared/src/server";
-import { instrumentAsync } from "../instrumentation";
-import * as Sentry from "@sentry/node";
+import {
+  createNewRedisInstance,
+  QueueName,
+  TQueueJobTypes,
+  logger,
+  traceException,
+  instrumentAsync,
+  recordIncrement,
+  recordHistogram,
+  recordGauge,
+  getTraceUpsertQueue,
+} from "@langfuse/shared/src/server";
+import { SpanKind } from "@opentelemetry/api";
 
-export const evalQueue = redis
-  ? new Queue<TQueueJobTypes[QueueName.EvaluationExecution]>(
-      QueueName.EvaluationExecution,
-      {
-        connection: redis,
-      }
-    )
-  : null;
+let evalQueue: Queue<TQueueJobTypes[QueueName.EvaluationExecution]> | null =
+  null;
 
-export const evalJobCreator = redis
-  ? new Worker<TQueueJobTypes[QueueName.TraceUpsert]>(
-      QueueName.TraceUpsert,
-      async (job: Job<TQueueJobTypes[QueueName.TraceUpsert]>) => {
-        return instrumentAsync({ name: "evalJobCreator" }, async () => {
-          try {
-            await createEvalJobs({ event: job.data.payload });
-            return true;
-          } catch (e) {
-            logger.error(
-              e,
-              `Failed job Evaluation for traceId ${job.data.payload.traceId} ${e}`
-            );
-            Sentry.captureException(e);
-            throw e;
-          }
-        });
-      },
-      {
-        connection: redis,
-        concurrency: 20,
-        limiter: {
-          // execute 75 calls in 1000ms
-          max: 75,
-          duration: 1000,
+export const getEvalQueue = () => {
+  if (evalQueue) return evalQueue;
+
+  const connection = createNewRedisInstance();
+
+  evalQueue = connection
+    ? new Queue<TQueueJobTypes[QueueName.EvaluationExecution]>(
+        QueueName.EvaluationExecution,
+        {
+          connection: connection,
         },
-      }
-    )
-  : null;
+      )
+    : null;
 
-export const evalJobExecutor = redis
-  ? new Worker<TQueueJobTypes[QueueName.EvaluationExecution]>(
-      QueueName.EvaluationExecution,
-      async (job: Job<TQueueJobTypes[QueueName.EvaluationExecution]>) => {
-        return instrumentAsync({ name: "evalJobExecutor" }, async () => {
-          try {
-            logger.info("Executing Evaluation Execution Job", job.data);
-            await evaluate({ event: job.data.payload });
-            return true;
-          } catch (e) {
-            const displayError =
-              e instanceof BaseError ? e.message : "An internal error occurred";
+  return evalQueue;
+};
 
-            await kyselyPrisma.$kysely
-              .updateTable("job_executions")
-              .set("status", sql`'ERROR'::"JobExecutionStatus"`)
-              .set("end_time", new Date())
-              .set("error", displayError)
-              .where("id", "=", job.data.payload.jobExecutionId)
-              .where("project_id", "=", job.data.payload.projectId)
-              .execute();
+export const evalJobCreatorQueueProcessor = async (
+  job: Job<TQueueJobTypes[QueueName.TraceUpsert]>,
+) => {
+  return instrumentAsync(
+    {
+      name: "evalJobCreator",
+      rootSpan: true,
+      spanKind: SpanKind.CONSUMER,
+      traceContext: job.data?._tracecontext,
+    },
+    async () => {
+      try {
+        const startTime = Date.now();
 
-            // do not log expected errors (api failures + missing api keys not provided by the user)
-            if (
-              !(e instanceof ApiError) &&
-              !(
-                e instanceof BaseError &&
-                e.message.includes("API key for provider")
-              )
-            ) {
-              logger.error(
-                e,
-                `Failed Evaluation_Execution job for id ${job.data.payload.jobExecutionId} ${e}`
-              );
-              Sentry.captureException(e);
-            }
+        const waitTime = Date.now() - job.timestamp;
 
-            throw e;
-          }
+        recordIncrement("trace_upsert_queue_request");
+        recordHistogram("trace_upsert_queue_wait_time", waitTime, {
+          unit: "milliseconds",
         });
-      },
-      {
-        connection: redis,
-        concurrency: 10,
-        limiter: {
-          // execute 20 llm calls in 5 seconds
-          max: 20,
-          duration: 5_000,
-        },
+
+        await createEvalJobs({ event: job.data.payload });
+
+        await getTraceUpsertQueue()
+          ?.count()
+          .then((count) => {
+            logger.debug(`Eval creation queue length: ${count}`);
+            recordGauge("trace_upsert_queue_length", count, {
+              unit: "records",
+            });
+            return count;
+          })
+          .catch();
+        recordHistogram(
+          "trace_upsert_queue_processing_time",
+          Date.now() - startTime,
+          { unit: "milliseconds" },
+        );
+        return true;
+      } catch (e) {
+        logger.error(
+          `Failed job Evaluation for traceId ${job.data.payload.traceId}`,
+          e,
+        );
+        traceException(e);
+        throw e;
       }
-    )
-  : null;
+    },
+  );
+};
+
+export const evalJobExecutorQueueProcessor = async (
+  job: Job<TQueueJobTypes[QueueName.EvaluationExecution]>,
+) => {
+  return instrumentAsync(
+    {
+      name: "evalJobExecutor",
+      spanKind: SpanKind.CONSUMER,
+      traceContext: job.data?._tracecontext,
+    },
+    async () => {
+      try {
+        logger.info("Executing Evaluation Execution Job", job.data);
+        const startTime = Date.now();
+
+        const waitTime = Date.now() - job.timestamp;
+
+        recordIncrement("eval_execution_queue_request");
+        recordHistogram("eval_execution_queue_wait_time", waitTime, {
+          unit: "milliseconds",
+        });
+
+        await evaluate({ event: job.data.payload });
+
+        await getEvalQueue()
+          ?.count()
+          .then((count) => {
+            logger.debug(`Eval execution queue length: ${count}`);
+            recordGauge("eval_execution_queue_length", count, {
+              unit: "records",
+            });
+            return count;
+          })
+          .catch();
+        recordHistogram(
+          "eval_execution_queue_processing_time",
+          Date.now() - startTime,
+          { unit: "milliseconds" },
+        );
+
+        return true;
+      } catch (e) {
+        const displayError =
+          e instanceof BaseError ? e.message : "An internal error occurred";
+
+        await kyselyPrisma.$kysely
+          .updateTable("job_executions")
+          .set("status", sql`'ERROR'::"JobExecutionStatus"`)
+          .set("end_time", new Date())
+          .set("error", displayError)
+          .where("id", "=", job.data.payload.jobExecutionId)
+          .where("project_id", "=", job.data.payload.projectId)
+          .execute();
+
+        // do not log expected errors (api failures + missing api keys not provided by the user)
+        if (
+          !(e instanceof ApiError) &&
+          !(
+            e instanceof BaseError && e.message.includes("API key for provider")
+          )
+        ) {
+          traceException(e);
+          logger.error(
+            `Failed Evaluation_Execution job for id ${job.data.payload.jobExecutionId}`,
+            e,
+          );
+        }
+
+        throw e;
+      }
+    },
+  );
+};

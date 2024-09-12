@@ -34,6 +34,7 @@ import { env } from "@/src/env.mjs";
 import { ThemeProvider } from "@/src/features/theming/ThemeProvider";
 import { shutdown } from "@/src/utils/shutdown";
 import { MarkdownContextProvider } from "@/src/features/theming/useMarkdownContext";
+import { useQueryProjectOrOrganization } from "@/src/features/projects/hooks";
 
 const setProjectInPosthog = () => {
   // project
@@ -122,20 +123,28 @@ export default api.withTRPC(MyApp);
 
 function UserTracking() {
   const session = useSession();
+  const sessionUser = session.data?.user;
+  const { organization, project } = useQueryProjectOrOrganization();
 
   useEffect(() => {
-    if (session.status === "authenticated") {
+    if (sessionUser) {
       // PostHog
       if (env.NEXT_PUBLIC_POSTHOG_KEY && env.NEXT_PUBLIC_POSTHOG_HOST)
-        posthog.identify(session.data.user?.id ?? undefined, {
+        posthog.identify(sessionUser.id ?? undefined, {
           environment: process.env.NODE_ENV,
-          email: session.data.user?.email ?? undefined,
-          name: session.data.user?.name ?? undefined,
-          featureFlags: session.data.user?.featureFlags ?? undefined,
-          projects: session.data.user?.projects ?? undefined,
+          email: sessionUser.email ?? undefined,
+          name: sessionUser.name ?? undefined,
+          featureFlags: sessionUser.featureFlags ?? undefined,
+          projects:
+            sessionUser.organizations.flatMap((org) =>
+              org.projects.map((project) => ({
+                ...project,
+                organization: org,
+              })),
+            ) ?? undefined,
           LANGFUSE_CLOUD_REGION: env.NEXT_PUBLIC_LANGFUSE_CLOUD_REGION,
         });
-      const emailDomain = session.data.user?.email?.split("@")[1];
+      const emailDomain = sessionUser.email?.split("@")[1];
       if (emailDomain)
         posthog.group("emailDomain", emailDomain, {
           domain: emailDomain,
@@ -143,20 +152,22 @@ function UserTracking() {
 
       // Sentry
       setUser({
-        email: session.data.user?.email ?? undefined,
-        id: session.data.user?.id ?? undefined,
+        email: sessionUser.email ?? undefined,
+        id: sessionUser.id ?? undefined,
       });
+
       // Chat
       chatSetUser({
-        name: session.data.user?.name ?? "undefined",
-        email: session.data.user?.email ?? "undefined",
+        name: sessionUser.name ?? "undefined",
+        email: sessionUser.email ?? "undefined",
+        avatar: sessionUser.image ?? undefined,
         data: {
-          userId: session.data.user?.id ?? "undefined",
-          projects: session.data.user?.projects
-            ? JSON.stringify(session.data.user.projects)
+          userId: sessionUser.id ?? "undefined",
+          organizations: sessionUser.organizations
+            ? JSON.stringify(sessionUser.organizations)
             : "undefined",
-          featureFlags: session.data.user?.featureFlags
-            ? JSON.stringify(session.data.user.featureFlags)
+          featureFlags: sessionUser.featureFlags
+            ? JSON.stringify(sessionUser.featureFlags)
             : "undefined",
         },
       });
@@ -169,7 +180,52 @@ function UserTracking() {
       // Sentry
       setUser(null);
     }
-  }, [session]);
+  }, [sessionUser]);
+
+  // update crisp segments
+  const plan = organization?.plan;
+  const currentOrgIsDemoOrg =
+    env.NEXT_PUBLIC_DEMO_ORG_ID &&
+    organization?.id &&
+    organization.id === env.NEXT_PUBLIC_DEMO_ORG_ID;
+  const projectRole = project?.role;
+  const organizationRole = organization?.role;
+  useEffect(() => {
+    let segments = [];
+    if (plan && !currentOrgIsDemoOrg) {
+      console.log("setting chat segments", plan);
+      segments.push("plan:" + plan);
+    }
+    if (currentOrgIsDemoOrg) {
+      segments.push("demo");
+    }
+    if (projectRole) {
+      segments.push("p_role:" + projectRole);
+    }
+    if (organizationRole) {
+      segments.push("o_role:" + organizationRole);
+    }
+    if (segments.length > 0) {
+      chatSetUser({
+        segments,
+      });
+    }
+  }, [plan, currentOrgIsDemoOrg, projectRole, organizationRole]);
+
+  // add stripe link to chat
+  const orgStripeLink = organization?.cloudConfig?.stripe?.customerId
+    ? `https://dashboard.stripe.com/customers/${organization.cloudConfig.stripe.customerId}`
+    : undefined;
+  useEffect(() => {
+    if (orgStripeLink) {
+      chatSetUser({
+        data: {
+          stripe: orgStripeLink,
+        },
+      });
+    }
+  }, [orgStripeLink]);
+
   return null;
 }
 

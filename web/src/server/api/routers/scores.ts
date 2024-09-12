@@ -1,29 +1,36 @@
 import { z } from "zod";
 
-import {
-  createTRPCRouter,
-  protectedProjectProcedure,
-} from "@/src/server/api/trpc";
-import { throwIfNoAccess } from "@/src/features/rbac/utils/checkAccess";
-import { type ProjectRole, Prisma, type Score } from "@langfuse/shared/src/db";
-import {
-  CreateAnnotationScoreData,
-  UpdateAnnotationScoreData,
-  paginationZod,
-} from "@langfuse/shared";
-import { singleFilter } from "@langfuse/shared";
-import {
-  tableColumnsToSqlFilterAndPrefix,
-  orderByToPrismaSql,
-} from "@langfuse/shared";
+import { throwIfNoProjectAccess } from "@/src/features/rbac/utils/checkProjectAccess";
 import {
   type ScoreOptions,
   scoresTableCols,
 } from "@/src/server/api/definitions/scoresTable";
-import { orderBy } from "@langfuse/shared";
 import { auditLog } from "@/src/features/audit-logs/auditLog";
-import { validateDbScore } from "@/src/features/public-api/types/scores";
 import { composeAggregateScoreKey } from "@/src/features/scores/lib/aggregateScores";
+import {
+  getDateFromOption,
+  SelectedTimeOptionSchema,
+} from "@/src/utils/date-range-utils";
+import {
+  createTRPCRouter,
+  protectedProjectProcedure,
+} from "@/src/server/api/trpc";
+import {
+  CreateAnnotationScoreData,
+  orderBy,
+  paginationZod,
+  singleFilter,
+  timeFilter,
+  UpdateAnnotationScoreData,
+  validateDbScore,
+} from "@langfuse/shared";
+import { Prisma, type Score } from "@langfuse/shared/src/db";
+import {
+  datetimeFilterToPrisma,
+  datetimeFilterToPrismaSql,
+  orderByToPrismaSql,
+  tableColumnsToSqlFilterAndPrefix,
+} from "@langfuse/shared/src/server";
 
 const ScoreFilterOptions = z.object({
   projectId: z.string(), // Required for protectedProjectProcedure
@@ -39,22 +46,15 @@ export const scoresRouter = createTRPCRouter({
   all: protectedProjectProcedure
     .input(ScoreAllOptions)
     .query(async ({ input, ctx }) => {
-      const filterCondition = tableColumnsToSqlFilterAndPrefix(
-        input.filter,
-        scoresTableCols,
-        "traces_scores",
-      );
-
-      const orderByCondition = orderByToPrismaSql(
-        input.orderBy,
-        scoresTableCols,
-      );
+      const { filterCondition, orderByCondition } =
+        parseScoresGetAllOptions(input);
 
       const scores = await ctx.prisma.$queryRaw<
         Array<
           Score & {
             traceName: string | null;
             traceUserId: string | null;
+            traceTags: Array<string> | null;
             jobConfigurationId: string | null;
             authorUserImage: string | null;
             authorUserName: string | null;
@@ -76,11 +76,13 @@ export const scoresRouter = createTRPCRouter({
           s.author_user_id AS "authorUserId",
           t.user_id AS "traceUserId",
           t.name AS "traceName",
+          t.tags AS "traceTags",
           je.job_configuration_id AS "jobConfigurationId",
           u.image AS "authorUserImage", 
           u.name AS "authorUserName"
           `,
           input.projectId,
+          ctx.session.orgId,
           filterCondition,
           orderByCondition,
           input.limit,
@@ -88,12 +90,22 @@ export const scoresRouter = createTRPCRouter({
         ),
       );
 
+      return {
+        scores,
+      };
+    }),
+  countAll: protectedProjectProcedure
+    .input(ScoreAllOptions)
+    .query(async ({ input, ctx }) => {
+      const { filterCondition } = parseScoresGetAllOptions(input);
+
       const scoresCount = await ctx.prisma.$queryRaw<
         Array<{ totalCount: bigint }>
       >(
         generateScoresQuery(
           Prisma.sql` count(*) AS "totalCount"`,
           input.projectId,
+          ctx.session.orgId,
           filterCondition,
           Prisma.empty,
           1, // limit
@@ -102,7 +114,6 @@ export const scoresRouter = createTRPCRouter({
       );
 
       return {
-        scores,
         totalCount:
           scoresCount.length > 0 ? Number(scoresCount[0]?.totalCount) : 0,
       };
@@ -111,27 +122,53 @@ export const scoresRouter = createTRPCRouter({
     .input(
       z.object({
         projectId: z.string(),
+        timestampFilter: timeFilter.optional(),
       }),
     )
     .query(async ({ input, ctx }) => {
-      const names = await ctx.prisma.score.groupBy({
-        where: {
-          projectId: input.projectId,
-        },
-        by: ["name"],
-        _count: {
-          _all: true,
-        },
-        take: 1000,
-        orderBy: {
-          _count: {
-            id: "desc",
+      const { timestampFilter } = input;
+      const prismaTimestampFilter = timestampFilter
+        ? datetimeFilterToPrisma(timestampFilter)
+        : {};
+
+      const rawTimestampFilter =
+        timestampFilter && timestampFilter.type === "datetime"
+          ? datetimeFilterToPrismaSql(
+              "timestamp",
+              timestampFilter.operator,
+              timestampFilter.value,
+            )
+          : Prisma.empty;
+      const [names, tags] = await Promise.all([
+        ctx.prisma.score.groupBy({
+          where: {
+            projectId: input.projectId,
+            timestamp: prismaTimestampFilter,
           },
-        },
-      });
+          by: ["name"],
+          _count: {
+            _all: true,
+          },
+          take: 1000,
+          orderBy: {
+            _count: {
+              id: "desc",
+            },
+          },
+        }),
+        ctx.prisma.$queryRaw<{ value: string }[]>`
+          SELECT tags.tag as value
+          FROM traces, UNNEST(traces.tags) AS tags(tag)
+          WHERE traces.project_id = ${input.projectId} ${rawTimestampFilter}
+          GROUP BY tags.tag
+          ORDER BY tags.tag ASC
+          LIMIT 1000
+        `,
+      ]);
 
       const res: ScoreOptions = {
         name: names.map((i) => ({ value: i.name, count: i._count._all })),
+        tags: tags,
       };
 
       return res;
@@ -139,7 +176,7 @@ export const scoresRouter = createTRPCRouter({
   createAnnotationScore: protectedProjectProcedure
     .input(CreateAnnotationScoreData)
     .mutation(async ({ input, ctx }) => {
-      throwIfNoAccess({
+      throwIfNoProjectAccess({
         session: ctx.session,
         projectId: input.projectId,
         scope: "scores:CUD",
@@ -178,6 +215,14 @@ export const scoresRouter = createTRPCRouter({
             authorUserId: ctx.session.user.id,
           },
         });
+        await auditLog({
+          session: ctx.session,
+          resourceType: "score",
+          resourceId: updatedScore.id,
+          action: "update",
+          before: existingScore,
+          after: updatedScore,
+        });
         return validateDbScore(updatedScore);
       }
 
@@ -198,11 +243,7 @@ export const scoresRouter = createTRPCRouter({
       });
 
       await auditLog({
-        projectId: input.projectId,
-        userId: ctx.session.user.id,
-        userProjectRole: ctx.session.user.projects.find(
-          (p) => p.id === input.projectId,
-        )?.role as ProjectRole, // throwIfNoAccess ensures this is defined
+        session: ctx.session,
         resourceType: "score",
         resourceId: score.id,
         action: "create",
@@ -213,7 +254,7 @@ export const scoresRouter = createTRPCRouter({
   updateAnnotationScore: protectedProjectProcedure
     .input(UpdateAnnotationScoreData)
     .mutation(async ({ input, ctx }) => {
-      throwIfNoAccess({
+      throwIfNoProjectAccess({
         session: ctx.session,
         projectId: input.projectId,
         scope: "scores:CUD",
@@ -228,19 +269,6 @@ export const scoresRouter = createTRPCRouter({
       if (!score) {
         throw new Error("No annotation score with this id in this project.");
       }
-
-      await auditLog({
-        projectId: input.projectId,
-        userId: ctx.session.user.id,
-        userProjectRole: ctx.session.user.projects.find(
-          (p) => p.id === input.projectId,
-        )?.role as ProjectRole, // throwIfNoAccess ensures this is defined
-        resourceType: "score",
-        resourceId: score.id,
-        action: "update",
-        after: score,
-      });
-
       const updatedScore = await ctx.prisma.score.update({
         where: {
           id: score.id,
@@ -253,12 +281,22 @@ export const scoresRouter = createTRPCRouter({
           authorUserId: ctx.session.user.id,
         },
       });
+
+      await auditLog({
+        session: ctx.session,
+        resourceType: "score",
+        resourceId: score.id,
+        action: "update",
+        before: score,
+        after: updatedScore,
+      });
+
       return validateDbScore(updatedScore);
     }),
   deleteAnnotationScore: protectedProjectProcedure
     .input(z.object({ projectId: z.string(), id: z.string() }))
     .mutation(async ({ input, ctx }) => {
-      throwIfNoAccess({
+      throwIfNoProjectAccess({
         session: ctx.session,
         projectId: input.projectId,
         scope: "scores:CUD",
@@ -276,11 +314,7 @@ export const scoresRouter = createTRPCRouter({
       }
 
       await auditLog({
-        projectId: input.projectId,
-        userId: ctx.session.user.id,
-        userProjectRole: ctx.session.user.projects.find(
-          (p) => p.id === input.projectId,
-        )?.role as ProjectRole, // throwIfNoAccess ensures this is defined
+        session: ctx.session,
         resourceType: "score",
         resourceId: score.id,
         action: "delete",
@@ -298,12 +332,16 @@ export const scoresRouter = createTRPCRouter({
     .input(
       z.object({
         projectId: z.string(),
+        selectedTimeOption: SelectedTimeOptionSchema,
       }),
     )
     .query(async ({ input, ctx }) => {
+      const date = getDateFromOption(input.selectedTimeOption);
+
       const scores = await ctx.prisma.score.groupBy({
         where: {
           projectId: input.projectId,
+          ...(date ? { timestamp: { gte: date } } : {}),
         },
         take: 1000,
         orderBy: {
@@ -314,6 +352,7 @@ export const scoresRouter = createTRPCRouter({
         by: ["name", "source", "dataType"],
       });
 
+      if (scores.length === 0) return [];
       return scores.map(({ name, source, dataType }) => ({
         key: composeAggregateScoreKey({ name, source, dataType }),
         name: name,
@@ -323,9 +362,21 @@ export const scoresRouter = createTRPCRouter({
     }),
 });
 
+const parseScoresGetAllOptions = (input: z.infer<typeof ScoreAllOptions>) => {
+  const filterCondition = tableColumnsToSqlFilterAndPrefix(
+    input.filter,
+    scoresTableCols,
+    "traces_scores",
+  );
+
+  const orderByCondition = orderByToPrismaSql(input.orderBy, scoresTableCols);
+  return { filterCondition, orderByCondition };
+};
+
 const generateScoresQuery = (
   select: Prisma.Sql,
   projectId: string,
+  orgId: string,
   filterCondition: Prisma.Sql,
   orderCondition: Prisma.Sql,
   limit: number,
@@ -337,7 +388,7 @@ const generateScoresQuery = (
   FROM scores s
   LEFT JOIN traces t ON t.id = s.trace_id AND t.project_id = ${projectId}
   LEFT JOIN job_executions je ON je.job_output_score_id = s.id AND je.project_id = ${projectId}
-  LEFT JOIN users u ON u.id = s.author_user_id
+  LEFT JOIN users u ON u.id = s.author_user_id AND u.id in (SELECT user_id FROM organization_memberships WHERE org_id = ${orgId})
   WHERE s.project_id = ${projectId}
   ${filterCondition}
   ${orderCondition}

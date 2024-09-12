@@ -1,16 +1,17 @@
+import { FullScreenPage } from "@/src/components/layouts/full-screen-page";
 import Header from "@/src/components/layouts/header";
 import { ResetPlaygroundButton } from "@/src/ee/features/playground/page/components/ResetPlaygroundButton";
 import { SaveToPromptButton } from "@/src/ee/features/playground/page/components/SaveToPromptButton";
 import { PlaygroundProvider } from "@/src/ee/features/playground/page/context";
 import Playground from "@/src/ee/features/playground/page/playground";
-import { useIsEeEnabled } from "@/src/ee/utils/useIsEeEnabled";
+import { useHasOrgEntitlement } from "@/src/features/entitlements/hooks";
 
 export default function PlaygroundPage() {
-  const isEeAvailable = useIsEeEnabled();
-  if (!isEeAvailable) return null;
+  const available = useHasOrgEntitlement("playground");
+  if (!available) return null;
   return (
     <PlaygroundProvider>
-      <div className="flex h-[95vh] flex-col">
+      <FullScreenPage>
         <Header
           title="Playground"
           help={{
@@ -27,7 +28,7 @@ export default function PlaygroundPage() {
         <div className="flex-1 overflow-auto">
           <Playground />
         </div>
-      </div>
+      </FullScreenPage>
     </PlaygroundProvider>
   );
 }

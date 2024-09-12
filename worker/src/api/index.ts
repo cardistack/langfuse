@@ -1,25 +1,19 @@
 import express from "express";
 import basicAuth from "express-basic-auth";
-
-import { EventBodySchema, EventName, QueueJobs } from "@langfuse/shared";
-import { prisma } from "@langfuse/shared/src/db";
 import {
+  traceException,
   clickhouseClient,
   convertTraceUpsertEventsToRedisEvents,
   getTraceUpsertQueue,
-  ingestionApiSchemaWithProjectId,
-  redis,
+  getBatchExportQueue,
+  EventBodySchema,
+  EventName,
+  QueueJobs,
 } from "@langfuse/shared/src/server";
-import * as Sentry from "@sentry/node";
 
 import { env } from "../env";
 import { checkContainerHealth } from "../features/health";
-import logger from "../logger";
-import { batchExportQueue } from "../queues/batchExportQueue";
-import { ingestionFlushQueue } from "../queues/ingestionFlushQueue";
-import { ClickhouseWriter } from "../services/ClickhouseWriter";
-import { IngestionService } from "../services/IngestionService";
-
+import { logger } from "@langfuse/shared/src/server";
 const router = express.Router();
 
 type EventsResponse = {
@@ -28,9 +22,22 @@ type EventsResponse = {
 
 router.get<{}, { status: string }>("/health", async (_req, res) => {
   try {
-    await checkContainerHealth(res);
+    await checkContainerHealth(res, false);
   } catch (e) {
-    logger.error(e, "Health check failed");
+    traceException(e);
+    logger.error("Health check failed", e);
+    res.status(500).json({
+      status: "error",
+    });
+  }
+});
+
+router.get<{}, { status: string }>("/ready", async (_req, res) => {
+  try {
+    await checkContainerHealth(res, true);
+  } catch (e) {
+    traceException(e);
+    logger.error("Readiness check failed", e);
     res.status(500).json({
       status: "error",
     });
@@ -52,16 +59,16 @@ router
         });
 
         logger.info(
-          `Clickhouse health check response: ${JSON.stringify(await response.text())}`
+          `Clickhouse health check response: ${JSON.stringify(await response.text())}`,
         );
 
         res.json({ status: "success" });
       } catch (e) {
-        logger.error(e, "Clickhouse health check failed");
+        logger.error("Clickhouse health check failed", e);
         res.status(500).json({ status: "error", message: JSON.stringify(e) });
       }
     } catch (e) {
-      logger.error(e, "Unexpected error during Clickhouse health check");
+      logger.error("Unexpected error during Clickhouse health check", e);
       res.status(500).json({ status: "error", message: JSON.stringify(e) });
     }
   });
@@ -70,7 +77,7 @@ router
   .use(
     basicAuth({
       users: { admin: env.LANGFUSE_WORKER_PASSWORD },
-    })
+    }),
   )
   .post<{}, EventsResponse>("/events", async (req, res) => {
     try {
@@ -97,7 +104,7 @@ router
         if (traceUpsertQueue) {
           logger.info(
             `Added ${jobs.length} trace upsert jobs to the queue`,
-            jobs
+            jobs,
           );
         }
 
@@ -107,7 +114,7 @@ router
       }
 
       if (event.data.name === EventName.BatchExport) {
-        await batchExportQueue?.add(event.data.name, {
+        await getBatchExportQueue()?.add(event.data.name, {
           id: event.data.payload.batchExportId, // Use the batchExportId to deduplicate when the same job is sent multiple times
           name: QueueJobs.BatchExportJob,
           timestamp: new Date(),
@@ -121,8 +128,8 @@ router
 
       return res.status(400).send();
     } catch (e) {
-      logger.error(e, "Error processing events");
-      Sentry.captureException(e);
+      logger.error("Error processing events", e);
+      traceException(e);
       return res.status(500).json({
         status: "error",
       });
@@ -133,47 +140,10 @@ router
   .use(
     basicAuth({
       users: { admin: env.LANGFUSE_WORKER_PASSWORD },
-    })
+    }),
   )
   .post("/ingestion", async (req, res) => {
-    try {
-      if (!redis) {
-        throw new Error("Redis connection not available");
-      }
-
-      const { body } = req;
-      const events = ingestionApiSchemaWithProjectId.safeParse(body);
-
-      if (!events.success) {
-        logger.error(events.error, "Failed to parse ingestion event");
-
-        return res.status(400).json(events.error);
-      }
-
-      const { batch, projectId } = events.data;
-
-      if (!ingestionFlushQueue) {
-        throw Error("Ingestion flush queue not available");
-      }
-
-      await new IngestionService(
-        redis,
-        prisma,
-        ingestionFlushQueue,
-        ClickhouseWriter.getInstance(),
-        clickhouseClient,
-        env.LANGFUSE_INGESTION_BUFFER_TTL_SECONDS // TODO: Make this configurable,
-      ).addBatch(batch, projectId);
-
-      return res.status(200).send();
-    } catch (e) {
-      logger.error(e, "Failed to process ingestion event");
-
-      if (!res.headersSent)
-        return res
-          .status(500)
-          .json({ message: e instanceof Error ? e.message : undefined });
-    }
+    return res.status(200).send(); // Not implemented, Send 200 to acknowledge the request for web containers to not throw
   });
 
 export default router;

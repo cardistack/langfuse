@@ -4,8 +4,8 @@ import { v4 } from "uuid";
 
 import { makeAPICall, pruneDatabase } from "@/src/__tests__/test-utils";
 import { ModelUsageUnit } from "@langfuse/shared";
-import { cleanEvent } from "@/src/pages/api/public/ingestion";
 import { prisma } from "@langfuse/shared/src/db";
+import { cleanEvent } from "@langfuse/shared/src/server";
 
 describe("/api/public/ingestion API Endpoint", () => {
   beforeEach(async () => await pruneDatabase());
@@ -707,19 +707,6 @@ describe("/api/public/ingestion API Endpoint", () => {
     expect(dbScore?.traceId).toBe(traceId);
     expect(dbScore?.observationId).toBe(generationId);
     expect(dbScore?.value).toBe(100.5);
-
-    const logEvent = await prisma.events.findFirst({
-      where: {
-        data: {
-          path: ["body", "log"],
-          string_contains: "ERROR",
-        },
-      },
-    });
-
-    expect(logEvent).toBeDefined();
-    expect(logEvent).not.toBeFalsy();
-    expect(JSON.stringify(logEvent?.data)).toContain("KeyError: 'model_name'");
   });
 
   it("should upsert threats", async () => {
@@ -1140,11 +1127,16 @@ describe("/api/public/ingestion API Endpoint", () => {
   it("should not override a trace from a different project", async () => {
     const traceId = v4();
     const newProjectId = v4();
-
+    await prisma.organization.upsert({
+      where: { id: "other-org" },
+      create: { id: "other-org", name: "other-org" },
+      update: {},
+    });
     await prisma.project.create({
       data: {
         id: newProjectId,
         name: "another-project",
+        orgId: "other-org",
       },
     });
 

@@ -1,12 +1,15 @@
 import { type NextApiRequest, type NextApiResponse } from "next";
 import { type ZodType, type z } from "zod";
-import * as Sentry from "@sentry/node";
-import {
-  ApiAuthService,
-  type AuthHeaderValidVerificationResult,
-} from "@/src/features/public-api/server/apiAuth";
+import { ApiAuthService } from "@/src/features/public-api/server/apiAuth";
 import { prisma } from "@langfuse/shared/src/db";
-import { redis } from "@langfuse/shared/src/server";
+import {
+  redis,
+  type AuthHeaderValidVerificationResult,
+  traceException,
+  logger,
+} from "@langfuse/shared/src/server";
+import { type RateLimitResource } from "@langfuse/shared";
+import { RateLimitService } from "@/src/features/public-api/server/RateLimitService";
 
 type RouteConfig<
   TQuery extends ZodType<any>,
@@ -18,6 +21,7 @@ type RouteConfig<
   bodySchema?: TBody;
   responseSchema: TResponse;
   successStatusCode?: number;
+  rateLimitRessource?: z.infer<typeof RateLimitResource>; // defaults to public-api
   fn: (params: {
     query: z.infer<TQuery>;
     body: z.infer<TBody>;
@@ -50,15 +54,23 @@ export const createAuthedAPIRoute = <
       return;
     }
 
-    console.log(
-      "Request to route ",
-      routeConfig.name,
-      "projectId ",
-      auth.scope.projectId,
-      "with query ",
-      req.query,
-      "and body ",
-      req.body,
+    const rateLimitResponse = await new RateLimitService(
+      redis,
+    ).rateLimitRequest(
+      auth.scope,
+      routeConfig.rateLimitRessource || "public-api",
+    );
+
+    if (rateLimitResponse?.isRateLimited()) {
+      return rateLimitResponse.sendRestResponseIfLimited(res);
+    }
+
+    logger.info(
+      `Request to route ${routeConfig.name} projectId ${auth.scope.projectId}`,
+      {
+        query: req.query,
+        body: req.body,
+      },
     );
 
     const query = routeConfig.querySchema
@@ -79,8 +91,8 @@ export const createAuthedAPIRoute = <
     if (routeConfig.responseSchema) {
       const parsingResult = routeConfig.responseSchema.safeParse(response);
       if (!parsingResult.success) {
-        console.error("Response validation failed:", parsingResult.error);
-        Sentry.captureException(parsingResult.error);
+        logger.error("Response validation failed:", parsingResult.error);
+        traceException(parsingResult.error);
       }
     }
 

@@ -18,7 +18,7 @@ import {
   type UIModelParams,
   ZodModelConfig,
 } from "@langfuse/shared";
-import { useIsEeEnabled } from "@/src/ee/utils/useIsEeEnabled";
+import { useHasOrgEntitlement } from "@/src/features/entitlements/hooks";
 
 type JumpToPlaygroundButtonProps = (
   | {
@@ -32,7 +32,7 @@ type JumpToPlaygroundButtonProps = (
       analyticsEventName: "trace_detail:test_in_playground_button_click";
     }
 ) & {
-  fullWidth?: boolean;
+  variant?: "outline" | "secondary";
 };
 
 export const JumpToPlaygroundButton: React.FC<JumpToPlaygroundButtonProps> = (
@@ -42,7 +42,7 @@ export const JumpToPlaygroundButton: React.FC<JumpToPlaygroundButtonProps> = (
   const projectId = useProjectIdFromURL();
   const { setPlaygroundCache } = usePlaygroundCache();
   const [capturedState, setCapturedState] = useState<PlaygroundCache>(null);
-  const isEeEnabled = useIsEeEnabled();
+  const available = useHasOrgEntitlement("playground");
 
   useEffect(() => {
     if (props.source === "prompt") {
@@ -57,21 +57,18 @@ export const JumpToPlaygroundButton: React.FC<JumpToPlaygroundButtonProps> = (
     setPlaygroundCache(capturedState);
   };
 
-  if (!isEeEnabled) return null;
+  if (!available) return null;
 
   return (
     <Button
-      variant={props.fullWidth ? "secondary" : "outline"}
+      variant={props.variant ?? "secondary"}
       title="Test in LLM playground"
-      size={!props.fullWidth ? "icon" : undefined}
       onClick={handleClick}
       asChild
     >
       <Link href={`/project/${projectId}/playground`}>
-        <Terminal className="h-5 w-5" />
-        {props.fullWidth ? (
-          <span className="ml-2">Test in playground</span>
-        ) : null}
+        <Terminal className="h-4 w-4" />
+        <span className="ml-2">Test in playground</span>
       </Link>
     </Button>
   );

@@ -15,11 +15,12 @@ import { cn } from "@/src/utils/tailwind";
 import { IOTableCell } from "@/src/components/ui/CodeJsonViewer";
 import { ListTree } from "lucide-react";
 import {
-  SCORE_GROUP_COLUMN_PROPS,
+  getScoreGroupColumnProps,
   verifyAndPrefixScoreDataAgainstKeys,
 } from "@/src/features/scores/components/ScoreDetailColumnHelpers";
 import { type ScoreAggregate } from "@/src/features/scores/lib/types";
 import { useIndividualScoreColumns } from "@/src/features/scores/hooks/useIndividualScoreColumns";
+import useColumnOrder from "@/src/features/column-visibility/hooks/useColumnOrder";
 
 export type DatasetRunItemRowData = {
   id: string;
@@ -81,7 +82,7 @@ export function DatasetRunItemsTable(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runItems.isSuccess, runItems.data]);
 
-  const { scoreColumns, scoreKeysAndProps } =
+  const { scoreColumns, scoreKeysAndProps, isColumnLoading } =
     useIndividualScoreColumns<DatasetRunItemRowData>({
       projectId: props.projectId,
       scoreColumnKey: "scores",
@@ -156,7 +157,7 @@ export function DatasetRunItemsTable(
         return <>{totalCost}</>;
       },
     },
-    { ...SCORE_GROUP_COLUMN_PROPS, columns: scoreColumns },
+    { ...getScoreGroupColumnProps(isColumnLoading), columns: scoreColumns },
     {
       accessorKey: "input",
       header: "Input",
@@ -168,6 +169,7 @@ export function DatasetRunItemsTable(
         return trace ? (
           <TraceObservationIOCell
             traceId={trace.traceId}
+            projectId={props.projectId}
             observationId={trace.observationId}
             io="input"
             singleLine={rowHeight === "s"}
@@ -186,6 +188,7 @@ export function DatasetRunItemsTable(
         return trace ? (
           <TraceObservationIOCell
             traceId={trace.traceId}
+            projectId={props.projectId}
             observationId={trace.observationId}
             io="output"
             singleLine={rowHeight === "s"}
@@ -220,6 +223,11 @@ export function DatasetRunItemsTable(
       columns,
     );
 
+  const [columnOrder, setColumnOrder] = useColumnOrder<DatasetRunItemRowData>(
+    "datasetRunsItemsColumnOrder",
+    columns,
+  );
+
   const rows = useMemo(() => {
     return runItems.isSuccess
       ? runItems.data.runItems.map((item) => {
@@ -253,6 +261,8 @@ export function DatasetRunItemsTable(
         columns={columns}
         columnVisibility={columnVisibility}
         setColumnVisibility={setColumnVisibility}
+        columnOrder={columnOrder}
+        setColumnOrder={setColumnOrder}
         rowHeight={rowHeight}
         setRowHeight={setRowHeight}
       />
@@ -274,14 +284,14 @@ export function DatasetRunItemsTable(
                 }
         }
         pagination={{
-          pageCount: Math.ceil(
-            (runItems.data?.totalRunItems ?? 0) / paginationState.pageSize,
-          ),
+          totalCount: runItems.data?.totalRunItems ?? null,
           onChange: setPaginationState,
           state: paginationState,
         }}
         columnVisibility={columnVisibility}
         onColumnVisibilityChange={setColumnVisibility}
+        columnOrder={columnOrder}
+        onColumnOrderChange={setColumnOrder}
         rowHeight={rowHeight}
       />
     </>
@@ -290,18 +300,20 @@ export function DatasetRunItemsTable(
 
 const TraceObservationIOCell = ({
   traceId,
+  projectId,
   observationId,
   io,
   singleLine = false,
 }: {
   traceId: string;
+  projectId: string;
   observationId?: string;
   io: "input" | "output";
   singleLine?: boolean;
 }) => {
   // conditionally fetch the trace or observation depending on the presence of observationId
   const trace = api.traces.byId.useQuery(
-    { traceId: traceId },
+    { traceId, projectId },
     {
       enabled: observationId === undefined,
       trpc: {
@@ -315,7 +327,8 @@ const TraceObservationIOCell = ({
   const observation = api.observations.byId.useQuery(
     {
       observationId: observationId as string, // disabled when observationId is undefined
-      traceId: traceId,
+      projectId,
+      traceId,
     },
     {
       enabled: observationId !== undefined,

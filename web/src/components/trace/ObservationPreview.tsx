@@ -1,5 +1,5 @@
 import { JSONView } from "@/src/components/ui/CodeJsonViewer";
-import { type ScoreSource } from "@langfuse/shared";
+import { type APIScore, type ScoreSource } from "@langfuse/shared";
 import {
   Card,
   CardContent,
@@ -22,8 +22,8 @@ import ScoresTable from "@/src/components/table/use-cases/scores";
 import { ScoresPreview } from "@/src/components/trace/ScoresPreview";
 import { JumpToPlaygroundButton } from "@/src/ee/features/playground/page/components/JumpToPlaygroundButton";
 import { AnnotateDrawer } from "@/src/features/scores/components/AnnotateDrawer";
-import { type APIScore } from "@/src/features/public-api/types/scores";
 import useLocalStorage from "@/src/components/useLocalStorage";
+import { CommentDrawerButton } from "@/src/features/comments/CommentDrawerButton";
 
 export const ObservationPreview = (props: {
   observations: Array<ObservationReturnType>;
@@ -31,6 +31,7 @@ export const ObservationPreview = (props: {
   scores: APIScore[];
   currentObservationId: string;
   traceId: string;
+  commentCounts?: Map<string, number>;
 }) => {
   const [selectedTab, setSelectedTab] = useQueryParam(
     "view",
@@ -43,6 +44,7 @@ export const ObservationPreview = (props: {
   const observationWithInputAndOutput = api.observations.byId.useQuery({
     observationId: props.currentObservationId,
     traceId: props.traceId,
+    projectId: props.projectId,
   });
 
   const preloadedObservation = props.observations.find(
@@ -163,6 +165,12 @@ export const ObservationPreview = (props: {
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
+            <CommentDrawerButton
+              projectId={preloadedObservation.projectId}
+              objectId={preloadedObservation.id}
+              objectType="OBSERVATION"
+              count={props.commentCounts?.get(preloadedObservation.id)}
+            />
             <AnnotateDrawer
               projectId={props.projectId}
               traceId={preloadedObservation.traceId}
@@ -178,7 +186,6 @@ export const ObservationPreview = (props: {
                 source="generation"
                 generation={observationWithInputAndOutput.data}
                 analyticsEventName="trace_detail:test_in_playground_button_click"
-                fullWidth
               />
             )}
             {observationWithInputAndOutput.data ? (
@@ -232,7 +239,7 @@ export const ObservationPreview = (props: {
                 "jobConfigurationId",
                 "userId",
               ]}
-              tableColumnVisibilityName="scoresColumnVisibilityObservationPreview"
+              localStorageSuffix="ObservationPreview"
             />
           )}
         </CardContent>

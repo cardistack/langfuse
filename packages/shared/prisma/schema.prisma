@@ -63,21 +63,21 @@ model Session {
 }
 
 model User {
-    id                 String                 @id @default(cuid())
-    name               String?
-    email              String?                @unique
-    emailVerified      DateTime?              @map("email_verified")
-    password           String?
-    image              String?
-    admin              Boolean                @default(false)
-    accounts           Account[]
-    sessions           Session[]
-    projectMemberships ProjectMembership[]
-    invitations        MembershipInvitation[]
-    createdAt          DateTime               @default(now()) @map("created_at")
-    updatedAt          DateTime               @default(now()) @updatedAt @map("updated_at")
-    featureFlags       String[]               @default([]) @map("feature_flags")
-    AuditLog           AuditLog[]
+    id                      String                   @id @default(cuid())
+    name                    String?
+    email                   String?                  @unique
+    emailVerified           DateTime?                @map("email_verified")
+    password                String?
+    image                   String?
+    admin                   Boolean                  @default(false)
+    accounts                Account[]
+    sessions                Session[]
+    organizationMemberships OrganizationMembership[]
+    projectMemberships      ProjectMembership[]
+    invitations             MembershipInvitation[]
+    createdAt               DateTime                 @default(now()) @map("created_at")
+    updatedAt               DateTime                 @default(now()) @updatedAt @map("updated_at")
+    featureFlags            String[]                 @default([]) @map("feature_flags")
 
     @@map("users")
 }
@@ -91,13 +91,27 @@ model VerificationToken {
     @@map("verification_tokens")
 }
 
+model Organization {
+    id                      String                   @id @default(cuid())
+    name                    String
+    createdAt               DateTime                 @default(now()) @map("created_at")
+    updatedAt               DateTime                 @default(now()) @updatedAt @map("updated_at")
+    cloudConfig             Json?                    @map("cloud_config") // Langfuse Cloud, for zod schema see @/src/features/organizations/utils/cloudConfigSchema
+    organizationMemberships OrganizationMembership[]
+    projects                Project[]
+    MembershipInvitation    MembershipInvitation[]
+
+    @@map("organizations")
+}
+
 model Project {
     id                 String                 @id @default(cuid())
+    orgId              String                 @map("org_id")
     createdAt          DateTime               @default(now()) @map("created_at")
     updatedAt          DateTime               @default(now()) @updatedAt @map("updated_at")
     name               String
-    cloudConfig        Json?                  @map("cloud_config") // Langfuse Cloud, for zod schema see projectsRouter.ts
     projectMembers     ProjectMembership[]
+    organization       Organization           @relation(fields: [orgId], references: [id], onUpdate: Cascade, onDelete: Cascade)
     traces             Trace[]
     observations       Observation[]
     apiKeys            ApiKey[]
@@ -107,7 +121,6 @@ model Project {
     sessions           TraceSession[]
     Prompt             Prompt[]
     Model              Model[]
-    AuditLog           AuditLog[]
     EvalTemplate       EvalTemplate[]
     JobConfiguration   JobConfiguration[]
     JobExecution       JobExecution[]
@@ -116,7 +129,9 @@ model Project {
     Score              Score[]
     scoreConfig        ScoreConfig[]
     BatchExport        BatchExport[]
+    comment            Comment[]
 
+    @@index([orgId])
     @@map("projects")
 }
 
@@ -161,41 +176,68 @@ model LlmApiKeys {
     @@map("llm_api_keys")
 }
 
+model OrganizationMembership {
+    id                 String              @id @default(cuid())
+    orgId              String              @map("org_id")
+    organization       Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+    userId             String              @map("user_id")
+    user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+    role               Role                @map("role")
+    createdAt          DateTime            @default(now()) @map("created_at")
+    updatedAt          DateTime            @default(now()) @updatedAt @map("updated_at")
+    ProjectMemberships ProjectMembership[]
+
+    @@unique([orgId, userId])
+    @@index([userId])
+    @@index([orgId])
+    @@map("organization_memberships")
+}
+
+// Set a project-specific role for a user in an organization
 model ProjectMembership {
-    projectId String      @map("project_id")
-    project   Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
-    userId    String      @map("user_id")
-    user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
-    role      ProjectRole
-    createdAt DateTime    @default(now()) @map("created_at")
-    updatedAt DateTime    @default(now()) @updatedAt @map("updated_at")
+    orgMembershipId        String                 @map("org_membership_id")
+    organizationMembership OrganizationMembership @relation(fields: [orgMembershipId], references: [id], onDelete: Cascade)
+    projectId              String                 @map("project_id")
+    project                Project                @relation(fields: [projectId], references: [id], onDelete: Cascade)
+    userId                 String                 @map("user_id")
+    user                   User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+    role                   Role
+    createdAt              DateTime               @default(now()) @map("created_at")
+    updatedAt              DateTime               @default(now()) @updatedAt @map("updated_at")
 
     @@id([projectId, userId])
     @@index([userId])
+    @@index([projectId])
+    @@index([orgMembershipId])
     @@map("project_memberships")
 }
 
 model MembershipInvitation {
-    id        String      @id @unique @default(cuid())
-    email     String
-    role      ProjectRole
-    projectId String      @map("project_id")
-    project   Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
-    senderId  String?     @map("sender_id")
-    sender    User?       @relation(fields: [senderId], references: [id], onDelete: SetNull)
-    createdAt DateTime    @default(now()) @map("created_at")
-    updatedAt DateTime    @default(now()) @updatedAt @map("updated_at")
+    id              String       @id @unique @default(cuid())
+    email           String
+    orgId           String       @map("org_id")
+    organization    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+    orgRole         Role         @map("org_role")
+    projectId       String?      @map("project_id")
+    project         Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull)
+    projectRole     Role?        @map("project_role")
+    invitedByUserId String?      @map("invited_by_user_id")
+    invitedByUser   User?        @relation(fields: [invitedByUserId], references: [id], onDelete: SetNull)
+    createdAt       DateTime     @default(now()) @map("created_at")
+    updatedAt       DateTime     @default(now()) @updatedAt @map("updated_at")
 
     @@index([projectId])
+    @@index([orgId])
     @@index([email])
     @@map("membership_invitations")
 }
 
-enum ProjectRole {
+enum Role {
     OWNER
     ADMIN
     MEMBER
     VIEWER
+    NONE
 }
 
 model TraceSession {
@@ -238,7 +280,6 @@ model Trace {
     createdAt  DateTime      @default(now()) @map("created_at")
     updatedAt  DateTime      @default(now()) @updatedAt @map("updated_at")
 
-    DatasetItem  DatasetItem[]
     JobExecution JobExecution[]
 
     @@index([projectId])
@@ -323,9 +364,8 @@ model Observation {
     calculatedOutputCost Decimal? @map("calculated_output_cost")
     calculatedTotalCost  Decimal? @map("calculated_total_cost")
 
-    completionStartTime DateTime?     @map("completion_start_time")
-    project             Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
-    derivedDatasetItems DatasetItem[]
+    completionStartTime DateTime? @map("completion_start_time")
+    project             Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
     promptId String? @map("prompt_id") // no fk constraint, prompt can be deleted
 
@@ -518,9 +558,7 @@ model DatasetItem {
     expectedOutput      Json?             @map("expected_output")
     metadata            Json?
     sourceTraceId       String?           @map("source_trace_id")
-    sourceTrace         Trace?            @relation(fields: [sourceTraceId], references: [id], onDelete: SetNull)
     sourceObservationId String?           @map("source_observation_id")
-    sourceObservation   Observation?      @relation(fields: [sourceObservationId], references: [id], onDelete: SetNull)
     datasetId           String            @map("dataset_id")
     dataset             Dataset           @relation(fields: [datasetId, projectId], references: [id, projectId], onDelete: Cascade)
     createdAt           DateTime          @default(now()) @map("created_at")
@@ -598,6 +636,28 @@ model Events {
     @@map("events")
 }
 
+model Comment {
+    id           String            @id @default(cuid())
+    projectId    String            @map("project_id")
+    project      Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+    objectType   CommentObjectType @map("object_type")
+    objectId     String            @map("object_id")
+    createdAt    DateTime          @default(now()) @map("created_at")
+    updatedAt    DateTime          @default(now()) @updatedAt @map("updated_at")
+    content      String
+    authorUserId String?           @map("author_user_id") // no fk constraint, user can be deleted
+
+    @@index([projectId, objectType, objectId])
+    @@map("comments")
+}
+
+enum CommentObjectType {
+    TRACE
+    OBSERVATION
+    SESSION
+    PROMPT
+}
+
 model Prompt {
     id        String   @id @default(cuid())
     createdAt DateTime @default(now()) @map("created_at")
@@ -653,22 +713,25 @@ model Model {
     @@map("models")
 }
 
+// No FK constraints to preserve audit logs
 model AuditLog {
-    id              String      @id @default(cuid())
-    createdAt       DateTime    @default(now()) @map("created_at")
-    updatedAt       DateTime    @default(now()) @updatedAt @map("updated_at")
-    userId          String      @map("user_id")
-    user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
-    projectId       String      @map("project_id")
-    project         Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
-    userProjectRole ProjectRole @map("user_project_role")
-    resourceType    String      @map("resource_type")
-    resourceId      String      @map("resource_id")
+    id              String   @id @default(cuid())
+    createdAt       DateTime @default(now()) @map("created_at")
+    updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
+    userId          String   @map("user_id")
+    orgId           String   @map("org_id")
+    userOrgRole     String   @map("user_org_role")
+    projectId       String?  @map("project_id")
+    userProjectRole String?  @map("user_project_role")
+    resourceType    String   @map("resource_type")
+    resourceId      String   @map("resource_id")
     action          String
     before          String? //stringified JSON
     after           String? // stringified JSON
 
     @@index([projectId])
+    @@index([userId])
+    @@index([orgId])
     @@index([createdAt])
     @@index([updatedAt])
     @@map("audit_logs")

@@ -34,13 +34,21 @@ ENV NEXT_MANUAL_SIG_HANDLE true
 
 # pass public variables in build step
 ARG NEXT_PUBLIC_LANGFUSE_CLOUD_REGION
+ARG NEXT_PUBLIC_DEMO_ORG_ID
 ARG NEXT_PUBLIC_DEMO_PROJECT_ID
 ARG NEXT_PUBLIC_SIGN_UP_DISABLED
 ARG NEXT_PUBLIC_TURNSTILE_SITE_KEY
 ARG NEXT_PUBLIC_POSTHOG_KEY
 ARG NEXT_PUBLIC_POSTHOG_HOST
 ARG NEXT_PUBLIC_CRISP_WEBSITE_ID
-ARG LANFUSE_WEB_MIGRATION_DISABLED
+ARG NEXT_LANGFUSE_TRACING_SAMPLE_RATE
+ARG NEXT_PUBLIC_SENTRY_ENVIRONMENT
+ARG NEXT_PUBLIC_SENTRY_DSN
+
+# Accept build id as NEXT_PUBLIC_BUILD_ID or PORTER_NEXT_PUBLIC_BUILD_ID
+ARG PORTER_NEXT_PUBLIC_BUILD_ID
+ARG NEXT_PUBLIC_BUILD_ID
+ENV NEXT_PUBLIC_BUILD_ID=${PORTER_NEXT_PUBLIC_BUILD_ID:-$NEXT_PUBLIC_BUILD_ID}
 
 # Copy source code of isolated subworkspace
 COPY --from=pruner /app/out/full/ .
@@ -54,7 +62,7 @@ RUN rm -f ./web/src/middleware.ts
 ENV NEXT_TELEMETRY_DISABLED 1
 ENV NEXT_MANUAL_SIG_HANDLE true
 
-RUN turbo run build --filter=web
+RUN NODE_OPTIONS='--max-old-space-size=4096' turbo run build --filter=web
 
 # Production image, copy all the files and run next
 FROM --platform=${TARGETPLATFORM:-linux/amd64} base AS runner
@@ -100,4 +108,4 @@ ENV PORT 3000
 ENTRYPOINT ["dumb-init", "--", "./web/entrypoint.sh"]
 
 # startup command
-CMD ["node", "./web/server.js"]
+CMD ["node", "./web/server.js", "--keepAliveTimeout", "110000"]

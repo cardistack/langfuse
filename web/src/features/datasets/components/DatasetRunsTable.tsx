@@ -15,17 +15,29 @@ import { type Prisma } from "@langfuse/shared";
 import { useRowHeightLocalStorage } from "@/src/components/table/data-table-row-height-switch";
 import { IOTableCell } from "@/src/components/ui/CodeJsonViewer";
 import {
-  SCORE_GROUP_COLUMN_PROPS,
+  getScoreGroupColumnProps,
   verifyAndPrefixScoreDataAgainstKeys,
 } from "@/src/features/scores/components/ScoreDetailColumnHelpers";
 import { type ScoreAggregate } from "@/src/features/scores/lib/types";
 import { useIndividualScoreColumns } from "@/src/features/scores/hooks/useIndividualScoreColumns";
+import { MoreVertical } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/src/components/ui/dropdown-menu";
+import { Button } from "@/src/components/ui/button";
+import { DeleteDatasetRunButton } from "@/src/features/datasets/components/DeleteDatasetRunButton";
+import useColumnOrder from "@/src/features/column-visibility/hooks/useColumnOrder";
+
+type DatasetRunRowKey = {
+  id: string;
+  name: string;
+};
 
 export type DatasetRunRowData = {
-  key: {
-    id: string;
-    name: string;
-  };
+  key: DatasetRunRowKey;
   createdAt: string;
   countRunItems: string;
   avgLatency: number;
@@ -45,6 +57,7 @@ export function DatasetRunsTable(props: {
     pageIndex: withDefault(NumberParam, 0),
     pageSize: withDefault(NumberParam, 50),
   });
+
   const [rowHeight, setRowHeight] = useRowHeightLocalStorage(
     "datasetRuns",
     "s",
@@ -66,7 +79,7 @@ export function DatasetRunsTable(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runs.isSuccess, runs.data]);
 
-  const { scoreColumns, scoreKeysAndProps } =
+  const { scoreColumns, scoreKeysAndProps, isColumnLoading } =
     useIndividualScoreColumns<DatasetRunRowData>({
       projectId: props.projectId,
       scoreColumnKey: "scores",
@@ -79,6 +92,7 @@ export function DatasetRunsTable(props: {
       header: "Name",
       id: "key",
       size: 150,
+      isPinned: true,
       cell: ({ row }) => {
         const key: DatasetRunRowData["key"] = row.getValue("key");
         return (
@@ -127,7 +141,7 @@ export function DatasetRunsTable(props: {
         return <>{avgTotalCost}</>;
       },
     },
-    { ...SCORE_GROUP_COLUMN_PROPS, columns: scoreColumns },
+    { ...getScoreGroupColumnProps(isColumnLoading), columns: scoreColumns },
     {
       accessorKey: "createdAt",
       header: "Created",
@@ -147,6 +161,35 @@ export function DatasetRunsTable(props: {
         return !!metadata ? (
           <IOTableCell data={metadata} singleLine={rowHeight === "s"} />
         ) : null;
+      },
+    },
+    {
+      id: "actions",
+      accessorKey: "actions",
+      header: "Actions",
+      size: 70,
+      cell: ({ row }) => {
+        const key: DatasetRunRowKey = row.getValue("key");
+        const { id: datasetRunId } = key;
+
+        return (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" className="h-8 w-8 p-0">
+                <span className="sr-only [position:relative]">Open menu</span>
+                <MoreVertical className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuLabel>Actions</DropdownMenuLabel>
+              <DeleteDatasetRunButton
+                projectId={props.projectId}
+                datasetRunId={datasetRunId}
+                fullWidth
+              />
+            </DropdownMenuContent>
+          </DropdownMenu>
+        );
       },
     },
   ];
@@ -175,12 +218,19 @@ export function DatasetRunsTable(props: {
       columns,
     );
 
+  const [columnOrder, setColumnOrder] = useColumnOrder<DatasetRunRowData>(
+    "datasetRunsColumnOrder",
+    columns,
+  );
+
   return (
     <>
       <DataTableToolbar
         columns={columns}
         columnVisibility={columnVisibility}
         setColumnVisibility={setColumnVisibility}
+        columnOrder={columnOrder}
+        setColumnOrder={setColumnOrder}
         rowHeight={rowHeight}
         setRowHeight={setRowHeight}
         actionButtons={props.menuItems}
@@ -203,14 +253,14 @@ export function DatasetRunsTable(props: {
                 }
         }
         pagination={{
-          pageCount: Math.ceil(
-            (runs.data?.totalRuns ?? 0) / paginationState.pageSize,
-          ),
+          totalCount: runs.data?.totalRuns ?? null,
           onChange: setPaginationState,
           state: paginationState,
         }}
         columnVisibility={columnVisibility}
         onColumnVisibilityChange={setColumnVisibility}
+        columnOrder={columnOrder}
+        onColumnOrderChange={setColumnOrder}
         rowHeight={rowHeight}
       />
     </>

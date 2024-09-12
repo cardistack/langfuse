@@ -1,14 +1,16 @@
 import {
   clickhouseClient,
   ObservationRecordInsertType,
+  recordGauge,
+  recordHistogram,
   ScoreRecordInsertType,
   TraceRecordInsertType,
 } from "@langfuse/shared/src/server";
-import * as Sentry from "@sentry/node";
 
 import { env } from "../../env";
-import logger from "../../logger";
-import { instrumentAsync } from "../../instrumentation";
+import { logger } from "@langfuse/shared/src/server";
+import { instrumentAsync } from "@langfuse/shared/src/server";
+import { SpanKind } from "@opentelemetry/api";
 
 export class ClickhouseWriter {
   private static instance: ClickhouseWriter | null = null;
@@ -46,7 +48,7 @@ export class ClickhouseWriter {
 
   private start() {
     logger.info(
-      `Starting ClickhouseWriter. Max interval: ${this.writeInterval} ms, Max batch size: ${this.batchSize}`
+      `Starting ClickhouseWriter. Max interval: ${this.writeInterval} ms, Max batch size: ${this.batchSize}`,
     );
 
     this.intervalId = setInterval(() => {
@@ -76,15 +78,21 @@ export class ClickhouseWriter {
   }
 
   private async flushAll(fullQueue = false) {
-    return instrumentAsync({ name: "write-to-clickhouse" }, async () => {
-      await Promise.all([
-        this.flush(TableName.Traces, fullQueue),
-        this.flush(TableName.Scores, fullQueue),
-        this.flush(TableName.Observations, fullQueue),
-      ]).catch((err) => {
-        logger.error("ClickhouseWriter.flushAll", err);
-      });
-    });
+    return instrumentAsync(
+      {
+        name: "write-to-clickhouse",
+        spanKind: SpanKind.CONSUMER,
+      },
+      async () => {
+        await Promise.all([
+          this.flush(TableName.Traces, fullQueue),
+          this.flush(TableName.Scores, fullQueue),
+          this.flush(TableName.Observations, fullQueue),
+        ]).catch((err) => {
+          logger.error("ClickhouseWriter.flushAll", err);
+        });
+      },
+    );
   }
 
   private async flush<T extends TableName>(tableName: T, fullQueue = false) {
@@ -93,19 +101,15 @@ export class ClickhouseWriter {
 
     const queueItems = entityQueue.splice(
       0,
-      fullQueue ? entityQueue.length : this.batchSize
+      fullQueue ? entityQueue.length : this.batchSize,
     );
 
     // Log wait time
     queueItems.forEach((item) => {
       const waitTime = Date.now() - item.createdAt;
-      Sentry.metrics.distribution(
-        "ingestion_clickhouse_insert_wait_time",
-        waitTime,
-        {
-          unit: "milliseconds",
-        }
-      );
+      recordHistogram("ingestion_clickhouse_insert_wait_time", waitTime, {
+        unit: "milliseconds",
+      });
     });
 
     try {
@@ -117,25 +121,25 @@ export class ClickhouseWriter {
       });
 
       // Log processing time
-      Sentry.metrics.distribution(
+      recordHistogram(
         "ingestion_clickhouse_insert_processing_time",
         Date.now() - processingStartTime,
         {
           unit: "milliseconds",
-        }
+        },
       );
 
       logger.debug(
-        `Flushed ${queueItems.length} records to Clickhouse ${tableName}. New queue length: ${entityQueue.length}`
+        `Flushed ${queueItems.length} records to Clickhouse ${tableName}. New queue length: ${entityQueue.length}`,
       );
 
-      Sentry.metrics.gauge(
+      recordGauge(
         "ingestion_clickhouse_insert_queue_length",
         entityQueue.length,
         {
           unit: "records",
-          tags: { entityType: tableName },
-        }
+          entityType: tableName,
+        },
       );
     } catch (err) {
       logger.error(`ClickhouseWriter.flush ${tableName}`, err);
@@ -150,7 +154,7 @@ export class ClickhouseWriter {
         } else {
           // TODO - Add to a dead letter queue in Redis rather than dropping
           logger.error(
-            `Max attempts reached for ${tableName} record. Dropping record ${item.data}.`
+            `Max attempts reached for ${tableName} record. Dropping record ${item.data}.`,
           );
         }
       });
@@ -159,7 +163,7 @@ export class ClickhouseWriter {
 
   public addToQueue<T extends TableName>(
     tableName: T,
-    data: RecordInsertType<T>
+    data: RecordInsertType<T>,
   ) {
     const entityQueue = this.queue[tableName];
     entityQueue.push({
@@ -196,8 +200,10 @@ export class ClickhouseWriter {
       });
 
     logger.debug(
-      `ClickhouseWriter.writeToClickhouse: ${Date.now() - startTime} ms`
+      `ClickhouseWriter.writeToClickhouse: ${Date.now() - startTime} ms`,
     );
+
+    recordGauge("ingestion_clickhouse_insert", params.records.length);
   }
 }
 

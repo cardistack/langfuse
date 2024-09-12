@@ -2,26 +2,26 @@ import { pipeline } from "stream";
 
 import {
   BatchExportFileFormat,
-  BatchExportJobType,
   BatchExportQuerySchema,
   BatchExportStatus,
   exportOptions,
   FilterCondition,
-  getSessionTableSQL,
+  Prisma,
 } from "@langfuse/shared";
 import { prisma } from "@langfuse/shared/src/db";
 import {
   DatabaseReadStream,
   S3StorageService,
+  createSessionsAllQuery,
   sendBatchExportSuccessEmail,
   streamTransformations,
+  BatchExportJobType,
 } from "@langfuse/shared/src/server";
 
 import { env } from "../../env";
-import logger from "../../logger";
-
+import { logger } from "@langfuse/shared/src/server";
 export const handleBatchExportJob = async (
-  batchExportJob: BatchExportJobType
+  batchExportJob: BatchExportJobType,
 ) => {
   const { projectId, batchExportId } = batchExportJob;
 
@@ -70,22 +70,40 @@ export const handleBatchExportJob = async (
 
   const dbReadStream = new DatabaseReadStream<unknown>(
     async (pageSize: number, offset: number) => {
-      const query = getSessionTableSQL({
-        projectId,
-        filter: filter
-          ? [...filter, createdAtCutoffFilter]
-          : [createdAtCutoffFilter],
-        orderBy,
-        limit: pageSize,
-        page: Math.floor(offset / pageSize),
-      });
+      const query = createSessionsAllQuery(
+        Prisma.sql`
+          s.id,
+          s. "created_at" AS "createdAt",
+          s.bookmarked,
+          s.public,
+          t. "userIds",
+          t. "countTraces",
+          o. "sessionDuration",
+          o. "totalCost" AS "totalCost",
+          o. "inputCost" AS "inputCost",
+          o. "outputCost" AS "outputCost",
+          o. "promptTokens" AS "promptTokens",
+          o. "completionTokens" AS "completionTokens",
+          o. "totalTokens" AS "totalTokens",
+          (count(*) OVER ())::int AS "totalCount"
+        `,
+        {
+          projectId,
+          filter: filter
+            ? [...filter, createdAtCutoffFilter]
+            : [createdAtCutoffFilter],
+          orderBy,
+          limit: pageSize,
+          page: Math.floor(offset / pageSize),
+        },
+      );
 
       const chunk = await prisma.$queryRaw<unknown[]>(query);
 
       return chunk;
     },
     1000,
-    env.BATCH_EXPORT_ROW_LIMIT
+    env.BATCH_EXPORT_ROW_LIMIT,
   );
 
   // Transform data to desired format
@@ -94,9 +112,9 @@ export const handleBatchExportJob = async (
     streamTransformations[jobDetails.format as BatchExportFileFormat](),
     (err) => {
       if (err) {
-        console.error("Getting data from DB and transform failed: ", err);
+        logger.error("Getting data from DB and transform failed: ", err);
       }
-    }
+    },
   );
 
   // Stream upload results to S3

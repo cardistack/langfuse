@@ -1,25 +1,35 @@
+import { env } from "@/src/env.mjs";
 import { auditLog } from "@/src/features/audit-logs/auditLog";
-import { throwIfNoAccess } from "@/src/features/rbac/utils/checkAccess";
+import { throwIfNoProjectAccess } from "@/src/features/rbac/utils/checkProjectAccess";
 import { WorkerClient } from "@/src/server/api/services/WorkerClient";
 import {
   createTRPCRouter,
   protectedProjectProcedure,
 } from "@/src/server/api/trpc";
+import { BatchExportStatus, CreateBatchExportSchema } from "@langfuse/shared";
 import {
-  BatchExportStatus,
+  getBatchExportQueue,
   type EventBodyType,
   EventName,
-  CreateBatchExportSchema,
-} from "@langfuse/shared";
+  QueueJobs,
+  addTraceContext,
+} from "@langfuse/shared/src/server";
 import { TRPCError } from "@trpc/server";
+import { redis } from "@langfuse/shared/src/server";
+import { throwIfNoEntitlement } from "@/src/features/entitlements/server/hasEntitlement";
 
 export const batchExportRouter = createTRPCRouter({
   create: protectedProjectProcedure
     .input(CreateBatchExportSchema)
     .mutation(async ({ input, ctx }) => {
       try {
+        throwIfNoEntitlement({
+          entitlement: "batch-export",
+          sessionUser: ctx.session.user,
+          projectId: input.projectId,
+        });
         // Check permissions, esp. projectId
-        throwIfNoAccess({
+        throwIfNoProjectAccess({
           session: ctx.session,
           projectId: input.projectId,
           scope: "batchExport:create",
@@ -63,8 +73,19 @@ export const batchExportRouter = createTRPCRouter({
           },
         };
 
-        await new WorkerClient().sendEvent(event);
-
+        if (redis && env.NEXT_PUBLIC_LANGFUSE_CLOUD_REGION) {
+          await getBatchExportQueue()?.add(
+            event.name,
+            addTraceContext({
+              id: event.payload.batchExportId, // Use the batchExportId to deduplicate when the same job is sent multiple times
+              name: QueueJobs.BatchExportJob,
+              timestamp: new Date(),
+              payload: event.payload,
+            }),
+          );
+        } else {
+          await new WorkerClient().sendEvent(event);
+        }
         return;
       } catch (e) {
         console.error(e);

@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { auditLog } from "@/src/features/audit-logs/auditLog";
 import { CreatePromptTRPCSchema } from "@/src/features/prompts/server/utils/validation";
-import { throwIfNoAccess } from "@/src/features/rbac/utils/checkAccess";
+import { throwIfNoProjectAccess } from "@/src/features/rbac/utils/checkProjectAccess";
 import {
   createTRPCRouter,
   protectedProjectProcedure,
@@ -10,16 +10,18 @@ import {
 import { type Prompt, Prisma } from "@langfuse/shared/src/db";
 
 import { createPrompt } from "../actions/createPrompt";
-import { observationsTableCols, orderByToPrismaSql } from "@langfuse/shared";
+import { observationsTableCols } from "@langfuse/shared";
 import { promptsTableCols } from "@/src/server/api/definitions/promptsTable";
 import { optionalPaginationZod, paginationZod } from "@langfuse/shared";
-import {
-  orderBy,
-  singleFilter,
-  tableColumnsToSqlFilterAndPrefix,
-} from "@langfuse/shared";
+import { orderBy, singleFilter } from "@langfuse/shared";
 import { LATEST_PROMPT_LABEL } from "@/src/features/prompts/constants";
-import { PromptService, redis } from "@langfuse/shared/src/server";
+import {
+  orderByToPrismaSql,
+  PromptService,
+  redis,
+  logger,
+  tableColumnsToSqlFilterAndPrefix,
+} from "@langfuse/shared/src/server";
 import { aggregateScores } from "@/src/features/scores/lib/aggregateScores";
 import { type ScoreSimplified } from "@/src/features/scores/lib/types";
 
@@ -34,7 +36,7 @@ export const promptRouter = createTRPCRouter({
   all: protectedProjectProcedure
     .input(PromptFilterOptions)
     .query(async ({ input, ctx }) => {
-      throwIfNoAccess({
+      throwIfNoProjectAccess({
         session: ctx.session,
         projectId: input.projectId,
         scope: "prompts:read",
@@ -51,9 +53,11 @@ export const promptRouter = createTRPCRouter({
         "prompts",
       );
 
-      const prompts = await ctx.prisma.$queryRaw<Array<Prompt>>(
-        generatePromptQuery(
-          Prisma.sql` 
+      const [prompts, promptCount] = await Promise.all([
+        // prompts
+        ctx.prisma.$queryRaw<Array<Prompt>>(
+          generatePromptQuery(
+            Prisma.sql` 
           p.id,
           p.name,
           p.version,
@@ -64,26 +68,25 @@ export const promptRouter = createTRPCRouter({
           p.created_at as "createdAt",
           p.labels,
           p.tags`,
-          input.projectId,
-          filterCondition,
-          orderByCondition,
-          input.limit,
-          input.page,
+            input.projectId,
+            filterCondition,
+            orderByCondition,
+            input.limit,
+            input.page,
+          ),
         ),
-      );
-
-      const promptCount = await ctx.prisma.$queryRaw<
-        Array<{ totalCount: bigint }>
-      >(
-        generatePromptQuery(
-          Prisma.sql` count(*) AS "totalCount"`,
-          input.projectId,
-          filterCondition,
-          Prisma.empty,
-          1, // limit
-          0, // page
+        // promptCount
+        ctx.prisma.$queryRaw<Array<{ totalCount: bigint }>>(
+          generatePromptQuery(
+            Prisma.sql` count(*) AS "totalCount"`,
+            input.projectId,
+            filterCondition,
+            Prisma.empty,
+            1, // limit
+            0, // page
+          ),
         ),
-      );
+      ]);
 
       return {
         prompts: prompts,
@@ -146,7 +149,7 @@ export const promptRouter = createTRPCRouter({
       }),
     )
     .query(async ({ input, ctx }) => {
-      throwIfNoAccess({
+      throwIfNoProjectAccess({
         session: ctx.session,
         projectId: input.projectId,
         scope: "prompts:read",
@@ -162,7 +165,7 @@ export const promptRouter = createTRPCRouter({
     .input(CreatePromptTRPCSchema)
     .mutation(async ({ input, ctx }) => {
       try {
-        throwIfNoAccess({
+        throwIfNoProjectAccess({
           session: ctx.session,
           projectId: input.projectId,
           scope: "prompts:CUD",
@@ -191,51 +194,48 @@ export const promptRouter = createTRPCRouter({
 
         return prompt;
       } catch (e) {
-        console.log(e);
+        logger.error(e);
         throw e;
       }
     }),
   filterOptions: protectedProjectProcedure
     .input(z.object({ projectId: z.string() }))
     .query(async ({ input, ctx }) => {
-      const names = await ctx.prisma.prompt.groupBy({
-        where: {
-          projectId: input.projectId,
-        },
-        by: ["name"],
-        // limiting to 1k prompt names to avoid performance issues.
-        // some users have unique names for large amounts of prompts
-        // sending all prompt names to the FE exceeds the cloud function return size limit
-        take: 1000,
-        orderBy: {
-          _count: {
-            id: "desc",
+      const [names, tags, labels] = await Promise.all([
+        ctx.prisma.prompt.groupBy({
+          where: {
+            projectId: input.projectId,
           },
-        },
-        _count: {
-          id: true,
-        },
-      });
-      const tags: { count: number; value: string }[] = await ctx.prisma
-        .$queryRaw`
-        SELECT COUNT(*)::integer AS "count", tags.tag as value
-        FROM prompts, UNNEST(prompts.tags) AS tags(tag)
-        WHERE prompts.project_id = ${input.projectId}
-        GROUP BY tags.tag;
-      `;
-      const labels: { count: number; value: string }[] = await ctx.prisma
-        .$queryRaw`
-      SELECT COUNT(*)::integer AS "count", labels.label as value
-      FROM prompts, UNNEST(prompts.labels) AS labels(label)
-      WHERE prompts.project_id = ${input.projectId}
-      GROUP BY labels.label;
-    `;
+          by: ["name"],
+          // limiting to 1k prompt names to avoid performance issues.
+          // some users have unique names for large amounts of prompts
+          // sending all prompt names to the FE exceeds the cloud function return size limit
+          take: 1000,
+          orderBy: {
+            name: "asc",
+          },
+        }),
+        ctx.prisma.$queryRaw<{ value: string }[]>`
+          SELECT tags.tag as value
+          FROM prompts, UNNEST(prompts.tags) AS tags(tag)
+          WHERE prompts.project_id = ${input.projectId}
+          GROUP BY tags.tag
+          ORDER BY tags.tag ASC;
+        `,
+        ctx.prisma.$queryRaw<{ value: string }[]>`
+          SELECT labels.label as value
+          FROM prompts, UNNEST(prompts.labels) AS labels(label)
+          WHERE prompts.project_id = ${input.projectId}
+          GROUP BY labels.label
+          ORDER BY labels.label ASC;
+        `,
+      ]);
+
       const res = {
         name: names
           .filter((n) => n.name !== null)
           .map((name) => ({
             value: name.name ?? "undefined",
-            count: name._count.id,
           })),
         labels: labels,
         tags: tags,
@@ -253,7 +253,7 @@ export const promptRouter = createTRPCRouter({
       try {
         const { projectId, promptName } = input;
 
-        throwIfNoAccess({
+        throwIfNoProjectAccess({
           session: ctx.session,
           projectId,
           scope: "prompts:CUD",
@@ -298,7 +298,7 @@ export const promptRouter = createTRPCRouter({
         // Unlock cache
         await promptService.unlockCache({ projectId, promptName });
       } catch (e) {
-        console.log(e);
+        logger.error(e);
         throw e;
       }
     }),
@@ -313,7 +313,7 @@ export const promptRouter = createTRPCRouter({
       const { projectId } = input;
 
       try {
-        throwIfNoAccess({
+        throwIfNoProjectAccess({
           session: ctx.session,
           projectId,
           scope: "prompts:CUD",
@@ -386,7 +386,7 @@ export const promptRouter = createTRPCRouter({
         // Unlock cache
         await promptService.unlockCache({ projectId, promptName });
       } catch (e) {
-        console.log(e);
+        logger.error(e);
         throw e;
       }
     }),
@@ -402,7 +402,7 @@ export const promptRouter = createTRPCRouter({
       try {
         const { projectId } = input;
 
-        throwIfNoAccess({
+        throwIfNoProjectAccess({
           session: ctx.session,
           projectId,
           scope: "prompts:CUD",
@@ -480,14 +480,14 @@ export const promptRouter = createTRPCRouter({
         // Unlock cache
         await promptService.unlockCache({ projectId, promptName });
       } catch (e) {
-        console.log(e);
+        logger.error(e);
         throw e;
       }
     }),
   allLabels: protectedProjectProcedure
     .input(z.object({ projectId: z.string() }))
     .query(async ({ input, ctx }) => {
-      throwIfNoAccess({
+      throwIfNoProjectAccess({
         session: ctx.session,
         projectId: input.projectId,
         scope: "prompts:read",
@@ -513,7 +513,7 @@ export const promptRouter = createTRPCRouter({
     .mutation(async ({ input, ctx }) => {
       const { projectId, name: promptName } = input;
 
-      throwIfNoAccess({
+      throwIfNoProjectAccess({
         session: ctx.session,
         projectId,
         scope: "objects:tag",
@@ -548,7 +548,7 @@ export const promptRouter = createTRPCRouter({
         // Unlock cache
         await promptService.unlockCache({ projectId, promptName });
       } catch (error) {
-        console.error(error);
+        logger.error(error);
       }
     }),
   allVersions: protectedProjectProcedure
@@ -560,28 +560,29 @@ export const promptRouter = createTRPCRouter({
       }),
     )
     .query(async ({ input, ctx }) => {
-      throwIfNoAccess({
+      throwIfNoProjectAccess({
         session: ctx.session,
         projectId: input.projectId,
         scope: "prompts:read",
       });
-      const prompts = await ctx.prisma.prompt.findMany({
-        where: {
-          projectId: input.projectId,
-          name: input.name,
-        },
-        ...(input.limit !== undefined && input.page !== undefined
-          ? { take: input.limit, skip: input.page * input.limit }
-          : undefined),
-        orderBy: [{ version: "desc" }],
-      });
-
-      const totalCount = await ctx.prisma.prompt.count({
-        where: {
-          projectId: input.projectId,
-          name: input.name,
-        },
-      });
+      const [prompts, totalCount] = await Promise.all([
+        ctx.prisma.prompt.findMany({
+          where: {
+            projectId: input.projectId,
+            name: input.name,
+          },
+          ...(input.limit !== undefined && input.page !== undefined
+            ? { take: input.limit, skip: input.page * input.limit }
+            : undefined),
+          orderBy: [{ version: "desc" }],
+        }),
+        ctx.prisma.prompt.count({
+          where: {
+            projectId: input.projectId,
+            name: input.name,
+          },
+        }),
+      ]);
 
       const userIds = prompts
         .map((p) => p.createdBy)
@@ -596,9 +597,9 @@ export const promptRouter = createTRPCRouter({
           id: {
             in: userIds,
           },
-          projectMemberships: {
+          organizationMemberships: {
             some: {
-              projectId: input.projectId,
+              orgId: ctx.session.orgId,
             },
           },
         },
@@ -625,7 +626,7 @@ export const promptRouter = createTRPCRouter({
       }),
     )
     .query(async ({ input, ctx }) => {
-      throwIfNoAccess({
+      throwIfNoProjectAccess({
         session: ctx.session,
         projectId: input.projectId,
         scope: "prompts:read",
@@ -637,115 +638,118 @@ export const promptRouter = createTRPCRouter({
         observationsTableCols,
         "prompts",
       );
-      const metrics = await ctx.prisma.$queryRaw<
-        Array<{
-          id: string;
-          observationCount: number;
-          firstUsed: Date | null;
-          lastUsed: Date | null;
-          medianOutputTokens: number | null;
-          medianInputTokens: number | null;
-          medianTotalCost: number | null;
-          medianLatency: number | null;
-        }>
-      >(
-        Prisma.sql`
-        select p.id, p.version, observation_metrics.* from prompts p
-        LEFT JOIN LATERAL (
-          SELECT
-            count(*) AS "observationCount",
-            MIN(o.start_time) AS "firstUsed",
-            MAX(o.start_time) AS "lastUsed",
-            PERCENTILE_CONT(0.5) WITHIN GROUP(ORDER BY o.completion_tokens) AS "medianOutputTokens",
-            PERCENTILE_CONT(0.5) WITHIN GROUP(ORDER BY o.prompt_tokens) AS "medianInputTokens",
-            PERCENTILE_CONT(0.5) WITHIN GROUP(ORDER BY o.calculated_total_cost) AS "medianTotalCost",
-            PERCENTILE_CONT(0.5) WITHIN GROUP(ORDER BY o.latency) AS "medianLatency"
-          FROM
-            "observations_view" o
-          WHERE
-            o.prompt_id = p.id
-            AND "type" = 'GENERATION'
-            AND "project_id" = ${input.projectId}
-            ${filterCondition}
-        ) AS observation_metrics ON true
-        WHERE "project_id" = ${input.projectId}
-        AND p.id in (${Prisma.join(input.promptIds)})
-        ORDER BY version DESC
-    `,
-      );
-
-      const generationScores = await ctx.prisma.$queryRaw<
-        Array<{
-          promptId: string;
-          scores: Array<ScoreSimplified>;
-        }>
-      >(Prisma.sql`
-      SELECT
-        p.id AS "promptId",
-        array_agg(s.score) AS "scores"
-      FROM
-        prompts p
-        LEFT JOIN LATERAL (
-          SELECT
-            jsonb_build_object ('name', s.name, 'stringValue', s.string_value, 'value', s.value, 'source', s."source", 'dataType', s.data_type, 'comment', s.comment) AS "score"
-          FROM
-            observations AS o
-            LEFT JOIN scores s ON o.trace_id = s.trace_id
-              AND s.observation_id = o.id
-              AND s.project_id = ${input.projectId}
-          WHERE
-            o.prompt_id IS NOT NULL
-            AND o.type = 'GENERATION'
-            AND o.prompt_id = p.id
-            AND o.project_id = ${input.projectId}
-            AND s.name IS NOT NULL
-            AND p.id IN (${Prisma.join(input.promptIds)})
-            ${filterCondition}
-          ) s ON TRUE
-      WHERE
-        p.project_id = ${input.projectId}
-        AND s.score IS NOT NULL
-        GROUP BY
-          p.id
-      `);
-
-      const traceScores = await ctx.prisma.$queryRaw<
-        Array<{
-          promptId: string;
-          scores: Array<ScoreSimplified>;
-        }>
-      >(Prisma.sql`
-        SELECT
-          p.id AS "promptId",
-          array_agg(s.score) AS "scores"
-        FROM
-          prompts p
-          LEFT JOIN LATERAL (
-            SELECT
-              jsonb_build_object ('name', s.name, 'stringValue', s.string_value, 'value', s.value, 'source', s."source", 'dataType', s.data_type, 'comment', s.comment) AS "score"
+      const [metrics, generationScores, traceScores] = await Promise.all([
+        // metrics
+        ctx.prisma.$queryRaw<
+          Array<{
+            id: string;
+            observationCount: number;
+            firstUsed: Date | null;
+            lastUsed: Date | null;
+            medianOutputTokens: number | null;
+            medianInputTokens: number | null;
+            medianTotalCost: number | null;
+            medianLatency: number | null;
+          }>
+        >(
+          Prisma.sql`
+            select p.id, p.version, observation_metrics.* from prompts p
+            LEFT JOIN LATERAL (
+              SELECT
+                count(*) AS "observationCount",
+                MIN(o.start_time) AS "firstUsed",
+                MAX(o.start_time) AS "lastUsed",
+                PERCENTILE_CONT(0.5) WITHIN GROUP(ORDER BY o.completion_tokens) AS "medianOutputTokens",
+                PERCENTILE_CONT(0.5) WITHIN GROUP(ORDER BY o.prompt_tokens) AS "medianInputTokens",
+                PERCENTILE_CONT(0.5) WITHIN GROUP(ORDER BY o.calculated_total_cost) AS "medianTotalCost",
+                PERCENTILE_CONT(0.5) WITHIN GROUP(ORDER BY o.latency) AS "medianLatency"
               FROM
-              scores s
-            WHERE
-              s.trace_id IN (
-                SELECT o.trace_id
-                FROM observations o
-                WHERE
-                  o.prompt_id IS NOT NULL
-                  AND o.prompt_id = p.id
-                  AND o.type = 'GENERATION'
-                  AND o.project_id = ${input.projectId}
-                  AND o.prompt_id IN (${Prisma.join(input.promptIds)})
-                  ${filterCondition}
-              )
-              AND s.observation_id IS NULL
-              AND s.project_id = ${input.projectId}
-            ) s ON TRUE
-        WHERE
-          p.project_id = ${input.projectId}
-          AND s.score IS NOT NULL
-        GROUP BY
-            p.id
-      `);
+                "observations_view" o
+              WHERE
+                o.prompt_id = p.id
+                AND "type" = 'GENERATION'
+                AND "project_id" = ${input.projectId}
+                ${filterCondition}
+            ) AS observation_metrics ON true
+            WHERE "project_id" = ${input.projectId}
+            AND p.id in (${Prisma.join(input.promptIds)})
+            ORDER BY version DESC
+          `,
+        ),
+        // generationScores
+        ctx.prisma.$queryRaw<
+          Array<{
+            promptId: string;
+            scores: Array<ScoreSimplified>;
+          }>
+        >(Prisma.sql`
+          SELECT
+            p.id AS "promptId",
+            array_agg(s.score) AS "scores"
+          FROM
+            prompts p
+            LEFT JOIN LATERAL (
+              SELECT
+                jsonb_build_object ('name', s.name, 'stringValue', s.string_value, 'value', s.value, 'source', s."source", 'dataType', s.data_type, 'comment', s.comment) AS "score"
+              FROM
+                observations AS o
+                LEFT JOIN scores s ON o.trace_id = s.trace_id
+                  AND s.observation_id = o.id
+                  AND s.project_id = ${input.projectId}
+              WHERE
+                o.prompt_id IS NOT NULL
+                AND o.type = 'GENERATION'
+                AND o.prompt_id = p.id
+                AND o.project_id = ${input.projectId}
+                AND s.name IS NOT NULL
+                AND p.id IN (${Prisma.join(input.promptIds)})
+                ${filterCondition}
+              ) s ON TRUE
+          WHERE
+            p.project_id = ${input.projectId}
+            AND s.score IS NOT NULL
+            GROUP BY
+              p.id
+          `),
+        // traceScores
+        ctx.prisma.$queryRaw<
+          Array<{
+            promptId: string;
+            scores: Array<ScoreSimplified>;
+          }>
+        >(Prisma.sql`
+          SELECT
+            p.id AS "promptId",
+            array_agg(s.score) AS "scores"
+          FROM
+            prompts p
+            LEFT JOIN LATERAL (
+              SELECT
+                jsonb_build_object ('name', s.name, 'stringValue', s.string_value, 'value', s.value, 'source', s."source", 'dataType', s.data_type, 'comment', s.comment) AS "score"
+                FROM
+                scores s
+              WHERE
+                s.trace_id IN (
+                  SELECT o.trace_id
+                  FROM observations o
+                  WHERE
+                    o.prompt_id IS NOT NULL
+                    AND o.prompt_id = p.id
+                    AND o.type = 'GENERATION'
+                    AND o.project_id = ${input.projectId}
+                    AND o.prompt_id IN (${Prisma.join(input.promptIds)})
+                    ${filterCondition}
+                )
+                AND s.observation_id IS NULL
+                AND s.project_id = ${input.projectId}
+              ) s ON TRUE
+          WHERE
+            p.project_id = ${input.projectId}
+            AND s.score IS NOT NULL
+          GROUP BY
+              p.id
+          `),
+      ]);
 
       return metrics.map((metric) => ({
         ...metric,

@@ -42,13 +42,15 @@ import { useRowHeightLocalStorage } from "@/src/components/table/data-table-row-
 import { IOTableCell } from "@/src/components/ui/CodeJsonViewer";
 import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePostHogClientCapture";
 import {
-  SCORE_GROUP_COLUMN_PROPS,
+  getScoreGroupColumnProps,
   verifyAndPrefixScoreDataAgainstKeys,
 } from "@/src/features/scores/components/ScoreDetailColumnHelpers";
 import { useTableDateRange } from "@/src/hooks/useTableDateRange";
 import { useDebounce } from "@/src/hooks/useDebounce";
 import { type ScoreAggregate } from "@/src/features/scores/lib/types";
 import { useIndividualScoreColumns } from "@/src/features/scores/hooks/useIndividualScoreColumns";
+import TagList from "@/src/features/tag/components/TagList";
+import useColumnOrder from "@/src/features/column-visibility/hooks/useColumnOrder";
 
 export type GenerationsTableRow = {
   id: string;
@@ -80,6 +82,7 @@ export type GenerationsTableRow = {
   promptId?: string;
   promptName?: string;
   promptVersion?: string;
+  traceTags?: string[];
 };
 
 export type GenerationsTableProps = {
@@ -113,11 +116,12 @@ export default function GenerationsTable({
   );
 
   const { selectedOption, dateRange, setDateRangeAndOption } =
-    useTableDateRange();
+    useTableDateRange(projectId);
 
   const [inputFilterState, setInputFilterState] = useQueryFilterState(
     [],
     "generations",
+    projectId,
   );
 
   const [orderByState, setOrderByState] = useOrderByState({
@@ -164,16 +168,26 @@ export default function GenerationsTable({
     ...promptVersionFilter,
   ]);
 
-  const generations = api.generations.all.useQuery({
-    page: paginationState.pageIndex,
-    limit: paginationState.pageSize,
+  const getCountPayload = {
     projectId,
     filter: filterState,
-    orderBy: orderByState,
     searchQuery,
-  });
+    page: 0,
+    limit: 0,
+    orderBy: null,
+  };
 
-  const totalCount = generations.data?.totalCount ?? 0;
+  const getAllPayload = {
+    ...getCountPayload,
+    page: paginationState.pageIndex,
+    limit: paginationState.pageSize,
+    orderBy: orderByState,
+  };
+
+  const generations = api.generations.all.useQuery(getAllPayload);
+  const totalCountQuery = api.generations.countAll.useQuery(getCountPayload);
+
+  const totalCount = totalCountQuery.data?.totalCount ?? null;
 
   const startTimeFilter = filterState.find((f) => f.column === "Start Time");
   const filterOptions = api.generations.filterOptions.useQuery(
@@ -191,10 +205,11 @@ export default function GenerationsTable({
     },
   );
 
-  const { scoreColumns, scoreKeysAndProps } =
+  const { scoreColumns, scoreKeysAndProps, isColumnLoading } =
     useIndividualScoreColumns<GenerationsTableRow>({
       projectId,
       scoreColumnKey: "scores",
+      selectedFilterOption: selectedOption,
     });
 
   const transformFilterOptions = (
@@ -257,6 +272,7 @@ export default function GenerationsTable({
       id: "id",
       header: "ID",
       size: 100,
+      isPinned: true,
       cell: ({ row }) => {
         const observationId = row.getValue("id");
         const traceId = row.getValue("traceId");
@@ -339,7 +355,7 @@ export default function GenerationsTable({
         );
       },
     },
-    { ...SCORE_GROUP_COLUMN_PROPS, columns: scoreColumns },
+    { ...getScoreGroupColumnProps(isColumnLoading), columns: scoreColumns },
     {
       accessorKey: "latency",
       id: "latency",
@@ -560,6 +576,7 @@ export default function GenerationsTable({
           <GenerationsDynamicCell
             observationId={observationId}
             traceId={traceId}
+            projectId={projectId}
             col="input"
             singleLine={rowHeight === "s"}
           />
@@ -580,6 +597,7 @@ export default function GenerationsTable({
           <GenerationsDynamicCell
             observationId={observationId}
             traceId={traceId}
+            projectId={projectId}
             col="output"
             singleLine={rowHeight === "s"}
           />
@@ -603,6 +621,7 @@ export default function GenerationsTable({
           <GenerationsDynamicCell
             observationId={observationId}
             traceId={traceId}
+            projectId={projectId}
             col="metadata"
             singleLine={rowHeight === "s"}
           />
@@ -649,6 +668,29 @@ export default function GenerationsTable({
         );
       },
     },
+    {
+      accessorKey: "traceTags",
+      id: "traceTags",
+      header: "Trace Tags",
+      size: 250,
+      enableHiding: true,
+      defaultHidden: true,
+      cell: ({ row }) => {
+        const traceTags: string[] | undefined = row.getValue("traceTags");
+        return (
+          traceTags && (
+            <div
+              className={cn(
+                "flex gap-x-2 gap-y-1",
+                rowHeight !== "s" && "flex-wrap",
+              )}
+            >
+              <TagList selectedTags={traceTags} isLoading={false} viewOnly />
+            </div>
+          )
+        );
+      },
+    },
   ];
 
   const [columnVisibility, setColumnVisibilityState] =
@@ -656,6 +698,11 @@ export default function GenerationsTable({
       `generationsColumnVisibility-${projectId}`,
       columns,
     );
+
+  const [columnOrder, setColumnOrder] = useColumnOrder<GenerationsTableRow>(
+    "generationsColumnOrder",
+    columns,
+  );
 
   const rows: GenerationsTableRow[] = useMemo(() => {
     return generations.isSuccess
@@ -688,6 +735,7 @@ export default function GenerationsTable({
             promptId: generation.promptId ?? undefined,
             promptName: generation.promptName ?? undefined,
             promptVersion: generation.promptVersion ?? undefined,
+            traceTags: generation.traceTags ?? undefined,
           };
         })
       : [];
@@ -705,8 +753,11 @@ export default function GenerationsTable({
           updateQuery: setSearchQuery,
           currentQuery: searchQuery ?? undefined,
         }}
+        columnsWithCustomSelect={["model", "name", "traceName", "promptName"]}
         columnVisibility={columnVisibility}
         setColumnVisibility={setColumnVisibilityState}
+        columnOrder={columnOrder}
+        setColumnOrder={setColumnOrder}
         rowHeight={rowHeight}
         setRowHeight={setRowHeight}
         selectedOption={selectedOption}
@@ -762,12 +813,14 @@ export default function GenerationsTable({
                 }
         }
         pagination={{
-          pageCount: Math.ceil(totalCount / paginationState.pageSize),
+          totalCount,
           onChange: setPaginationState,
           state: paginationState,
         }}
         setOrderBy={setOrderByState}
         orderBy={orderByState}
+        columnOrder={columnOrder}
+        onColumnOrderChange={setColumnOrder}
         columnVisibility={columnVisibility}
         onColumnVisibilityChange={setColumnVisibilityState}
         rowHeight={rowHeight}
@@ -779,18 +832,21 @@ export default function GenerationsTable({
 const GenerationsDynamicCell = ({
   traceId,
   observationId,
+  projectId,
   col,
   singleLine = false,
 }: {
   traceId: string;
   observationId: string;
+  projectId: string;
   col: "input" | "output" | "metadata";
   singleLine: boolean;
 }) => {
   const observation = api.observations.byId.useQuery(
     {
-      observationId: observationId,
-      traceId: traceId,
+      observationId,
+      traceId,
+      projectId,
     },
     {
       enabled: typeof traceId === "string" && typeof observationId === "string",

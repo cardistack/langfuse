@@ -6,7 +6,7 @@ import {
   type Session,
 } from "next-auth";
 import { PrismaAdapter } from "@next-auth/prisma-adapter";
-import { prisma } from "@langfuse/shared/src/db";
+import { prisma, type Role } from "@langfuse/shared/src/db";
 import { verifyPassword } from "@/src/features/auth-credentials/lib/credentialsServerUtils";
 import { parseFlags } from "@/src/features/feature-flags/utils";
 import { env } from "@/src/env.mjs";
@@ -29,16 +29,31 @@ import {
   loadSsoProviders,
 } from "@/src/ee/features/multi-tenant-sso/utils";
 import { z } from "zod";
-import * as Sentry from "@sentry/nextjs";
+import { CloudConfigSchema } from "@langfuse/shared";
 import {
   CustomSSOProvider,
+  traceException,
   sendResetPasswordVerificationRequest,
+  instrumentAsync,
+  logger,
 } from "@langfuse/shared/src/server";
+import { getOrganizationPlan } from "@/src/features/entitlements/server/getOrganizationPlan";
+import { projectRoleAccessRights } from "@/src/features/rbac/constants/projectAccessRights";
 
-export const cloudConfigSchema = z.object({
-  plan: z.enum(["Hobby", "Pro", "Team", "Enterprise"]).optional(),
-  monthlyObservationLimit: z.number().int().positive().optional(),
-});
+function canCreateOrganizations(userEmail: string | null): boolean {
+  // if no allowlist is set or no active EE key, allow all users to create organizations
+  if (
+    !env.LANGFUSE_ALLOWED_ORGANIZATION_CREATORS ||
+    !env.LANGFUSE_EE_LICENSE_KEY
+  )
+    return true;
+
+  if (!userEmail) return false;
+
+  const allowedOrgCreators =
+    env.LANGFUSE_ALLOWED_ORGANIZATION_CREATORS.toLowerCase().split(",");
+  return allowedOrgCreators.includes(userEmail.toLowerCase());
+}
 
 const staticProviders: Provider[] = [
   CredentialsProvider({
@@ -90,8 +105,9 @@ const staticProviders: Provider[] = [
       }
 
       // EE: Check custom SSO enforcement
-      const customSsoProvider = await getSsoAuthProviderIdForDomain(domain);
-      if (customSsoProvider) {
+      const multiTenantSsoProvider =
+        await getSsoAuthProviderIdForDomain(domain);
+      if (multiTenantSsoProvider) {
         throw new Error(`You must sign in via SSO for this domain.`);
       }
 
@@ -120,7 +136,8 @@ const staticProviders: Provider[] = [
         image: dbUser.image,
         emailVerified: dbUser.emailVerified?.toISOString(),
         featureFlags: parseFlags(dbUser.featureFlags),
-        projects: [],
+        canCreateOrganizations: canCreateOrganizations(dbUser.email),
+        organizations: [],
       };
 
       return userObj;
@@ -276,8 +293,8 @@ export async function getAuthOptions(): Promise<NextAuthOptions> {
   try {
     dynamicSsoProviders = await loadSsoProviders();
   } catch (e) {
-    console.error("Error loading dynamic SSO providers", e);
-    Sentry.captureException(e);
+    logger.error("Error loading dynamic SSO providers", e);
+    traceException(e);
   }
   const providers = [...staticProviders, ...dynamicSsoProviders];
 
@@ -288,126 +305,173 @@ export async function getAuthOptions(): Promise<NextAuthOptions> {
     },
     callbacks: {
       async session({ session, token }): Promise<Session> {
-        const dbUser = await prisma.user.findUnique({
-          where: {
-            // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-            email: token.email!.toLowerCase(),
-          },
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            image: true,
-            emailVerified: true,
-            featureFlags: true,
-            admin: true,
-            projectMemberships: {
-              include: {
-                project: true,
+        return instrumentAsync({ name: "next-auth-session" }, async () => {
+          const dbUser = await prisma.user.findUnique({
+            where: {
+              // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+              email: token.email!.toLowerCase(),
+            },
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              image: true,
+              emailVerified: true,
+              featureFlags: true,
+              admin: true,
+              organizationMemberships: {
+                include: {
+                  organization: {
+                    include: {
+                      projects: true,
+                    },
+                  },
+                  ProjectMemberships: {
+                    include: {
+                      project: true,
+                    },
+                  },
+                },
               },
             },
-          },
-        });
+          });
 
-        return {
-          ...session,
-          environment: {
-            enableExperimentalFeatures:
-              env.LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES === "true",
-            disableExpensivePostgresQueries:
-              env.LANGFUSE_DISABLE_EXPENSIVE_POSTGRES_QUERIES === "true",
-            // Enables features that are only available under an enterprise license when self-hosting Langfuse
-            // If you edit this line, you risk executing code that is not MIT licensed (self-contained in /ee folders otherwise)
-            eeEnabled: env.LANGFUSE_EE_LICENSE_KEY !== undefined,
-          },
-          user:
-            dbUser !== null
-              ? {
-                  ...session.user,
-                  id: dbUser.id,
-                  name: dbUser.name,
-                  email: dbUser.email,
-                  image: dbUser.image,
-                  admin: dbUser.admin,
-                  emailVerified: dbUser.emailVerified?.toISOString(),
-                  projects: dbUser.projectMemberships.map((membership) => {
-                    const cloudConfig = cloudConfigSchema.safeParse(
-                      membership.project.cloudConfig,
-                    );
-                    return {
-                      id: membership.project.id,
-                      name: membership.project.name,
-                      role: membership.role,
-                      cloudConfig: cloudConfig.success
-                        ? cloudConfig.data
-                        : null,
-                    };
-                  }),
-                  featureFlags: parseFlags(dbUser.featureFlags),
-                }
-              : null,
-        };
+          return {
+            ...session,
+            environment: {
+              enableExperimentalFeatures:
+                env.LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES === "true",
+              disableExpensivePostgresQueries:
+                env.LANGFUSE_DISABLE_EXPENSIVE_POSTGRES_QUERIES === "true",
+              // Enables features that are only available under an enterprise license when self-hosting Langfuse
+              // If you edit this line, you risk executing code that is not MIT licensed (self-contained in /ee folders otherwise)
+              eeEnabled: env.LANGFUSE_EE_LICENSE_KEY !== undefined,
+            },
+            user:
+              dbUser !== null
+                ? {
+                    ...session.user,
+                    id: dbUser.id,
+                    name: dbUser.name,
+                    email: dbUser.email,
+                    image: dbUser.image,
+                    admin: dbUser.admin,
+                    canCreateOrganizations: canCreateOrganizations(
+                      dbUser.email,
+                    ),
+                    organizations: dbUser.organizationMemberships.map(
+                      (orgMembership) => {
+                        const parsedCloudConfig = CloudConfigSchema.safeParse(
+                          orgMembership.organization.cloudConfig,
+                        );
+                        return {
+                          id: orgMembership.organization.id,
+                          name: orgMembership.organization.name,
+                          role: orgMembership.role,
+                          cloudConfig: parsedCloudConfig.data,
+                          projects: orgMembership.organization.projects
+                            .map((project) => {
+                              const projectRole: Role =
+                                orgMembership.ProjectMemberships.find(
+                                  (membership) =>
+                                    membership.projectId === project.id,
+                                )?.role ?? orgMembership.role;
+                              return {
+                                id: project.id,
+                                name: project.name,
+                                role: projectRole,
+                              };
+                            })
+                            // Only include projects where the user has the required role
+                            .filter((project) =>
+                              projectRoleAccessRights[project.role].includes(
+                                "project:read",
+                              ),
+                            ),
+
+                          // Enables features/entitlements based on the plan of the organization, either cloud or EE version when self-hosting
+                          // If you edit this line, you risk executing code that is not MIT licensed (contained in /ee folders, see LICENSE)
+                          plan: getOrganizationPlan(parsedCloudConfig.data),
+                        };
+                      },
+                    ),
+                    emailVerified: dbUser.emailVerified?.toISOString(),
+                    featureFlags: parseFlags(dbUser.featureFlags),
+                  }
+                : null,
+          };
+        });
       },
       async signIn({ user, account, profile }) {
-        // Block sign in without valid user.email
-        const email = user.email?.toLowerCase();
-        if (!email) {
-          console.error("No email found in user object");
-          throw new Error("No email found in user object");
-        }
-        if (z.string().email().safeParse(email).success === false) {
-          console.error("Invalid email found in user object");
-          throw new Error("Invalid email found in user object");
-        }
-
-        // EE: Check custom SSO enforcement, enforce the specific SSO provider on email domain
-        // This also blocks setting a password for an email that is enforced to use SSO via password reset flow
-        const domain = email.split("@")[1];
-        const customSsoProvider = await getSsoAuthProviderIdForDomain(domain);
-        if (customSsoProvider && account?.provider !== customSsoProvider) {
-          console.log(
-            "Custom SSO provider enforced for domain, user signed in with other provider",
-          );
-          throw new Error(`You must sign in via SSO for this domain.`);
-        }
-
-        // Only allow sign in via email link if user is already in db as this is used for password reset
-        if (account?.provider === "email") {
-          const user = await prisma.user.findUnique({
-            where: {
-              email: email,
-            },
-          });
-          if (user) {
-            return true;
-          } else {
-            // Add random delay to prevent leaking if user exists as otherwise it would be instant compared to sending an email
-            await new Promise((resolve) =>
-              setTimeout(resolve, Math.random() * 2000 + 200),
-            );
-            // Prevents sign in with email link if user does not exist
-            return false;
+        return instrumentAsync({ name: "next-auth-sign-in" }, async () => {
+          // Block sign in without valid user.email
+          const email = user.email?.toLowerCase();
+          if (!email) {
+            logger.error("No email found in user object");
+            throw new Error("No email found in user object");
           }
-        }
-
-        // Optional configuration: validate authorised email domains for google provider
-        // uses hd (hosted domain) claim from google profile as the domain
-        // https://developers.google.com/identity/openid-connect/openid-connect#an-id-tokens-payload
-        if (env.AUTH_GOOGLE_ALLOWED_DOMAINS && account?.provider === "google") {
-          const allowedDomains =
-            env.AUTH_GOOGLE_ALLOWED_DOMAINS?.split(",").map((domain) =>
-              domain.trim().toLowerCase(),
-            ) ?? [];
-          if (allowedDomains.length > 0) {
-            return await Promise.resolve(
-              allowedDomains.includes(
-                (profile as GoogleProfile).hd.toLowerCase(),
-              ),
-            );
+          if (z.string().email().safeParse(email).success === false) {
+            logger.error("Invalid email found in user object");
+            throw new Error("Invalid email found in user object");
           }
-        }
 
-        return await Promise.resolve(true);
+          // EE: Check custom SSO enforcement, enforce the specific SSO provider on email domain
+          // This also blocks setting a password for an email that is enforced to use SSO via password reset flow
+          const domain = email.split("@")[1];
+          const multiTenantSsoProvider =
+            await getSsoAuthProviderIdForDomain(domain);
+          if (
+            multiTenantSsoProvider &&
+            account?.provider !== multiTenantSsoProvider
+          ) {
+            console.log(
+              "Custom SSO provider enforced for domain, user signed in with other provider",
+            );
+            throw new Error(`You must sign in via SSO for this domain.`);
+          }
+
+          // Only allow sign in via email link if user is already in db as this is used for password reset
+          if (account?.provider === "email") {
+            const user = await prisma.user.findUnique({
+              where: {
+                email: email,
+              },
+            });
+            if (user) {
+              return true;
+            } else {
+              // Add random delay to prevent leaking if user exists as otherwise it would be instant compared to sending an email
+              await new Promise((resolve) =>
+                setTimeout(resolve, Math.random() * 2000 + 200),
+              );
+              // Prevents sign in with email link if user does not exist
+              return false;
+            }
+          }
+
+          // Optional configuration: validate authorised email domains for google provider
+          // uses hd (hosted domain) claim from google profile as the domain
+          // https://developers.google.com/identity/openid-connect/openid-connect#an-id-tokens-payload
+          if (
+            env.AUTH_GOOGLE_ALLOWED_DOMAINS &&
+            account?.provider === "google"
+          ) {
+            const allowedDomains =
+              env.AUTH_GOOGLE_ALLOWED_DOMAINS?.split(",").map((domain) =>
+                domain.trim().toLowerCase(),
+              ) ?? [];
+
+            if (allowedDomains.length > 0) {
+              return await Promise.resolve(
+                allowedDomains.includes(
+                  (profile as GoogleProfile).hd?.toLowerCase(),
+                ),
+              );
+            }
+          }
+
+          return await Promise.resolve(true);
+        });
       },
     },
     adapter: extendedPrismaAdapter,
@@ -487,7 +551,14 @@ export const getServerAuthSession = async (ctx: {
   const authOptions = await getAuthOptions();
   // https://github.com/nextauthjs/next-auth/issues/2408#issuecomment-1382629234
   // for api routes, we need to call the headers in the api route itself
-  // disable caching for anything auth related
-  ctx.res.setHeader("Cache-Control", "no-store, max-age=0");
+
+  // disable caching for any api requiring server-side auth
+  ctx.res.setHeader(
+    "Cache-Control",
+    "no-store, no-cache, must-revalidate, proxy-revalidate",
+  );
+  ctx.res.setHeader("Pragma", "no-cache");
+  ctx.res.setHeader("Expires", "0");
+
   return getServerSession(ctx.req, ctx.res, authOptions);
 };

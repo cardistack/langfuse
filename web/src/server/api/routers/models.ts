@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { ModelUsageUnit } from "@langfuse/shared";
-import { throwIfNoAccess } from "@/src/features/rbac/utils/checkAccess";
+import { throwIfNoProjectAccess } from "@/src/features/rbac/utils/checkProjectAccess";
 import {
   createTRPCRouter,
   protectedProjectProcedure,
@@ -20,29 +20,30 @@ export const modelRouter = createTRPCRouter({
   all: protectedProjectProcedure
     .input(ModelAllOptions)
     .query(async ({ input, ctx }) => {
-      const models = await ctx.prisma.model.findMany({
-        where: {
-          OR: [{ projectId: input.projectId }, { projectId: null }],
-        },
-        skip: input.page * input.limit,
-        orderBy: [
-          { modelName: "asc" },
-          { unit: "asc" },
-          {
-            startDate: {
-              sort: "desc",
-              nulls: "last",
-            },
+      const [models, totalAmount] = await Promise.all([
+        ctx.prisma.model.findMany({
+          where: {
+            OR: [{ projectId: input.projectId }, { projectId: null }],
           },
-        ],
-        take: input.limit,
-      });
-
-      const totalAmount = await ctx.prisma.model.count({
-        where: {
-          OR: [{ projectId: input.projectId }, { projectId: null }],
-        },
-      });
+          skip: input.page * input.limit,
+          orderBy: [
+            { modelName: "asc" },
+            { unit: "asc" },
+            {
+              startDate: {
+                sort: "desc",
+                nulls: "last",
+              },
+            },
+          ],
+          take: input.limit,
+        }),
+        ctx.prisma.model.count({
+          where: {
+            OR: [{ projectId: input.projectId }, { projectId: null }],
+          },
+        }),
+      ]);
       return {
         models,
         totalCount: totalAmount,
@@ -72,7 +73,7 @@ export const modelRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      throwIfNoAccess({
+      throwIfNoProjectAccess({
         session: ctx.session,
         projectId: input.projectId,
         scope: "models:CUD",
@@ -89,7 +90,6 @@ export const modelRouter = createTRPCRouter({
         session: ctx.session,
         resourceType: "model",
         resourceId: input.modelId,
-        projectId: input.projectId,
         action: "delete",
         before: deletedModel,
       });
@@ -112,7 +112,7 @@ export const modelRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      throwIfNoAccess({
+      throwIfNoProjectAccess({
         session: ctx.session,
         projectId: input.projectId,
         scope: "models:CUD",
@@ -151,7 +151,6 @@ export const modelRouter = createTRPCRouter({
         session: ctx.session,
         resourceType: "model",
         resourceId: createdModel.id,
-        projectId: input.projectId,
         action: "create",
         after: createdModel,
       });

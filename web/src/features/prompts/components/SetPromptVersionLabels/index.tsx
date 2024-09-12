@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from "react";
 
-import { FlagIcon, PlusIcon } from "lucide-react";
+import { PlusIcon, TagIcon } from "lucide-react";
 
 import { Button } from "@/src/components/ui/button";
 import {
@@ -14,7 +14,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/src/components/ui/popover";
-import { useHasAccess } from "@/src/features/rbac/utils/checkAccess";
+import { useHasProjectAccess } from "@/src/features/rbac/utils/checkProjectAccess";
 import useProjectIdFromURL from "@/src/hooks/useProjectIdFromURL";
 import { api } from "@/src/utils/api";
 import { type Prompt } from "@langfuse/shared";
@@ -28,7 +28,7 @@ export function SetPromptVersionLabels({ prompt }: { prompt: Prompt }) {
   const projectId = useProjectIdFromURL();
   const utils = api.useUtils();
   const capture = usePostHogClientCapture();
-  const hasAccess = useHasAccess({ projectId, scope: "prompts:CUD" });
+  const hasAccess = useHasProjectAccess({ projectId, scope: "prompts:CUD" });
 
   const [selectedLabels, setSelectedLabels] = useState<string[]>([]);
   const [labels, setLabels] = useState<string[]>([]);
@@ -83,8 +83,6 @@ export function SetPromptVersionLabels({ prompt }: { prompt: Prompt }) {
     setIsOpen(false);
   };
 
-  if (!hasAccess) return null;
-
   return (
     <Popover
       key={prompt.id}
@@ -98,10 +96,12 @@ export function SetPromptVersionLabels({ prompt }: { prompt: Prompt }) {
         <Button
           variant="outline"
           size="icon"
+          className="h-7 w-7 px-0"
           aria-label="Set prompt labels"
           title="Set prompt labels"
+          disabled={!hasAccess}
         >
-          <FlagIcon className="h-4 w-4" />
+          <TagIcon className="h-4 w-4" />
         </Button>
       </PopoverTrigger>
       <PopoverContent>
@@ -160,7 +160,7 @@ export function SetPromptVersionLabels({ prompt }: { prompt: Prompt }) {
             ) : (
               <Button
                 variant="ghost"
-                className="mt-2 w-full justify-start px-2 py-1 text-sm  font-normal"
+                className="mt-2 w-full justify-start px-2 py-1 text-sm font-normal"
                 onClick={() => setIsAddingLabel(true)}
               >
                 <PlusIcon className="mr-2 h-4 w-4" />
