@@ -1,15 +1,22 @@
 import { type Provider } from "next-auth/providers/index";
 import GoogleProvider from "next-auth/providers/google";
 import GitHubProvider from "next-auth/providers/github";
+import GitLabProvider from "next-auth/providers/gitlab";
 import OktaProvider from "next-auth/providers/okta";
 import CognitoProvider from "next-auth/providers/cognito";
+import KeycloakProvider from "next-auth/providers/keycloak";
 import Auth0Provider from "next-auth/providers/auth0";
 import AzureADProvider from "next-auth/providers/azure-ad";
-import { isEeEnabled } from "@/src/ee/utils/isEeEnabled";
+import { multiTenantSsoAvailable } from "@/src/ee/features/multi-tenant-sso/multiTenantSsoAvailable";
 import { type SsoConfig, prisma } from "@langfuse/shared/src/db";
 import { decrypt } from "@langfuse/shared/encryption";
 import { SsoProviderSchema } from "./types";
-import { CustomSSOProvider, traceException } from "@langfuse/shared/src/server";
+import {
+  CustomSSOProvider,
+  GitHubEnterpriseProvider,
+  logger,
+  traceException,
+} from "@langfuse/shared/src/server";
 
 // Local cache for SSO configurations
 let cachedSsoConfigs: {
@@ -26,7 +33,7 @@ let cachedSsoConfigs: {
  * @returns {Promise<SsoProviderSchema[]>} - A list of all SSO configurations. Empty array if none are configured or EE is not available.
  */
 async function getSsoConfigs(): Promise<SsoProviderSchema[]> {
-  if (!isEeEnabled) return [];
+  if (!multiTenantSsoAvailable) return [];
 
   const CACHE_TTL = 60 * 60 * 1000; // 1 hour
   const FAILEDTOFETCH_RETRY_AFTER = 60 * 1000; // 1 minute
@@ -50,7 +57,7 @@ async function getSsoConfigs(): Promise<SsoProviderSchema[]> {
         },
       );
     } catch (e) {
-      console.error("Failed to load SSO configs from the database", e);
+      logger.error("Failed to load SSO configs from the database", e);
       traceException(e);
       // empty array will be cached to prevent repeated DB queries
       failedToFetch = true;
@@ -63,7 +70,7 @@ async function getSsoConfigs(): Promise<SsoProviderSchema[]> {
           const parsedValue = SsoProviderSchema.parse(v);
           return parsedValue;
         } catch (e) {
-          console.error(
+          logger.error(
             `Failed to parse SSO provider config for domain ${v.domain}`,
             e,
           );
@@ -90,7 +97,7 @@ async function getSsoConfigs(): Promise<SsoProviderSchema[]> {
  * @returns {Promise<Provider[]>} - A list of all custom SSO providers.
  */
 export async function loadSsoProviders(): Promise<Provider[]> {
-  if (!isEeEnabled) return [];
+  if (!multiTenantSsoAvailable) return [];
 
   const ssoConfigs = await getSsoConfigs();
 
@@ -108,7 +115,7 @@ export async function loadSsoProviders(): Promise<Provider[]> {
  * @returns `true` if any custom SSO provider is configured in the database.
  */
 export async function isAnySsoConfigured(): Promise<boolean> {
-  if (!isEeEnabled) return false;
+  if (!multiTenantSsoAvailable) return false;
   const ssoConfigs = await getSsoConfigs();
   return ssoConfigs.length > 0;
 }
@@ -122,7 +129,7 @@ export async function isAnySsoConfigured(): Promise<boolean> {
 export async function getSsoAuthProviderIdForDomain(
   domain: string,
 ): Promise<string | null> {
-  if (!isEeEnabled) return null;
+  if (!multiTenantSsoAvailable) return null;
   const ssoConfig = (await getSsoConfigs()).find(
     (ssoConfig) => ssoConfig.domain === domain.toLowerCase(),
   );
@@ -153,6 +160,12 @@ const dbToNextAuthProvider = (provider: SsoProviderSchema): Provider | null => {
       ...provider.authConfig,
       clientSecret: decrypt(provider.authConfig.clientSecret),
     });
+  else if (provider.authProvider === "gitlab")
+    return GitLabProvider({
+      id: getAuthProviderIdForSsoConfig(provider), // use the domain as the provider id as we use domain-specific credentials
+      ...provider.authConfig,
+      clientSecret: decrypt(provider.authConfig.clientSecret),
+    });
   else if (provider.authProvider === "auth0")
     return Auth0Provider({
       id: getAuthProviderIdForSsoConfig(provider), // use the domain as the provider id as we use domain-specific credentials
@@ -177,6 +190,12 @@ const dbToNextAuthProvider = (provider: SsoProviderSchema): Provider | null => {
       ...provider.authConfig,
       clientSecret: decrypt(provider.authConfig.clientSecret),
     });
+  else if (provider.authProvider === "keycloak")
+    return KeycloakProvider({
+      id: getAuthProviderIdForSsoConfig(provider), // use the domain as the provider id as we use domain-specific credentials
+      ...provider.authConfig,
+      clientSecret: decrypt(provider.authConfig.clientSecret),
+    });
   else if (provider.authProvider === "custom")
     return CustomSSOProvider({
       id: getAuthProviderIdForSsoConfig(provider), // use the domain as the provider id as we use domain-specific credentials
@@ -186,11 +205,20 @@ const dbToNextAuthProvider = (provider: SsoProviderSchema): Provider | null => {
         params: { scope: provider.authConfig.scope ?? "openid email profile" },
       },
     });
+  else if (provider.authProvider === "github-enterprise")
+    return GitHubEnterpriseProvider({
+      id: getAuthProviderIdForSsoConfig(provider), // use the domain as the provider id as we use domain-specific credentials
+      ...provider.authConfig,
+      clientSecret: decrypt(provider.authConfig.clientSecret),
+      enterprise: {
+        baseUrl: provider.authConfig.enterprise.baseUrl,
+      },
+    });
   else {
     // Type check to ensure we handle all providers
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const _: never = provider;
-    console.error(
+    logger.error(
       `Unrecognized SSO provider for domain ${(provider as any).domain}`,
     );
     traceException(

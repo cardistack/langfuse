@@ -107,7 +107,7 @@ export class RateLimitService {
     }
 
     if (res.remainingPoints < 1) {
-      recordIncrement("rate_limit_exceeded", 1, {
+      recordIncrement("langfuse.rate_limit.exceeded", 1, {
         orgId: scope.orgId,
         plan: scope.plan,
         resource: resource,
@@ -184,17 +184,40 @@ const getPlanBasedRateLimitConfig = (
 ): z.infer<typeof RateLimitConfig> => {
   switch (plan) {
     case "oss":
+    case "self-hosted:pro":
     case "self-hosted:enterprise":
-      return { resource, points: null, durationInSec: null };
+      return {
+        resource,
+        points: null,
+        durationInSec: null,
+      };
     case "cloud:hobby":
     case "cloud:pro":
       switch (resource) {
         case "ingestion":
-          return { resource: "ingestion", points: 1000, durationInSec: 60 };
+          return {
+            resource: "ingestion",
+            points: 2000,
+            durationInSec: 60,
+          };
+        case "legacy-ingestion":
+          return {
+            resource: "prompts",
+            points: 400,
+            durationInSec: 60,
+          };
         case "prompts":
-          return { resource: "prompts", points: null, durationInSec: null };
+          return {
+            resource: "prompts",
+            points: null,
+            durationInSec: null,
+          };
         case "public-api":
-          return { resource: "public-api", points: 1000, durationInSec: 60 };
+          return {
+            resource: "public-api",
+            points: 1000,
+            durationInSec: 60,
+          };
         case "public-api-metrics":
           return {
             resource: "public-api-metrics",
@@ -208,11 +231,29 @@ const getPlanBasedRateLimitConfig = (
     case "cloud:team":
       switch (resource) {
         case "ingestion":
-          return { resource: "ingestion", points: 5000, durationInSec: 60 };
+          return {
+            resource: "ingestion",
+            points: 10000,
+            durationInSec: 60,
+          };
+        case "legacy-ingestion":
+          return {
+            resource: "prompts",
+            points: 400,
+            durationInSec: 60,
+          };
         case "prompts":
-          return { resource: "prompts", points: null, durationInSec: null };
+          return {
+            resource: "prompts",
+            points: null,
+            durationInSec: null,
+          };
         case "public-api":
-          return { resource: "public-api", points: 1000, durationInSec: 60 };
+          return {
+            resource: "public-api",
+            points: 1000,
+            durationInSec: 60,
+          };
         case "public-api-metrics":
           return {
             resource: "public-api-metrics",

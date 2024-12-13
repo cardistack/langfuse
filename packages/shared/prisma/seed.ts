@@ -5,6 +5,7 @@ import {
   ObservationType,
   ScoreSource,
   ScoreDataType,
+  AnnotationQueueObjectType,
 } from "../src/index";
 import { hash } from "bcryptjs";
 import { parseArgs } from "node:util";
@@ -77,6 +78,9 @@ async function main() {
     create: {
       id: seedOrgId,
       name: "Seed Org",
+      cloudConfig: {
+        plan: "Team",
+      },
     },
   });
 
@@ -250,6 +254,11 @@ async function main() {
       project2,
     ]);
 
+    const queueIds = await generateQueuesForProject(
+      [project1, project2],
+      configIdsAndNames,
+    );
+
     const promptIds = await generatePromptsForProject([project1, project2]);
 
     const envTags = [null, "development", "staging", "production"];
@@ -257,16 +266,24 @@ async function main() {
 
     const traceVolume = environment === "load" ? LOAD_TRACE_VOLUME : 100;
 
-    const { traces, observations, scores, sessions, events, comments } =
-      createObjects(
-        traceVolume,
-        envTags,
-        colorTags,
-        project1,
-        project2,
-        promptIds,
-        configIdsAndNames,
-      );
+    const {
+      traces,
+      observations,
+      scores,
+      sessions,
+      events,
+      comments,
+      queueItems,
+    } = createObjects(
+      traceVolume,
+      envTags,
+      colorTags,
+      project1,
+      project2,
+      promptIds,
+      queueIds,
+      configIdsAndNames,
+    );
 
     logger.info(
       `Seeding ${traces.length} traces, ${observations.length} observations, and ${scores.length} scores`,
@@ -279,6 +296,7 @@ async function main() {
       sessions,
       events,
       comments,
+      queueItems,
     );
 
     // If openai key is in environment, add it to the projects LLM API keys
@@ -369,16 +387,62 @@ async function main() {
       update: {},
     });
 
-    for (let datasetNumber = 0; datasetNumber < 2; datasetNumber++) {
-      const dataset = await prisma.dataset.create({
-        data: {
-          name: `demo-dataset-${datasetNumber}`,
-          description:
-            datasetNumber === 0 ? "Dataset test description" : undefined,
-          projectId: project2.id,
-          metadata: datasetNumber === 0 ? { key: "value" } : undefined,
-        },
-      });
+    await createDatasets(project1, project2, observations);
+  }
+}
+
+main()
+  .then(async () => {
+    await prisma.$disconnect();
+    redis?.disconnect();
+    logger.info("Disconnected from postgres and redis");
+  })
+  .catch(async (e) => {
+    logger.error(e);
+    await prisma.$disconnect();
+    redis?.disconnect();
+    logger.info("Disconnected from postgres and redis");
+    process.exit(1);
+  });
+
+export async function createDatasets(
+  project1: {
+    id: string;
+    orgId: string;
+    createdAt: Date;
+    updatedAt: Date;
+    name: string;
+  },
+  project2: {
+    id: string;
+    orgId: string;
+    createdAt: Date;
+    updatedAt: Date;
+    name: string;
+  },
+  observations: Prisma.ObservationCreateManyInput[],
+) {
+  for (let datasetNumber = 0; datasetNumber < 2; datasetNumber++) {
+    for (const projectId of [project1.id, project2.id]) {
+      const datasetName = `demo-dataset-${datasetNumber}`;
+
+      // check if ds already exists
+      const dataset =
+        (await prisma.dataset.findFirst({
+          where: {
+            projectId,
+            name: datasetName,
+          },
+        })) ??
+        (await prisma.dataset.create({
+          data: {
+            name: datasetName,
+            description:
+              datasetNumber === 0 ? "Dataset test description" : undefined,
+            projectId,
+            metadata: datasetNumber === 0 ? { key: "value" } : undefined,
+          },
+        }));
 
       const datasetItemIds = [];
       for (let i = 0; i < 18; i++) {
@@ -386,9 +450,12 @@ async function main() {
           Math.random() > 0.3
             ? observations[Math.floor(Math.random() * observations.length)]
             : undefined;
+        if (!sourceObservation) {
+          continue;
+        }
         const datasetItem = await prisma.datasetItem.create({
           data: {
-            projectId: project2.id,
+            projectId,
             datasetId: dataset.id,
             sourceTraceId: sourceObservation?.traceId,
             sourceObservationId:
@@ -413,9 +480,16 @@ async function main() {
       }
 
       for (let datasetRunNumber = 0; datasetRunNumber < 5; datasetRunNumber++) {
-        const datasetRun = await prisma.datasetRuns.create({
-          data: {
-            projectId: project2.id,
+        const datasetRun = await prisma.datasetRuns.upsert({
+          where: {
+            datasetId_projectId_name: {
+              datasetId: dataset.id,
+              projectId,
+              name: `demo-dataset-run-${datasetRunNumber}`,
+            },
+          },
+          create: {
+            projectId,
             name: `demo-dataset-run-${datasetRunNumber}`,
             description: Math.random() > 0.5 ? "Dataset run description" : "",
             datasetId: dataset.id,
@@ -427,20 +501,24 @@ async function main() {
               ["tag1", "tag2"],
             ][datasetRunNumber % 5],
           },
+          update: {},
         });
 
         for (const datasetItemId of datasetItemIds) {
           const relevantObservations = observations.filter(
-            (o) => o.projectId === project2.id,
+            (o) => o.projectId === projectId,
           );
           const observation =
             relevantObservations[
               Math.floor(Math.random() * relevantObservations.length)
             ];
 
+          if (!observation) {
+            continue;
+          }
           await prisma.datasetRunItems.create({
             data: {
-              projectId: project2.id,
+              projectId,
               datasetItemId,
               traceId: observation.traceId as string,
               observationId: Math.random() > 0.5 ? observation.id : undefined,
@@ -453,20 +531,6 @@ async function main() {
   }
 }
 
-main()
-  .then(async () => {
-    await prisma.$disconnect();
-    redis?.disconnect();
-    logger.info("Disconnected from postgres and redis");
-  })
-  .catch(async (e) => {
-    logger.error(e);
-    await prisma.$disconnect();
-    redis?.disconnect();
-    logger.info("Disconnected from postgres and redis");
-    process.exit(1);
-  });
-
 async function uploadObjects(
   traces: Prisma.TraceCreateManyInput[],
   observations: Prisma.ObservationCreateManyInput[],
@@ -474,6 +538,7 @@ async function uploadObjects(
   sessions: Prisma.TraceSessionCreateManyInput[],
   events: Prisma.ObservationCreateManyInput[],
   comments: Prisma.CommentCreateManyInput[],
+  queueItems: Prisma.AnnotationQueueItemCreateManyInput[],
 ) {
   let promises: Prisma.PrismaPromise<unknown>[] = [];
 
@@ -581,6 +646,22 @@ async function uploadObjects(
       );
     await promises[i];
   }
+
+  promises = [];
+  chunk(queueItems, chunkSize).forEach((chunk) => {
+    promises.push(
+      prisma.annotationQueueItem.createMany({
+        data: chunk,
+      }),
+    );
+  });
+  for (let i = 0; i < promises.length; i++) {
+    if (i + 1 >= promises.length || i % Math.ceil(promises.length / 10) === 0)
+      logger.info(
+        `Seeding of Annotation Queue Items ${((i + 1) / promises.length) * 100}% complete`,
+      );
+    await promises[i];
+  }
 }
 
 function createObjects(
@@ -590,6 +671,7 @@ function createObjects(
   project1: Project,
   project2: Project,
   promptIds: Map<string, string[]>,
+  queueIds: Map<string, string[]>,
   configParams: Map<
     string,
     {
@@ -607,6 +689,7 @@ function createObjects(
   const events: Prisma.ObservationCreateManyInput[] = [];
   const configs: Prisma.ScoreConfigCreateManyInput[] = [];
   const comments: Prisma.CommentCreateManyInput[] = [];
+  const queueItems: Prisma.AnnotationQueueItemCreateManyInput[] = [];
 
   for (let i = 0; i < traceVolume; i++) {
     // print progress to console with a progress bar that refreshes every 10 iterations
@@ -688,6 +771,21 @@ function createObjects(
         stringValue: value === 1 ? "True" : "False",
       }),
     };
+
+    const queueItem = [
+      ...(Math.random() > 0.9 && queueIds.get(projectId)?.[0]
+        ? [
+            {
+              queueId: queueIds.get(projectId)?.[0] as string,
+              objectId: trace.id,
+              objectType: AnnotationQueueObjectType.TRACE,
+              projectId,
+            },
+          ]
+        : []),
+    ];
+
+    queueItems.push(...queueItem);
 
     const traceScores = [
       ...(Math.random() > 0.5
@@ -941,6 +1039,7 @@ function createObjects(
     observations,
     scores,
     configs,
+    queueItems,
     sessions: uniqueSessions,
     events,
     comments,
@@ -959,60 +1058,59 @@ async function generatePromptsForProject(projects: Project[]) {
   return promptIds;
 }
 
-async function generatePrompts(project: Project) {
-  const promptIds: string[] = [];
-  const prompts = [
-    {
-      id: `prompt-${v4()}`,
-      projectId: project.id,
-      createdBy: "user-1",
-      prompt: "Prompt 1 content",
-      name: "Prompt 1",
-      version: 1,
-      labels: ["production", "latest"],
-    },
-    {
-      id: `prompt-${v4()}`,
-      projectId: project.id,
-      createdBy: "user-1",
-      prompt: "Prompt 2 content",
-      name: "Prompt 2",
-      version: 1,
-      labels: ["production", "latest"],
-    },
-    {
-      id: `prompt-${v4()}`,
-      projectId: project.id,
-      createdBy: "API",
-      prompt: "Prompt 3 content",
-      name: "Prompt 3 by API",
-      version: 1,
-      labels: ["production", "latest"],
-    },
-    {
-      id: `prompt-${v4()}`,
-      projectId: project.id,
-      createdBy: "user-1",
-      prompt: "Prompt 4 content",
-      name: "Prompt 4",
-      version: 1,
-      labels: ["production", "latest"],
-      tags: ["tag1", "tag2"],
-    },
-  ];
+export const SEED_PROMPTS = [
+  {
+    id: `prompt-123`,
+    createdBy: "user-1",
+    prompt: "Prompt 1 content",
+    name: "Prompt 1",
+    version: 1,
+    labels: ["production", "latest"],
+  },
+  {
+    id: `prompt-456`,
+    createdBy: "user-1",
+    prompt: "Prompt 2 content",
+    name: "Prompt 2",
+    version: 1,
+    labels: ["production", "latest"],
+  },
+  {
+    id: `prompt-789`,
+    createdBy: "API",
+    prompt: "Prompt 3 content",
+    name: "Prompt 3 by API",
+    version: 1,
+    labels: ["production", "latest"],
+  },
+  {
+    id: `prompt-abc`,
+    createdBy: "user-1",
+    prompt: "Prompt 4 content",
+    name: "Prompt 4",
+    version: 1,
+    labels: ["production", "latest"],
+    tags: ["tag1", "tag2"],
+  },
+];
 
-  for (const prompt of prompts) {
+export const PROMPT_IDS: string[] = [];
+
+async function generatePrompts(project: Project) {
+  const promptIds = [];
+  for (const prompt of SEED_PROMPTS) {
     await prisma.prompt.upsert({
       where: {
         projectId_name_version: {
-          projectId: prompt.projectId,
+          projectId: prompt.id + project.id,
           name: prompt.name,
           version: prompt.version,
         },
+        id: prompt.id + project.id,
       },
       create: {
-        id: prompt.id,
-        projectId: prompt.projectId,
+        id: prompt.id + project.id,
+        projectId: project.id,
         createdBy: prompt.createdBy,
         prompt: prompt.prompt,
         name: prompt.name,
@@ -1020,9 +1118,7 @@ async function generatePrompts(project: Project) {
         labels: prompt.labels,
         tags: prompt.tags,
       },
-      update: {
-        id: prompt.id,
-      },
+      update: {},
     });
     promptIds.push(prompt.id);
   }
@@ -1076,6 +1172,7 @@ async function generatePrompts(project: Project) {
           name: version.name,
           version: version.version,
         },
+        id: version.id,
       },
       create: {
         id: version.id,
@@ -1106,6 +1203,7 @@ async function generatePrompts(project: Project) {
           name: promptName,
           version: i,
         },
+        id: promptId,
       },
       create: {
         id: promptId,
@@ -1218,6 +1316,7 @@ async function generateConfigs(project: Project) {
 
   return configNameAndId;
 }
+
 function getGenerationInputOutput(): {
   input: Prisma.InputJsonValue;
   output: Prisma.InputJsonValue;
@@ -1277,4 +1376,65 @@ function getGenerationInputOutput(): {
     "Creating a React component can be done in two ways: as a functional component or as a class component. Let's start with a basic example of both.\n\n**Image**\n\n![Languse Example Image](https://static.langfuse.com/langfuse-dev/langfuse-example-image.jpeg)\n\n1.  **Functional Component**:\n\nA functional component is just a plain JavaScript function that accepts props as an argument, and returns a React element. Here's how you can create one:\n\n```javascript\nimport React from 'react';\nfunction Greeting(props) {\n  return <h1>Hello, {props.name}</h1>;\n}\nexport default Greeting;\n```\n\nTo use this component in another file, you can do:\n\n```javascript\nimport Greeting from './Greeting';\nfunction App() {\n  return (\n    <div>\n      <Greeting name=\"John\" />\n    </div>\n  );\n}\nexport default App;\n```\n\n2.  **Class Component**:\n\nYou can also define components as classes in React. These have some additional features compared to functional components:\n\n```javascript\nimport React, { Component } from 'react';\nclass Greeting extends Component {\n  render() {\n    return <h1>Hello, {this.props.name}</h1>;\n  }\n}\nexport default Greeting;\n```\n\nAnd here's how to use this component:\n\n```javascript\nimport Greeting from './Greeting';\nclass App extends Component {\n  render() {\n    return (\n      <div>\n        <Greeting name=\"John\" />\n      </div>\n    );\n  }\n}\nexport default App;\n```\n\nWith the advent of hooks in React, functional components can do everything that class components can do and hence, the community has been favoring functional components over class components.\n\nRemember to import React at the top of your file whenever you're creating a component, because JSX transpiles to `React.createElement` calls under the hood.";
 
   return { input, output };
+}
+
+async function generateQueuesForProject(
+  projects: Project[],
+  configIdsAndNames: Map<
+    string,
+    {
+      name: string;
+      id: string;
+      dataType: ScoreDataType;
+      categories: ConfigCategory[] | null;
+    }[]
+  >,
+) {
+  const projectIdsToQueues: Map<string, string[]> = new Map();
+
+  await Promise.all(
+    projects.map(async (project) => {
+      const queueIds = await generateQueues(
+        project,
+        configIdsAndNames.get(project.id) ?? [],
+      );
+      projectIdsToQueues.set(project.id, queueIds);
+    }),
+  );
+  return projectIdsToQueues;
+}
+
+async function generateQueues(
+  project: Project,
+  configIdsAndNames: {
+    name: string;
+    id: string;
+    dataType: ScoreDataType;
+    categories: ConfigCategory[] | null;
+  }[],
+) {
+  const queue = {
+    id: `queue-${v4()}`,
+    name: "Default",
+    description: "Default queue",
+    scoreConfigIds: configIdsAndNames.map((config) => config.id),
+    projectId: project.id,
+  };
+
+  await prisma.annotationQueue.upsert({
+    where: {
+      projectId_name: {
+        projectId: queue.projectId,
+        name: queue.name,
+      },
+    },
+    create: {
+      ...queue,
+    },
+    update: {
+      id: queue.id,
+    },
+  });
+
+  return [queue.id];
 }

@@ -37,6 +37,16 @@ export const ScoreDataType = {
     BOOLEAN: "BOOLEAN"
 } as const;
 export type ScoreDataType = (typeof ScoreDataType)[keyof typeof ScoreDataType];
+export const AnnotationQueueStatus = {
+    PENDING: "PENDING",
+    COMPLETED: "COMPLETED"
+} as const;
+export type AnnotationQueueStatus = (typeof AnnotationQueueStatus)[keyof typeof AnnotationQueueStatus];
+export const AnnotationQueueObjectType = {
+    TRACE: "TRACE",
+    OBSERVATION: "OBSERVATION"
+} as const;
+export type AnnotationQueueObjectType = (typeof AnnotationQueueObjectType)[keyof typeof AnnotationQueueObjectType];
 export const DatasetStatus = {
     ACTIVE: "ACTIVE",
     ARCHIVED: "ARCHIVED"
@@ -80,6 +90,31 @@ export type Account = {
     scope: string | null;
     id_token: string | null;
     session_state: string | null;
+    refresh_token_expires_in: number | null;
+    created_at: number | null;
+};
+export type AnnotationQueue = {
+    id: string;
+    name: string;
+    description: string | null;
+    score_config_ids: Generated<string[]>;
+    project_id: string;
+    created_at: Generated<Timestamp>;
+    updated_at: Generated<Timestamp>;
+};
+export type AnnotationQueueItem = {
+    id: string;
+    queue_id: string;
+    object_id: string;
+    object_type: AnnotationQueueObjectType;
+    status: Generated<AnnotationQueueStatus>;
+    locked_at: Timestamp | null;
+    locked_by_user_id: string | null;
+    annotator_user_id: string | null;
+    completed_at: Timestamp | null;
+    project_id: string;
+    created_at: Generated<Timestamp>;
+    updated_at: Generated<Timestamp>;
 };
 export type ApiKey = {
     id: string;
@@ -107,6 +142,18 @@ export type AuditLog = {
     action: string;
     before: string | null;
     after: string | null;
+};
+export type BackgroundMigration = {
+    id: string;
+    name: string;
+    script: string;
+    args: unknown;
+    state: Generated<unknown>;
+    finished_at: Timestamp | null;
+    failed_at: Timestamp | null;
+    failed_reason: string | null;
+    worker_id: string | null;
+    locked_at: Timestamp | null;
 };
 export type BatchExport = {
     id: string;
@@ -231,6 +278,8 @@ export type JobExecution = {
     end_time: Timestamp | null;
     error: string | null;
     job_input_trace_id: string | null;
+    job_input_observation_id: string | null;
+    job_input_dataset_item_id: string | null;
     job_output_score_id: string | null;
 };
 export type LlmApiKeys = {
@@ -244,7 +293,22 @@ export type LlmApiKeys = {
     base_url: string | null;
     custom_models: Generated<string[]>;
     with_default_models: Generated<boolean>;
+    config: unknown | null;
     project_id: string;
+};
+export type Media = {
+    id: string;
+    sha_256_hash: string;
+    project_id: string;
+    created_at: Generated<Timestamp>;
+    updated_at: Generated<Timestamp>;
+    uploaded_at: Timestamp | null;
+    upload_http_status: number | null;
+    upload_http_error: string | null;
+    bucket_path: string;
+    bucket_name: string;
+    content_type: string;
+    content_length: string;
 };
 export type MembershipInvitation = {
     id: string;
@@ -268,7 +332,7 @@ export type Model = {
     input_price: string | null;
     output_price: string | null;
     total_price: string | null;
-    unit: string;
+    unit: string | null;
     tokenizer_id: string | null;
     tokenizer_config: unknown | null;
 };
@@ -305,6 +369,16 @@ export type Observation = {
     calculated_total_cost: string | null;
     completion_start_time: Timestamp | null;
     prompt_id: string | null;
+};
+export type ObservationMedia = {
+    id: string;
+    project_id: string;
+    created_at: Generated<Timestamp>;
+    updated_at: Generated<Timestamp>;
+    media_id: string;
+    trace_id: string;
+    observation_id: string;
+    field: string;
 };
 export type ObservationView = {
     id: string;
@@ -366,11 +440,20 @@ export type PosthogIntegration = {
     enabled: boolean;
     created_at: Generated<Timestamp>;
 };
+export type Price = {
+    id: string;
+    created_at: Generated<Timestamp>;
+    updated_at: Generated<Timestamp>;
+    model_id: string;
+    usage_type: string;
+    price: string;
+};
 export type Project = {
     id: string;
     org_id: string;
     created_at: Generated<Timestamp>;
     updated_at: Generated<Timestamp>;
+    deleted_at: Timestamp | null;
     name: string;
 };
 export type ProjectMembership = {
@@ -409,6 +492,7 @@ export type Score = {
     observation_id: string | null;
     config_id: string | null;
     string_value: string | null;
+    queue_id: string | null;
     created_at: Generated<Timestamp>;
     updated_at: Generated<Timestamp>;
     data_type: Generated<ScoreDataType>;
@@ -458,6 +542,15 @@ export type Trace = {
     created_at: Generated<Timestamp>;
     updated_at: Generated<Timestamp>;
 };
+export type TraceMedia = {
+    id: string;
+    project_id: string;
+    created_at: Generated<Timestamp>;
+    updated_at: Generated<Timestamp>;
+    media_id: string;
+    trace_id: string;
+    field: string;
+};
 export type TraceSession = {
     id: string;
     created_at: Generated<Timestamp>;
@@ -505,8 +598,11 @@ export type VerificationToken = {
 };
 export type DB = {
     Account: Account;
+    annotation_queue_items: AnnotationQueueItem;
+    annotation_queues: AnnotationQueue;
     api_keys: ApiKey;
     audit_logs: AuditLog;
+    background_migrations: BackgroundMigration;
     batch_exports: BatchExport;
     comments: Comment;
     cron_jobs: CronJobs;
@@ -519,13 +615,16 @@ export type DB = {
     job_configurations: JobConfiguration;
     job_executions: JobExecution;
     llm_api_keys: LlmApiKeys;
+    media: Media;
     membership_invitations: MembershipInvitation;
     models: Model;
+    observation_media: ObservationMedia;
     observations: Observation;
     observations_view: ObservationView;
     organization_memberships: OrganizationMembership;
     organizations: Organization;
     posthog_integrations: PosthogIntegration;
+    prices: Price;
     project_memberships: ProjectMembership;
     projects: Project;
     prompts: Prompt;
@@ -533,6 +632,7 @@ export type DB = {
     scores: Score;
     Session: Session;
     sso_configs: SsoConfig;
+    trace_media: TraceMedia;
     trace_sessions: TraceSession;
     traces: Trace;
     traces_view: TraceView;

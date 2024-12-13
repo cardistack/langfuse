@@ -4,6 +4,7 @@ import {
   Drawer,
   DrawerContent,
   DrawerHeader,
+  DrawerTitle,
   DrawerTrigger,
 } from "@/src/components/ui/drawer";
 import { CommentCountIcon } from "@/src/features/comments/CommentCountIcon";
@@ -19,12 +20,14 @@ export function CommentDrawerButton({
   objectType,
   count,
   variant = "secondary",
+  className,
 }: {
   projectId: string;
   objectId: string;
   objectType: CommentObjectType;
   count?: number;
   variant?: "secondary" | "outline";
+  className?: string;
 }) {
   const hasReadAccess = useHasProjectAccess({
     projectId,
@@ -37,7 +40,7 @@ export function CommentDrawerButton({
 
   if (!hasReadAccess || (!hasWriteAccess && !count))
     return (
-      <Button type="button" variant="secondary" disabled>
+      <Button type="button" variant="secondary" className={className} disabled>
         <MessageCircleOff className="h-4 w-4 text-muted-foreground" />
       </Button>
     );
@@ -45,7 +48,12 @@ export function CommentDrawerButton({
   return (
     <Drawer>
       <DrawerTrigger asChild>
-        <Button type="button" variant={variant} size="icon">
+        <Button
+          type="button"
+          variant={variant}
+          size="icon"
+          className={className}
+        >
           {!!count ? (
             <CommentCountIcon count={count} />
           ) : (
@@ -53,10 +61,12 @@ export function CommentDrawerButton({
           )}
         </Button>
       </DrawerTrigger>
-      <DrawerContent className="h-1/3" overlayClassName="bg-primary/10">
+      <DrawerContent overlayClassName="bg-primary/10">
         <div className="mx-auto w-full overflow-y-auto md:max-h-full">
           <DrawerHeader className="sticky top-0 z-10 rounded-sm bg-background">
-            <Header title="Comments" level="h3"></Header>
+            <DrawerTitle>
+              <Header title="Comments" level="h3"></Header>
+            </DrawerTitle>
           </DrawerHeader>
           <div data-vaul-no-drag className="px-2">
             <CommentList

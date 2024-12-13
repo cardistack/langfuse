@@ -5,14 +5,20 @@ import {
 } from "@/src/components/ui/hover-card";
 import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePostHogClientCapture";
 import { cn } from "@/src/utils/tailwind";
+import { Portal } from "@radix-ui/react-hover-card";
 import { Info } from "lucide-react";
 
 export type DocPopupProps = {
   description: React.ReactNode;
   href?: string;
+  className?: string;
 };
 
-export default function DocPopup({ description, href }: DocPopupProps) {
+export default function DocPopup({
+  description,
+  href,
+  className,
+}: DocPopupProps) {
   const capture = usePostHogClientCapture();
 
   return (
@@ -47,15 +53,22 @@ export default function DocPopup({ description, href }: DocPopupProps) {
           <Info className={"h-3 w-3"} />
         </div>
       </HoverCardTrigger>
-      <HoverCardContent>
-        {typeof description === "string" ? (
-          <div className="whitespace-break-spaces text-xs font-normal text-primary sm:pl-0">
-            {description}
-          </div>
-        ) : (
-          description
-        )}
-      </HoverCardContent>
+      <Portal>
+        <HoverCardContent>
+          {typeof description === "string" ? (
+            <div
+              className={cn(
+                "whitespace-break-spaces text-xs font-normal text-primary sm:pl-0",
+                className,
+              )}
+            >
+              {description}
+            </div>
+          ) : (
+            description
+          )}
+        </HoverCardContent>
+      </Portal>
     </HoverCard>
   );
 }

@@ -11,6 +11,8 @@ import { BarChart } from "@tremor/react";
 import { Card } from "@/src/components/ui/card";
 import { getColorsForCategories } from "@/src/features/dashboard/utils/getColorsForCategories";
 import { padChartData } from "@/src/features/dashboard/lib/score-analytics-utils";
+import { NoDataOrLoading } from "@/src/components/NoDataOrLoading";
+import { useClickhouse } from "@/src/components/layouts/ClickhouseAdminToggle";
 
 export function NumericScoreHistogram(props: {
   projectId: string;
@@ -46,6 +48,7 @@ export function NumericScoreHistogram(props: {
         },
       ],
       limit: 10000,
+      queryClickhouse: useClickhouse(),
     },
     {
       trpc: {
@@ -63,7 +66,9 @@ export function NumericScoreHistogram(props: {
   const colors = getColorsForCategories(chartLabels);
   const paddedChartData = padChartData(chartData);
 
-  return (
+  return histogram.isLoading || !Boolean(chartData.length) ? (
+    <NoDataOrLoading isLoading={histogram.isLoading} />
+  ) : (
     <Card className="min-h-[9rem] w-full flex-1 rounded-tremor-default border">
       <BarChart
         className="mt-4"

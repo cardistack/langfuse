@@ -1,11 +1,12 @@
 import { type TimeSeriesChartDataPoint } from "@/src/features/dashboard/components/BaseTimeSeriesChart";
 import { type FilterState } from "@langfuse/shared";
-import { type DatabaseRow } from "@/src/server/api/services/query-builder";
+import { type DatabaseRow } from "@/src/server/api/services/queryBuilder";
 import { api } from "@/src/utils/api";
 
 export const getAllModels = (
   projectId: string,
   globalFilterState: FilterState,
+  useClickhouse: boolean,
 ) => {
   const allModels = api.dashboard.chart.useQuery(
     {
@@ -22,6 +23,8 @@ export const getAllModels = (
         },
       ],
       groupBy: [{ type: "string", column: "model" }],
+      queryClickhouse: useClickhouse,
+      queryName: "distinct-models",
     },
     {
       trpc: {

@@ -1,5 +1,5 @@
 import { type DashboardDateRangeAggregationOption } from "@/src/utils/date-range-utils";
-import { type DatabaseRow } from "@/src/server/api/services/query-builder";
+import { type DatabaseRow } from "@/src/server/api/services/queryBuilder";
 
 // types
 type HistogramBin = { binLabel: string; count: number };
@@ -108,8 +108,10 @@ function groupCategoricalScoreDataByTimestamp(
 ): Record<string, DatabaseRow[]> {
   return data.reduce(
     (acc, row) => {
-      const timestamp = row[scoreTimestampAccessor];
-      if (!(timestamp instanceof Date)) return acc;
+      if (row[scoreTimestampAccessor] === null) {
+        return acc;
+      }
+      const timestamp = new Date(row[scoreTimestampAccessor] ?? new Date());
       const key = convertDateToStringTimestamp(timestamp);
       if (!acc[key]) {
         acc[key] = [];

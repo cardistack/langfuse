@@ -1,8 +1,6 @@
 import {
   type ScoreAggregate,
   type ScoreSimplified,
-} from "@/src/features/scores/lib/types";
-import {
   type APIScore,
   type ScoreSource,
   type ScoreDataType,
@@ -18,7 +16,7 @@ export const composeAggregateScoreKey = ({
   dataType: ScoreDataType;
   keyPrefix?: string;
 }): string => {
-  const formattedName = name.replaceAll(/-/g, "_"); // "-" reserved for splitting in namespace
+  const formattedName = name.replaceAll(/[-\.]/g, "_"); // "-" and "." reserved for splitting in namespace
   return `${formattedName}-${source}-${dataType}`;
 };
 

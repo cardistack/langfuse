@@ -13,10 +13,21 @@ import {
 import { DB } from ".";
 import { logger } from "./server";
 
-// Instantiated according to the Prisma documentation
-// https://www.prisma.io/docs/orm/more/help-and-troubleshooting/help-articles/nextjs-prisma-client-dev-practices
+export class PrismaClientSingleton {
+  private static instance: PrismaClient;
 
-const prismaClientSingleton = () => {
+  public static getInstance(): PrismaClient {
+    if (PrismaClientSingleton.instance) {
+      return PrismaClientSingleton.instance;
+    }
+
+    PrismaClientSingleton.instance = createPrismaInstance();
+
+    return PrismaClientSingleton.instance;
+  }
+}
+
+const createPrismaInstance = () => {
   const client = new PrismaClient<
     Prisma.PrismaClientOptions,
     "warn" | "error" | "query"
@@ -41,12 +52,45 @@ const prismaClientSingleton = () => {
   client.$on("error", (event) => {
     logger.error(`prisma:error ${event.message}`);
   });
-
   return client;
 };
 
-const kyselySingleton = (prismaClient: PrismaClient) => {
-  return prismaClient.$extends(
+export class KyselySingleton {
+  private static instance: { $kysely: Kysely<DB> };
+
+  public static getInstance() {
+    if (KyselySingleton.instance) {
+      return KyselySingleton.instance;
+    }
+
+    KyselySingleton.instance = PrismaClientSingleton.getInstance().$extends(
+      kyselyExtension({
+        kysely: (driver) =>
+          new Kysely<DB>({
+            dialect: {
+              // This is where the magic happens!
+              createDriver: () => driver,
+              // Don't forget to customize these to match your database!
+              createAdapter: () => new PostgresAdapter(),
+              createIntrospector: (db) => new PostgresIntrospector(db),
+              createQueryCompiler: () => new PostgresQueryCompiler(),
+            },
+          }),
+      }),
+    );
+
+    return KyselySingleton.instance;
+  }
+}
+
+declare const globalThis: {
+  prismaGlobal: PrismaClient | undefined;
+  kyselyPrismaGlobal: { $kysely: Kysely<DB> } | undefined;
+} & typeof global;
+
+if (process.env.NODE_ENV === "development") {
+  globalThis.prismaGlobal ??= createPrismaInstance(); // regular instantiation
+  globalThis.kyselyPrismaGlobal ??= globalThis.prismaGlobal.$extends(
     kyselyExtension({
       kysely: (driver) =>
         new Kysely<DB>({
@@ -61,16 +105,11 @@ const kyselySingleton = (prismaClient: PrismaClient) => {
         }),
     }),
   );
-};
-declare global {
-  // eslint-disable-next-line no-var
-  var prisma: undefined | ReturnType<typeof prismaClientSingleton>;
-  var kyselyPrisma: undefined | ReturnType<typeof kyselySingleton>;
 }
 
-export const prisma = globalThis.prisma ?? prismaClientSingleton();
-export const kyselyPrisma = globalThis.kyselyPrisma ?? kyselySingleton(prisma);
+export const prisma =
+  globalThis.prismaGlobal ?? PrismaClientSingleton.getInstance();
+export const kyselyPrisma =
+  globalThis.kyselyPrismaGlobal ?? KyselySingleton.getInstance();
 
 export * from "@prisma/client";
-
-if (process.env.NODE_ENV !== "production") globalThis.prisma = prisma;

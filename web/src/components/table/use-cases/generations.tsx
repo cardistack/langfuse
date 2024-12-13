@@ -1,17 +1,9 @@
-import { api, directApi } from "@/src/utils/api";
+import { api } from "@/src/utils/api";
 import { DataTable } from "@/src/components/table/data-table";
 import TableLink from "@/src/components/table/table-link";
 import { DataTableToolbar } from "@/src/components/table/data-table-toolbar";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { TokenUsageBadge } from "@/src/components/token-usage-badge";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/src/components/ui/dropdown-menu";
-import { Button } from "@/src/components/ui/button";
-import { ChevronDownIcon, Loader } from "lucide-react";
 import {
   NumberParam,
   StringParam,
@@ -27,30 +19,28 @@ import {
   type ObservationLevel,
   type FilterState,
   type ObservationOptions,
+  BatchExportTableName,
 } from "@langfuse/shared";
 import { cn } from "@/src/utils/tailwind";
 import { LevelColors } from "@/src/components/level-colors";
 import { numberFormatter, usdFormatter } from "@/src/utils/numbers";
-import {
-  exportOptions,
-  type BatchExportFileFormat,
-  observationsTableColsWithOptions,
-} from "@langfuse/shared";
+import { observationsTableColsWithOptions } from "@langfuse/shared";
 import { useOrderByState } from "@/src/features/orderBy/hooks/useOrderByState";
 import type Decimal from "decimal.js";
 import { useRowHeightLocalStorage } from "@/src/components/table/data-table-row-height-switch";
 import { IOTableCell } from "@/src/components/ui/CodeJsonViewer";
-import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePostHogClientCapture";
 import {
   getScoreGroupColumnProps,
   verifyAndPrefixScoreDataAgainstKeys,
 } from "@/src/features/scores/components/ScoreDetailColumnHelpers";
 import { useTableDateRange } from "@/src/hooks/useTableDateRange";
 import { useDebounce } from "@/src/hooks/useDebounce";
-import { type ScoreAggregate } from "@/src/features/scores/lib/types";
+import { type ScoreAggregate } from "@langfuse/shared";
 import { useIndividualScoreColumns } from "@/src/features/scores/hooks/useIndividualScoreColumns";
 import TagList from "@/src/features/tag/components/TagList";
 import useColumnOrder from "@/src/features/column-visibility/hooks/useColumnOrder";
+import { BatchExportTableButton } from "@/src/components/BatchExportTableButton";
+import { useClickhouse } from "@/src/components/layouts/ClickhouseAdminToggle";
 
 export type GenerationsTableRow = {
   id: string;
@@ -98,8 +88,6 @@ export default function GenerationsTable({
   promptVersion,
   omittedFilter = [],
 }: GenerationsTableProps) {
-  const capture = usePostHogClientCapture();
-  const [isExporting, setIsExporting] = useState(false);
   const [searchQuery, setSearchQuery] = useQueryParam(
     "search",
     withDefault(StringParam, null),
@@ -175,6 +163,7 @@ export default function GenerationsTable({
     page: 0,
     limit: 0,
     orderBy: null,
+    queryClickhouse: useClickhouse(),
   };
 
   const getAllPayload = {
@@ -182,6 +171,7 @@ export default function GenerationsTable({
     page: paginationState.pageIndex,
     limit: paginationState.pageSize,
     orderBy: orderByState,
+    queryClickhouse: useClickhouse(),
   };
 
   const generations = api.generations.all.useQuery(getAllPayload);
@@ -195,6 +185,7 @@ export default function GenerationsTable({
       projectId,
       startTimeFilter:
         startTimeFilter?.type === "datetime" ? startTimeFilter : undefined,
+      queryClickhouse: useClickhouse(),
     },
     {
       trpc: {
@@ -202,6 +193,10 @@ export default function GenerationsTable({
           skipBatch: true,
         },
       },
+      refetchOnMount: false,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+      staleTime: Infinity,
     },
   );
 
@@ -220,52 +215,6 @@ export default function GenerationsTable({
     );
   };
 
-  const handleExport = async (fileFormat: BatchExportFileFormat) => {
-    if (isExporting) return;
-
-    setIsExporting(true);
-    capture("generations:export", { file_format: fileFormat });
-    try {
-      const fileData = await directApi.generations.export.query({
-        projectId,
-        fileFormat,
-        filter: filterState,
-        searchQuery,
-        orderBy: orderByState,
-      });
-
-      let url: string;
-      if (fileData.type === "s3") {
-        url = fileData.url;
-      } else {
-        const file = new File([fileData.data], fileData.fileName, {
-          type: exportOptions[fileFormat].fileType,
-        });
-
-        // create url from file
-        url = URL.createObjectURL(file);
-      }
-
-      // Use a dynamically created anchor element to trigger the download
-      const a = document.createElement("a");
-      document.body.appendChild(a);
-      a.href = url;
-      a.download = fileData.fileName; // name of the downloaded file
-      a.click();
-      a.remove();
-
-      // Revoke the blob URL after using it
-      if (fileData.type === "data") {
-        setTimeout(() => URL.revokeObjectURL(url), 100);
-      }
-
-      setIsExporting(false);
-    } catch (e) {
-      console.error(e);
-      setIsExporting(false);
-    }
-  };
-
   const columns: LangfuseColumnDef<GenerationsTableRow>[] = [
     {
       accessorKey: "id",
@@ -279,7 +228,7 @@ export default function GenerationsTable({
         return typeof observationId === "string" &&
           typeof traceId === "string" ? (
           <TableLink
-            path={`/project/${projectId}/traces/${traceId}?observation=${observationId}`}
+            path={`/project/${projectId}/traces/${encodeURIComponent(traceId)}?observation=${encodeURIComponent(observationId)}`}
             value={observationId}
           />
         ) : null;
@@ -371,9 +320,9 @@ export default function GenerationsTable({
       enableSorting: true,
     },
     {
-      accessorKey: "timePerOutputToken",
-      id: "timePerOutputToken",
-      header: "Time per Output Token",
+      accessorKey: "tokensPerSecond",
+      id: "tokensPerSecond",
+      header: "Tokens per second",
       size: 200,
       cell: ({ row }) => {
         const latency: number | undefined = row.getValue("latency");
@@ -385,9 +334,9 @@ export default function GenerationsTable({
         return latency !== undefined &&
           (usage.completionTokens !== 0 || usage.totalTokens !== 0) ? (
           <span>
-            {usage.completionTokens
-              ? formatIntervalSeconds(latency / usage.completionTokens)
-              : formatIntervalSeconds(latency / usage.totalTokens)}
+            {usage.completionTokens && latency
+              ? Number((usage.completionTokens / latency).toFixed(1))
+              : undefined}
           </span>
         ) : undefined;
       },
@@ -577,6 +526,7 @@ export default function GenerationsTable({
             observationId={observationId}
             traceId={traceId}
             projectId={projectId}
+            startTime={row.getValue("startTime")}
             col="input"
             singleLine={rowHeight === "s"}
           />
@@ -598,6 +548,7 @@ export default function GenerationsTable({
             observationId={observationId}
             traceId={traceId}
             projectId={projectId}
+            startTime={row.getValue("startTime")}
             col="output"
             singleLine={rowHeight === "s"}
           />
@@ -622,6 +573,7 @@ export default function GenerationsTable({
             observationId={observationId}
             traceId={traceId}
             projectId={projectId}
+            startTime={row.getValue("startTime")}
             col="metadata"
             singleLine={rowHeight === "s"}
           />
@@ -734,7 +686,7 @@ export default function GenerationsTable({
             },
             promptId: generation.promptId ?? undefined,
             promptName: generation.promptName ?? undefined,
-            promptVersion: generation.promptVersion ?? undefined,
+            promptVersion: generation.promptVersion?.toString() ?? undefined,
             traceTags: generation.traceTags ?? undefined,
           };
         })
@@ -763,36 +715,11 @@ export default function GenerationsTable({
         selectedOption={selectedOption}
         setDateRangeAndOption={setDateRangeAndOption}
         actionButtons={
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" className="ml-auto whitespace-nowrap">
-                <span className="hidden @6xl:inline">
-                  {filterState.length > 0 || searchQuery
-                    ? "Export selection"
-                    : "Export all"}{" "}
-                </span>
-                <span className="@6xl:hidden">Export</span>
-                {isExporting ? (
-                  <Loader className="ml-2 h-4 w-4 animate-spin" />
-                ) : (
-                  <ChevronDownIcon className="ml-2 h-4 w-4" />
-                )}
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              {Object.entries(exportOptions).map(([key, options]) => (
-                <DropdownMenuItem
-                  key={key}
-                  className="capitalize"
-                  onClick={() =>
-                    void handleExport(key as BatchExportFileFormat)
-                  }
-                >
-                  as {options.label}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <BatchExportTableButton
+            {...{ projectId, filterState, orderByState }}
+            tableName={BatchExportTableName.Generations}
+            key="batchExport"
+          />
         }
       />
       <DataTable
@@ -833,12 +760,14 @@ const GenerationsDynamicCell = ({
   traceId,
   observationId,
   projectId,
+  startTime,
   col,
   singleLine = false,
 }: {
   traceId: string;
   observationId: string;
   projectId: string;
+  startTime?: Date;
   col: "input" | "output" | "metadata";
   singleLine: boolean;
 }) => {
@@ -847,6 +776,8 @@ const GenerationsDynamicCell = ({
       observationId,
       traceId,
       projectId,
+      startTime,
+      queryClickhouse: useClickhouse(),
     },
     {
       enabled: typeof traceId === "string" && typeof observationId === "string",

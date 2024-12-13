@@ -7,14 +7,14 @@ import { BarList } from "@tremor/react";
 import { TotalMetric } from "@/src/features/dashboard/components/TotalMetric";
 import { ExpandListButton } from "@/src/features/dashboard/components/cards/ChevronButton";
 import { useState } from "react";
-import DocPopup from "@/src/components/layouts/doc-popup";
-import { NoData } from "@/src/features/dashboard/components/NoData";
 import {
   createTracesTimeFilter,
   totalCostDashboardFormatted,
 } from "@/src/features/dashboard/lib/dashboard-utils";
 import { env } from "@/src/env.mjs";
 import { type DashboardDateRangeAggregationOption } from "@/src/utils/date-range-utils";
+import { NoDataOrLoading } from "@/src/components/NoDataOrLoading";
+import { useClickhouse } from "@/src/components/layouts/ClickhouseAdminToggle";
 
 type BarChartDataPoint = {
   name: string;
@@ -61,6 +61,8 @@ export const UserChart = ({
       orderBy: [
         { column: "calculatedTotalCost", direction: "DESC", agg: "SUM" },
       ],
+      queryClickhouse: useClickhouse(),
+      queryName: "observations-usage-by-users",
     },
     {
       trpc: {
@@ -84,6 +86,8 @@ export const UserChart = ({
         },
       ],
       orderBy: [{ column: "traceId", agg: "COUNT", direction: "DESC" }],
+      queryClickhouse: useClickhouse(),
+      queryName: "traces-grouped-by-user",
     },
     {
       trpc: {
@@ -182,12 +186,11 @@ export const UserChart = ({
                     />
                   </>
                 ) : (
-                  <NoData noDataText="No data">
-                    <DocPopup
-                      description="Consumption per user is tracked by passing their ids on traces."
-                      href="https://langfuse.com/docs/tracing-features/users"
-                    />
-                  </NoData>
+                  <NoDataOrLoading
+                    isLoading={user.isLoading}
+                    description="Consumption per user is tracked by passing their ids on traces."
+                    href="https://langfuse.com/docs/tracing-features/users"
+                  />
                 )}
               </>
             ),

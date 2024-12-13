@@ -1,5 +1,5 @@
 import { setupServer } from "msw/node";
-import { HttpResponse, http } from "msw";
+import { HttpResponse, http, passthrough } from "msw";
 import { logger } from "@langfuse/shared/src/server";
 
 const DEFAULT_RESPONSE = {
@@ -13,11 +13,20 @@ const DEFAULT_RESPONSE = {
       message: {
         role: "assistant",
         content: null,
-        function_call: {
-          name: "evaluate",
-          arguments:
-            '{"score":0.2,"reasoning":"The language used in the conversation was respectful and there were no personal attacks. However, there were some sarcastic comments which could be perceived as slightly negative."}',
-        },
+        tool_calls: [
+          {
+            function: {
+              name: "extract",
+              arguments: JSON.stringify({
+                score: 0,
+                reasoning:
+                  "The provided text is a harmless play on words that poses no risk of harm or offense. It is a lighthearted joke that uses wordplay to create humor without targeting or derogating any group of people.",
+              }),
+              type: "tool_call",
+              id: "call_cJ6HLI1gZSIRJVOrFsChO1SI",
+            },
+          },
+        ],
       },
       logprobs: null,
       finish_reason: "stop",
@@ -33,13 +42,37 @@ const DEFAULT_RESPONSE = {
 
 function CompletionHandler(response: HttpResponse) {
   return http.post("https://api.openai.com/v1/chat/completions", async () => {
-    logger.info("handler");
+    logger.info("openai handler");
     return response;
   });
 }
 
 function JsonCompletionHandler(data: object) {
   return CompletionHandler(HttpResponse.json(data));
+}
+
+function MinioCompletionHandler() {
+  return http.all("http://localhost:9090*", async (request) => {
+    logger.info("minio handler");
+    if ((request.params[0] as string).startsWith("/langfuse/events/")) {
+      return new HttpResponse("Success");
+    }
+    throw new Error("Unexpected path");
+  });
+}
+
+function ClickHouseCompletionHandler() {
+  return http.all("http://localhost:8123*", async (request) => {
+    logger.info("clickhouse handler");
+    return passthrough();
+  });
+}
+
+function AzuriteCompletionHandler() {
+  return http.all("http://localhost:10000*", async (request) => {
+    logger.info("handle azurite");
+    return passthrough();
+  });
 }
 
 function ErrorCompletionHandler(status: number, statusText: string) {
@@ -91,7 +124,12 @@ export class OpenAIServer {
   }
 
   respondWithData(data: object) {
-    this.internalServer.use(JsonCompletionHandler(data));
+    this.internalServer.use(
+      JsonCompletionHandler(data),
+      MinioCompletionHandler(),
+      ClickHouseCompletionHandler(),
+      AzuriteCompletionHandler(),
+    );
   }
 
   respondWithDefault() {

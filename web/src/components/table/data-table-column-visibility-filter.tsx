@@ -14,6 +14,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuPortal,
   DropdownMenuSubContent,
+  DropdownMenuSeparator,
 } from "@/src/components/ui/dropdown-menu";
 import {
   type ColumnOrderState,
@@ -206,6 +207,32 @@ function GroupVisibilityDropdownHeader<TData, TValue>({
   );
 }
 
+function setAllColumns<TData, TValue>(
+  columns: LangfuseColumnDef<TData, TValue>[],
+  visible: boolean,
+  groupName?: string,
+) {
+  return (oldVisibility: VisibilityState) => {
+    const newColumnVisibility: VisibilityState = { ...oldVisibility };
+    columns.forEach((col) => {
+      if (groupName && col.header === groupName && col.columns) {
+        col.columns.forEach((subCol) => {
+          if (subCol.enableHiding)
+            newColumnVisibility[subCol.accessorKey] = visible;
+        });
+      } else if (!groupName && col.enableHiding) {
+        newColumnVisibility[col.accessorKey] = visible;
+        if (col.columns) {
+          col.columns.forEach((subCol) => {
+            newColumnVisibility[subCol.accessorKey] = visible;
+          });
+        }
+      }
+    });
+    return newColumnVisibility;
+  };
+}
+
 export function DataTableColumnVisibilityFilter<TData, TValue>({
   columns,
   columnVisibility,
@@ -234,6 +261,17 @@ export function DataTableColumnVisibilityFilter<TData, TValue>({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [setColumnVisibility],
   );
+  const toggleAllColumns = useCallback(
+    (count: number, total: number, groupName?: string) => {
+      if (count === total) {
+        setColumnVisibility(setAllColumns(columns, false, groupName));
+      } else {
+        setColumnVisibility(setAllColumns(columns, true, groupName));
+      }
+    },
+    [setColumnVisibility, columns],
+  );
+
   const sensors = useSensors(
     useSensor(MouseSensor, {}),
     useSensor(TouchSensor, {}),
@@ -286,18 +324,31 @@ export function DataTableColumnVisibilityFilter<TData, TValue>({
         <DropdownMenuContent
           align="end"
           onPointerDownOutside={() => setIsOpen(false)}
-          className="max-h-96 overflow-y-auto"
+          className="max-h-[40dvh] overflow-y-auto"
         >
           <SortableContext
             items={columnIdsOrder}
             strategy={verticalListSortingStrategy}
           >
+            <DropdownMenuCheckboxItem
+              checked={
+                count === total ? true : count === 0 ? false : "indeterminate"
+              }
+              onCheckedChange={() => toggleAllColumns(count, total)}
+            >
+              <span>{count === total ? "Deselect All" : "Select All"}</span>
+            </DropdownMenuCheckboxItem>
+            <DropdownMenuSeparator />
             {columnIdsOrder.map((columnId, index) => {
               const column = columns.find(
                 (col) => col.accessorKey === columnId,
               );
               if (column) {
                 if (!!column.columns && Boolean(column.columns.length)) {
+                  const groupTotalCount = column.columns.length;
+                  const groupVisibleCount = column.columns.filter(
+                    (col) => columnVisibility[col.accessorKey],
+                  ).length;
                   return (
                     <DropdownMenuSub key={index}>
                       {isColumnOrderingEnabled ? (
@@ -313,7 +364,35 @@ export function DataTableColumnVisibilityFilter<TData, TValue>({
                         </DropdownMenuSubTrigger>
                       )}
                       <DropdownMenuPortal>
-                        <DropdownMenuSubContent>
+                        <DropdownMenuSubContent className="max-h-[40dvh] overflow-y-auto">
+                          <DropdownMenuCheckboxItem
+                            checked={
+                              groupVisibleCount === groupTotalCount
+                                ? true
+                                : groupVisibleCount === 0
+                                  ? false
+                                  : "indeterminate"
+                            }
+                            onCheckedChange={() => {
+                              if (
+                                column.header &&
+                                typeof column.header === "string"
+                              ) {
+                                toggleAllColumns(
+                                  groupVisibleCount,
+                                  groupTotalCount,
+                                  column.header,
+                                );
+                              }
+                            }}
+                          >
+                            <span>
+                              {groupTotalCount === groupVisibleCount
+                                ? "Deselect All"
+                                : "Select All"}
+                            </span>
+                          </DropdownMenuCheckboxItem>
+                          <DropdownMenuSeparator />
                           {column.columns.map((col) => (
                             <ColumnVisibilityDropdownItem
                               key={col.accessorKey}

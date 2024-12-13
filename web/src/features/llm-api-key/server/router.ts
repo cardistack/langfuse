@@ -9,15 +9,21 @@ import {
 import {
   type ChatMessage,
   LLMApiKeySchema,
-  fetchLLMCompletion,
   ChatMessageRole,
   supportedModels,
+  GCPServiceAccountKeySchema,
 } from "@langfuse/shared";
 import { encrypt } from "@langfuse/shared/encryption";
-import { logger } from "@langfuse/shared/src/server";
+import {
+  fetchLLMCompletion,
+  LLMAdapter,
+  logger,
+} from "@langfuse/shared/src/server";
 
 export function getDisplaySecretKey(secretKey: string) {
-  return "..." + secretKey.slice(-4);
+  return secretKey.endsWith('"}')
+    ? "..." + secretKey.slice(-6, -2)
+    : "..." + secretKey.slice(-4);
 }
 
 export const llmApiKeyRouter = createTRPCRouter({
@@ -41,6 +47,7 @@ export const llmApiKeyRouter = createTRPCRouter({
             baseURL: input.baseURL,
             withDefaultModels: input.withDefaultModels,
             customModels: input.customModels,
+            config: input.config,
           },
         });
 
@@ -141,6 +148,14 @@ export const llmApiKeyRouter = createTRPCRouter({
 
         if (!model) throw Error("No model found");
 
+        if (input.adapter === LLMAdapter.VertexAI) {
+          const parsed = GCPServiceAccountKeySchema.safeParse(
+            JSON.parse(input.secretKey),
+          );
+          if (!parsed.success)
+            throw Error("Invalid GCP service account JSON key");
+        }
+
         const testMessages: ChatMessage[] = [
           { role: ChatMessageRole.System, content: "You are a bot" },
           { role: ChatMessageRole.User, content: "How are you?" },
@@ -157,6 +172,7 @@ export const llmApiKeyRouter = createTRPCRouter({
           messages: testMessages,
           streaming: false,
           maxRetries: 1,
+          config: input.config,
         });
 
         return { success: true };

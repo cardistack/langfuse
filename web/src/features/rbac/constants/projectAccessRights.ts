@@ -3,9 +3,9 @@ import { type Role } from "@langfuse/shared/src/db";
 const projectScopes = [
   "projectMembers:read",
   "projectMembers:CUD",
+
   "apiKeys:read",
-  "apiKeys:create",
-  "apiKeys:delete",
+  "apiKeys:CUD",
 
   "objects:publish",
   "objects:bookmark",
@@ -17,6 +17,9 @@ const projectScopes = [
 
   "scoreConfigs:CUD",
   "scoreConfigs:read",
+
+  "annotationQueues:read",
+  "annotationQueues:CUD",
 
   "project:read",
   "project:update",
@@ -45,6 +48,9 @@ const projectScopes = [
 
   "comments:CUD",
   "comments:read",
+
+  "promptExperiments:CUD",
+  "promptExperiments:read",
 ] as const;
 
 // type string of all Resource:Action, e.g. "members:read"
@@ -58,8 +64,7 @@ export const projectRoleAccessRights: Record<Role, ProjectScope[]> = {
     "projectMembers:read",
     "projectMembers:CUD",
     "apiKeys:read",
-    "apiKeys:create",
-    "apiKeys:delete",
+    "apiKeys:CUD",
     "integrations:CRUD",
     "objects:publish",
     "objects:bookmark",
@@ -83,6 +88,10 @@ export const projectRoleAccessRights: Record<Role, ProjectScope[]> = {
     "batchExport:create",
     "comments:CUD",
     "comments:read",
+    "annotationQueues:read",
+    "annotationQueues:CUD",
+    "promptExperiments:CUD",
+    "promptExperiments:read",
   ],
   ADMIN: [
     "project:read",
@@ -90,8 +99,7 @@ export const projectRoleAccessRights: Record<Role, ProjectScope[]> = {
     "projectMembers:read",
     "projectMembers:CUD",
     "apiKeys:read",
-    "apiKeys:create",
-    "apiKeys:delete",
+    "apiKeys:CUD",
     "integrations:CRUD",
     "objects:publish",
     "objects:bookmark",
@@ -115,6 +123,10 @@ export const projectRoleAccessRights: Record<Role, ProjectScope[]> = {
     "batchExport:create",
     "comments:CUD",
     "comments:read",
+    "annotationQueues:read",
+    "annotationQueues:CUD",
+    "promptExperiments:CUD",
+    "promptExperiments:read",
   ],
   MEMBER: [
     "project:read",
@@ -138,6 +150,10 @@ export const projectRoleAccessRights: Record<Role, ProjectScope[]> = {
     "batchExport:create",
     "comments:CUD",
     "comments:read",
+    "annotationQueues:read",
+    "annotationQueues:CUD",
+    "promptExperiments:CUD",
+    "promptExperiments:read",
   ],
   VIEWER: [
     "project:read",
@@ -148,6 +164,8 @@ export const projectRoleAccessRights: Record<Role, ProjectScope[]> = {
     "evalJobExecution:read",
     "llmApiKeys:read",
     "comments:read",
+    "annotationQueues:read",
+    "promptExperiments:read",
   ],
   NONE: [],
 };

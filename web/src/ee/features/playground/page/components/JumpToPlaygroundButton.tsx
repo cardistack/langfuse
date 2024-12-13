@@ -18,7 +18,7 @@ import {
   type UIModelParams,
   ZodModelConfig,
 } from "@langfuse/shared";
-import { useHasOrgEntitlement } from "@/src/features/entitlements/hooks";
+import { useHasEntitlement } from "@/src/features/entitlements/hooks";
 
 type JumpToPlaygroundButtonProps = (
   | {
@@ -42,7 +42,7 @@ export const JumpToPlaygroundButton: React.FC<JumpToPlaygroundButtonProps> = (
   const projectId = useProjectIdFromURL();
   const { setPlaygroundCache } = usePlaygroundCache();
   const [capturedState, setCapturedState] = useState<PlaygroundCache>(null);
-  const available = useHasOrgEntitlement("playground");
+  const available = useHasEntitlement("playground");
 
   useEffect(() => {
     if (props.source === "prompt") {
@@ -62,13 +62,16 @@ export const JumpToPlaygroundButton: React.FC<JumpToPlaygroundButtonProps> = (
   return (
     <Button
       variant={props.variant ?? "secondary"}
+      size={props.source === "prompt" ? "icon" : "default"}
       title="Test in LLM playground"
       onClick={handleClick}
       asChild
     >
       <Link href={`/project/${projectId}/playground`}>
         <Terminal className="h-4 w-4" />
-        <span className="ml-2">Test in playground</span>
+        {props.source === "generation" && (
+          <span className="ml-2">Test in playground</span>
+        )}
       </Link>
     </Button>
   );
@@ -79,6 +82,16 @@ const ParsedChatMessageListSchema = z.array(
     role: z.nativeEnum(ChatMessageRole),
     content: z.union([
       z.string(),
+      // If system message is cached, the message is an array of objects with a text property
+      z
+        .array(
+          z
+            .object({
+              text: z.string(),
+            })
+            .transform((v) => v.text),
+        )
+        .transform((v) => v.join("")),
       z.any().transform((v) => JSON.stringify(v, null, 2)),
     ]),
   }),
@@ -107,13 +120,26 @@ const parseGeneration = (generation: Observation): PlaygroundCache => {
   if (generation.type !== "GENERATION") return null;
 
   const modelParams = parseModelParams(generation);
-  const input = generation.input?.valueOf();
+  let input = generation.input?.valueOf();
 
   if (typeof input === "string") {
-    return {
-      messages: [createEmptyMessage(ChatMessageRole.System, input)],
-      modelParams,
-    };
+    try {
+      input = JSON.parse(input);
+
+      if (typeof input === "string") {
+        return {
+          messages: [createEmptyMessage(ChatMessageRole.System, input)],
+          modelParams,
+        };
+      }
+    } catch (err) {
+      return {
+        messages: [
+          createEmptyMessage(ChatMessageRole.System, input?.toString()),
+        ],
+        modelParams,
+      };
+    }
   }
 
   if (typeof input === "object") {

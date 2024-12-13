@@ -10,11 +10,12 @@ import { DashboardCard } from "@/src/features/dashboard/components/cards/Dashboa
 import { BaseTimeSeriesChart } from "@/src/features/dashboard/components/BaseTimeSeriesChart";
 import { TabComponent } from "@/src/features/dashboard/components/TabsComponent";
 import { latencyFormatter } from "@/src/utils/numbers";
-import { NoData } from "@/src/features/dashboard/components/NoData";
 import {
   dashboardDateRangeAggregationSettings,
   type DashboardDateRangeAggregationOption,
 } from "@/src/utils/date-range-utils";
+import { NoDataOrLoading } from "@/src/components/NoDataOrLoading";
+import { useClickhouse } from "@/src/components/layouts/ClickhouseAdminToggle";
 
 export const GenerationLatencyChart = ({
   className,
@@ -56,6 +57,8 @@ export const GenerationLatencyChart = ({
         },
         { type: "string", column: "model" },
       ],
+      queryClickhouse: useClickhouse(),
+      queryName: "model-latencies-over-time",
     },
     {
       trpc: {
@@ -66,7 +69,7 @@ export const GenerationLatencyChart = ({
     },
   );
 
-  const allModels = getAllModels(projectId, globalFilterState);
+  const allModels = getAllModels(projectId, globalFilterState, useClickhouse());
 
   const getData = (valueColumn: string) => {
     return latencies.data && allModels.length > 0
@@ -126,7 +129,7 @@ export const GenerationLatencyChart = ({
                     valueFormatter={latencyFormatter}
                   />
                 ) : (
-                  <NoData noDataText="No data" />
+                  <NoDataOrLoading isLoading={latencies.isLoading} />
                 )}
               </>
             ),

@@ -27,6 +27,7 @@ import { useQueryParams, withDefault, NumberParam } from "use-query-params";
 import TagList from "@/src/features/tag/components/TagList";
 import { cn } from "@/src/utils/tailwind";
 import useColumnOrder from "@/src/features/column-visibility/hooks/useColumnOrder";
+import { useClickhouse } from "@/src/components/layouts/ClickhouseAdminToggle";
 
 export type ScoresTableRow = {
   id: string;
@@ -131,6 +132,7 @@ export default function ScoresTable({
     page: 0,
     limit: 1,
     orderBy: null,
+    queryClickhouse: useClickhouse(),
   };
 
   const getAllPayload = {
@@ -138,6 +140,7 @@ export default function ScoresTable({
     page: paginationState.pageIndex,
     limit: paginationState.pageSize,
     orderBy: orderByState,
+    queryClickhouse: useClickhouse(),
   };
 
   const scores = api.scores.all.useQuery(getAllPayload);
@@ -151,6 +154,7 @@ export default function ScoresTable({
         dateRangeFilter[0]?.type === "datetime"
           ? dateRangeFilter[0]
           : undefined,
+      queryClickhouse: useClickhouse(),
     },
     {
       trpc: {
@@ -158,6 +162,10 @@ export default function ScoresTable({
           skipBatch: true,
         },
       },
+      refetchOnMount: false,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+      staleTime: Infinity,
     },
   );
 
@@ -174,7 +182,7 @@ export default function ScoresTable({
         return typeof value === "string" ? (
           <>
             <TableLink
-              path={`/project/${projectId}/traces/${value}`}
+              path={`/project/${projectId}/traces/${encodeURIComponent(value)}`}
               value={value}
             />
           </>
@@ -194,7 +202,7 @@ export default function ScoresTable({
         const traceId = row.getValue("traceId") as ScoresTableRow["traceId"];
         return traceId && observationId ? (
           <TableLink
-            path={`/project/${projectId}/traces/${traceId}?observation=${observationId}`}
+            path={`/project/${projectId}/traces/${encodeURIComponent(traceId)}?observation=${encodeURIComponent(observationId)}`}
             value={observationId}
           />
         ) : undefined;
@@ -236,7 +244,7 @@ export default function ScoresTable({
         return typeof value === "string" ? (
           <>
             <TableLink
-              path={`/project/${projectId}/users/${value}`}
+              path={`/project/${projectId}/users/${encodeURIComponent(value)}`}
               value={value}
             />
           </>
@@ -328,14 +336,14 @@ export default function ScoresTable({
         href: "https://langfuse.com/docs/scores/model-based-evals",
       },
       enableHiding: true,
-      enableSorting: true,
+      enableSorting: false,
       size: 150,
       cell: ({ row }) => {
         const value = row.getValue("jobConfigurationId");
         return typeof value === "string" ? (
           <>
             <TableLink
-              path={`/project/${projectId}/evals/configs/${value}`}
+              path={`/project/${projectId}/evals/${value}`}
               value={value}
             />
           </>
@@ -396,7 +404,7 @@ export default function ScoresTable({
           ? score.value % 1 === 0
             ? String(score.value)
             : score.value.toFixed(4)
-          : score.stringValue ?? "",
+          : (score.stringValue ?? ""),
       author: {
         userId: score.authorUserId ?? undefined,
         image: score.authorUserImage ?? undefined,

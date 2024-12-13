@@ -1,5 +1,6 @@
 import { LlmApiKeys } from "@prisma/client";
 import z from "zod";
+import { BedrockConfigSchema } from "../../interfaces/customLLMProviderConfigSchemas";
 
 export type PromptVariable = { name: string; value: string; isUsed: boolean };
 
@@ -14,6 +15,8 @@ export enum LLMAdapter {
   Anthropic = "anthropic",
   OpenAI = "openai",
   Azure = "azure",
+  Bedrock = "bedrock",
+  VertexAI = "vertex-ai",
 }
 
 export enum ChatMessageRole {
@@ -23,6 +26,20 @@ export enum ChatMessageRole {
 }
 
 export const ChatMessageDefaultRoleSchema = z.nativeEnum(ChatMessageRole);
+
+const ChatMessageSchema = z.object({
+  role: z.union([ChatMessageDefaultRoleSchema, z.string()]), // Users may ingest any string as role via API/SDK
+  content: z.string(),
+});
+
+export const ChatMessageListSchema = z.array(ChatMessageSchema);
+export const TextPromptSchema = z.string().min(1, "Enter a prompt");
+
+export const PromptContentSchema = z.union([
+  ChatMessageListSchema,
+  TextPromptSchema,
+]);
+export type PromptContent = z.infer<typeof PromptContentSchema>;
 
 export type ModelParams = {
   provider: string;
@@ -47,13 +64,28 @@ export const ZodModelConfig = z.object({
   top_p: z.coerce.number().optional(),
 });
 
-// NOTE: Update docs page when changing this!
+// Experiment config
+export const ExperimentMetadataSchema = z
+  .object({
+    prompt_id: z.string(),
+    provider: z.string(),
+    model: z.string(),
+    model_params: ZodModelConfig,
+  })
+  .strict();
+export type ExperimentMetadata = z.infer<typeof ExperimentMetadataSchema>;
+
+// NOTE: Update docs page when changing this! https://langfuse.com/docs/playground#openai-playground--anthropic-playground
 export const openAIModels = [
   "gpt-4o",
   "gpt-4o-2024-08-06",
   "gpt-4o-2024-05-13",
   "gpt-4o-mini",
   "gpt-4o-mini-2024-07-18",
+  "o1-preview",
+  "o1-preview-2024-09-12",
+  "o1-mini",
+  "o1-mini-2024-09-12",
   "gpt-4-turbo-preview",
   "gpt-4-1106-preview",
   "gpt-4-0613",
@@ -70,22 +102,33 @@ export const openAIModels = [
 
 export type OpenAIModel = (typeof openAIModels)[number];
 
-// NOTE: Update docs page when changing this!
+// NOTE: Update docs page when changing this! https://langfuse.com/docs/playground#openai-playground--anthropic-playground
 export const anthropicModels = [
+  "claude-3-5-sonnet-20241022",
   "claude-3-5-sonnet-20240620",
   "claude-3-opus-20240229",
   "claude-3-sonnet-20240229",
+  "claude-3-5-haiku-20241022",
   "claude-3-haiku-20240307",
   "claude-2.1",
   "claude-2.0",
   "claude-instant-1.2",
 ] as const;
 
+export const vertexAIModels = [
+  "gemini-1.5-pro",
+  "gemini-1.5-flash",
+  "gemini-1.0-pro",
+] as const;
+
 export type AnthropicModel = (typeof anthropicModels)[number];
+export type VertexAIModel = (typeof vertexAIModels)[number];
 export const supportedModels = {
   [LLMAdapter.Anthropic]: anthropicModels,
   [LLMAdapter.OpenAI]: openAIModels,
+  [LLMAdapter.VertexAI]: vertexAIModels,
   [LLMAdapter.Azure]: [],
+  [LLMAdapter.Bedrock]: [],
 } as const;
 
 export type LLMFunctionCall = {
@@ -107,6 +150,7 @@ export const LLMApiKeySchema = z
     baseURL: z.string().nullable(),
     customModels: z.array(z.string()),
     withDefaultModels: z.boolean(),
+    config: BedrockConfigSchema.nullish(), // currently only Bedrock has additional config
   })
   // strict mode to prevent extra keys. Thorws error otherwise
   // https://github.com/colinhacks/zod?tab=readme-ov-file#strict

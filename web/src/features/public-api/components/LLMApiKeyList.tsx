@@ -26,7 +26,7 @@ import { api } from "@/src/utils/api";
 import { DialogDescription } from "@radix-ui/react-dialog";
 import { Alert, AlertDescription, AlertTitle } from "@/src/components/ui/alert";
 import { CreateLLMApiKeyDialog } from "./CreateLLMApiKeyDialog";
-import { useOrgEntitlements } from "@/src/features/entitlements/hooks";
+import { useEntitlements } from "@/src/features/entitlements/hooks";
 
 export function LlmApiKeyList(props: { projectId: string }) {
   const hasAccess = useHasProjectAccess({
@@ -35,7 +35,7 @@ export function LlmApiKeyList(props: { projectId: string }) {
   });
 
   // only show if the user has access to features that require LLM API keys
-  const entitlements = useOrgEntitlements();
+  const entitlements = useEntitlements();
   const isAvailable =
     entitlements.includes("playground") ||
     entitlements.includes("model-based-evaluations");
@@ -82,7 +82,7 @@ export function LlmApiKeyList(props: { projectId: string }) {
               <TableHead className="text-primary md:table-cell">
                 Provider
               </TableHead>
-              <TableHead className="hidden text-primary md:table-cell">
+              <TableHead className="text-primary md:table-cell">
                 Adapter
               </TableHead>
               <TableHead className="text-primary md:table-cell">
@@ -109,9 +109,7 @@ export function LlmApiKeyList(props: { projectId: string }) {
                     {apiKey.createdAt.toLocaleDateString()}
                   </TableCell>
                   <TableCell className="font-mono">{apiKey.provider}</TableCell>
-                  <TableCell className="hidden font-mono">
-                    {apiKey.adapter}
-                  </TableCell>
+                  <TableCell className="font-mono">{apiKey.adapter}</TableCell>
                   <TableCell className="max-w-md overflow-auto font-mono">
                     {apiKey.baseURL ?? "default"}
                   </TableCell>

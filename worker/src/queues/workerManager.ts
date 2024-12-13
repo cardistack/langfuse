@@ -1,8 +1,61 @@
-import { Job, Processor, Worker, WorkerOptions } from "bullmq";
-import { logger, createNewRedisInstance } from "@langfuse/shared/src/server";
+import { Job, Processor, Queue, Worker, WorkerOptions } from "bullmq";
+import {
+  getQueue,
+  convertQueueNameToMetricName,
+  createNewRedisInstance,
+  logger,
+  QueueName,
+  recordGauge,
+  recordHistogram,
+  recordIncrement,
+  redisQueueRetryOptions,
+  traceException,
+} from "@langfuse/shared/src/server";
 
 export class WorkerManager {
   private static workers: { [key: string]: Worker } = {};
+
+  private static getQueue(queueName: QueueName): Queue | null {
+    return getQueue(queueName);
+  }
+
+  private static metricWrapper(
+    processor: Processor,
+    queueName: QueueName,
+  ): Processor {
+    return async (job: Job) => {
+      const startTime = Date.now();
+      const waitTime = Date.now() - job.timestamp;
+      recordIncrement(convertQueueNameToMetricName(queueName) + ".request");
+      recordHistogram(
+        convertQueueNameToMetricName(queueName) + ".wait_time",
+        waitTime,
+        {
+          unit: "milliseconds",
+        },
+      );
+      const result = await processor(job);
+      await WorkerManager.getQueue(queueName)
+        ?.count()
+        .then((count) => {
+          recordGauge(
+            convertQueueNameToMetricName(queueName) + ".length",
+            count,
+            {
+              unit: "records",
+            },
+          );
+          return count;
+        })
+        .catch();
+      recordHistogram(
+        convertQueueNameToMetricName(queueName) + ".processing_time",
+        Date.now() - startTime,
+        { unit: "milliseconds" },
+      );
+      return result;
+    };
+  }
 
   public static async closeWorkers(): Promise<void> {
     await Promise.all(
@@ -12,7 +65,7 @@ export class WorkerManager {
   }
 
   public static register(
-    queueName: string,
+    queueName: QueueName,
     processor: Processor,
     additionalOptions: Partial<WorkerOptions> = {},
   ): void {
@@ -22,40 +75,40 @@ export class WorkerManager {
     }
 
     // Create redis connection for queue worker
-    const redisInstance = createNewRedisInstance({
-      retryStrategy: (times: number) => {
-        // https://docs.bullmq.io/guide/going-to-production#retrystrategy
-        // Retries forever. Waits at least 1s and at most 20s between retries.
-        logger.debug(`Connection to redis lost. Retry attempt: ${times}`);
-        return Math.max(Math.min(Math.exp(times), 20000), 1000);
-      },
-      reconnectOnError: (err: Error) => {
-        logger.warn(`Failed to connect to redis: ${err}. Reconnecting...`);
-        return true;
-      },
-    });
+    const redisInstance = createNewRedisInstance(redisQueueRetryOptions);
     if (!redisInstance) {
       logger.error("Failed to initialize redis connection");
       return;
     }
 
     // Register worker
-    const worker = new Worker(queueName, processor, {
-      connection: redisInstance,
-      ...additionalOptions,
-    });
+    const worker = new Worker(
+      queueName,
+      WorkerManager.metricWrapper(processor, queueName),
+      {
+        connection: redisInstance,
+        ...additionalOptions,
+      },
+    );
     WorkerManager.workers[queueName] = worker;
     logger.info(`${queueName} executor started: ${worker.isRunning()}`);
 
     // Add error handling
     worker.on("failed", (job: Job | undefined, err: Error) => {
       logger.error(
-        `Queue Job ${job?.name} with id ${job?.id} in ${queueName} failed`,
+        `Queue job ${job?.name} with id ${job?.id} in ${queueName} failed`,
         err,
       );
+      traceException(err);
+      recordIncrement(convertQueueNameToMetricName(queueName) + ".failed");
     });
     worker.on("error", (failedReason: Error) => {
-      logger.error(`Queue worker ${queueName} failed: ${failedReason}`);
+      logger.error(
+        `Queue job ${queueName} errored: ${failedReason}`,
+        failedReason,
+      );
+      traceException(failedReason);
+      recordIncrement(convertQueueNameToMetricName(queueName) + ".error");
     });
   }
 }

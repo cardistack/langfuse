@@ -2,12 +2,12 @@ import { api } from "@/src/utils/api";
 import { type FilterState } from "@langfuse/shared";
 import { ExpandListButton } from "@/src/features/dashboard/components/cards/ChevronButton";
 import { useState } from "react";
-import DocPopup from "@/src/components/layouts/doc-popup";
 import { DashboardCard } from "@/src/features/dashboard/components/cards/DashboardCard";
 import { TotalMetric } from "@/src/features/dashboard/components/TotalMetric";
 import { BarList } from "@tremor/react";
-import { NoData } from "@/src/features/dashboard/components/NoData";
 import { compactNumberFormatter } from "@/src/utils/numbers";
+import { NoDataOrLoading } from "@/src/components/NoDataOrLoading";
+import { useClickhouse } from "@/src/components/layouts/ClickhouseAdminToggle";
 
 export const TracesBarListChart = ({
   className,
@@ -29,6 +29,8 @@ export const TracesBarListChart = ({
       from: "traces",
       select: [{ column: "traceId", agg: "COUNT" }],
       filter: timeFilter,
+      queryClickhouse: useClickhouse(),
+      queryName: "traces-total",
     },
     {
       trpc: {
@@ -47,6 +49,8 @@ export const TracesBarListChart = ({
       filter: timeFilter,
       groupBy: [{ column: "traceName", type: "string" }],
       orderBy: [{ column: "traceId", direction: "DESC", agg: "COUNT" }],
+      queryClickhouse: useClickhouse(),
+      queryName: "traces-grouped-by-name",
     },
     {
       trpc: {
@@ -99,12 +103,11 @@ export const TracesBarListChart = ({
             />
           </>
         ) : (
-          <NoData noDataText="No data">
-            <DocPopup
-              description="Traces contain details about LLM applications and can be created using the SDK."
-              href="https://langfuse.com/docs/get-started"
-            />
-          </NoData>
+          <NoDataOrLoading
+            isLoading={traces.isLoading || totalTraces.isLoading}
+            description="Traces contain details about LLM applications and can be created using the SDK."
+            href="https://langfuse.com/docs/get-started"
+          />
         )}
         <ExpandListButton
           isExpanded={isExpanded}

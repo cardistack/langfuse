@@ -1,6 +1,11 @@
 import { v4 } from "uuid";
 import { JobExecutionStatus, Prisma, prisma } from "@langfuse/shared/src/db";
-import { OrgEnrichedApiKey, redis } from "@langfuse/shared/src/server";
+import {
+  getObservationById,
+  getTraceById,
+  OrgEnrichedApiKey,
+  redis,
+} from "@langfuse/shared/src/server";
 import waitForExpect from "wait-for-expect";
 
 const generateAuth = (username: string, password: string) => {
@@ -11,6 +16,7 @@ const generateAuth = (username: string, password: string) => {
 const workerAdminAuth = generateAuth("admin", "myworkerpassword");
 
 const userApiKeyAuth = generateAuth("pk-lf-1234567890", "sk-lf-1234567890");
+const projectId = "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a";
 
 describe("Health endpoints", () => {
   it("web container returns healthy", async () => {
@@ -57,6 +63,7 @@ describe("Ingestion Pipeline", () => {
           timestamp: new Date().toISOString(),
           body: {
             name: "test trace",
+            timestamp: new Date().toISOString(),
             id: traceId,
             userId: "user-1", // triggers the eval
           },
@@ -69,6 +76,7 @@ describe("Ingestion Pipeline", () => {
             id: spanId,
             traceId: traceId,
             name: "test span",
+            startTime: new Date().toISOString(),
           },
         },
       ],
@@ -86,70 +94,74 @@ describe("Ingestion Pipeline", () => {
       body: JSON.stringify(event),
     });
 
-    await waitForExpect(async () => {
-      // we need a second call to the public API with the API key, so that it is stored in redis
-      // first call (ingestion above) generates the new, fast API hash
-      // second call (below) stores the API key in redis
-      const traceUrl = `http://localhost:3000/api/public/traces/${traceId}`;
+    await waitForExpect(
+      async () => {
+        // we need a second call to the public API with the API key, so that it is stored in redis
+        // first call (ingestion above) generates the new, fast API hash
+        // second call (below) stores the API key in redis
+        const traceUrl = `http://localhost:3000/api/public/traces/${traceId}`;
 
-      const traceResponse = await fetch(traceUrl, {
-        headers: {
-          Authorization: userApiKeyAuth,
-        },
-      });
+        const traceResponse = await fetch(traceUrl, {
+          headers: {
+            Authorization: userApiKeyAuth,
+          },
+        });
 
-      expect(traceResponse.status).toBe(200);
-      expect(traceResponse.body).not.toBeNull();
-      expect((await traceResponse.json()).id).toBe(traceId);
+        expect(traceResponse.status).toBe(200);
+        expect(traceResponse.body).not.toBeNull();
+        expect((await traceResponse.json()).id).toBe(traceId);
 
-      const trace = await prisma.trace.findUnique({
-        where: {
-          id: traceId,
-        },
-      });
-      expect(trace).not.toBeNull();
-      expect(trace?.name).toBe("test trace");
+        const trace = await getTraceById(traceId, projectId);
+        expect(trace).not.toBeNull();
+        expect(trace?.name).toBe("test trace");
 
-      const observation = await prisma.observation.findUnique({
-        where: {
-          id: spanId,
-          traceId: traceId,
-        },
-      });
-      expect(observation).not.toBeNull();
-      expect(observation?.name).toBe("test span");
+        const observation = await getObservationById(spanId, projectId);
+        expect(observation).not.toBeNull();
+        expect(observation?.name).toBe("test span");
 
-      expect(redis).not.toBeNull();
+        console.log("observationFounds", observation);
 
-      const redisKeys = await redis?.keys(`api-key:*`);
-      expect(redisKeys?.length).toBe(1);
-      const redisValue = await redis?.get(redisKeys![0]);
+        expect(redis).not.toBeNull();
 
-      const llmApiKey = OrgEnrichedApiKey.parse(JSON.parse(redisValue!));
-      expect(llmApiKey.projectId).toBe("7a88fb47-b4e2-43b8-a06c-a5ce950dc53a");
-    });
+        const redisKeys = await redis?.keys(`api-key:*`);
+        expect(redisKeys?.length).toBe(1);
+        const redisValue = await redis?.get(redisKeys![0]);
+
+        const llmApiKey = OrgEnrichedApiKey.parse(JSON.parse(redisValue!));
+        expect(llmApiKey.projectId).toBe(
+          "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
+        );
+      },
+      40000,
+      1000,
+    );
 
     // check for eval
-    await waitForExpect(async () => {
-      const evalExecution = await prisma.jobExecution.findFirst({
-        where: {
-          jobInputTraceId: traceId,
-          projectId: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
-        },
-      });
+    await waitForExpect(
+      async () => {
+        const evalExecution = await prisma.jobExecution.findFirst({
+          where: {
+            jobInputTraceId: traceId,
+            projectId: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
+          },
+        });
+        console.log("evalExecution", evalExecution);
 
-      expect(evalExecution).not.toBeNull();
+        expect(evalExecution).not.toBeNull();
 
-      if (!evalExecution) {
-        return;
-      }
+        if (!evalExecution) {
+          return;
+        }
 
-      // failure due to missing openai key in the pipeline. Expected
-      expect(evalExecution.status).toBe(JobExecutionStatus.ERROR);
-    }, 20000);
+        // failure due to missing openai key in the pipeline. Expected
+        expect(evalExecution.status).toBe(JobExecutionStatus.ERROR);
+      },
+      60000,
+      10000,
+    );
 
     expect(response.status).toBe(207);
-  }, 25000);
+  }, 70000);
 
   it("rate limit ingestion", async () => {
     // update the org in the database and set the rate limit to 1 for ingestion

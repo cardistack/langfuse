@@ -33,6 +33,7 @@ import {
   type TraceOptions,
   tracesTableColsWithOptions,
   type ObservationLevel,
+  BatchExportTableName,
 } from "@langfuse/shared";
 import { useRowHeightLocalStorage } from "@/src/components/table/data-table-row-height-switch";
 import { IOTableCell } from "@/src/components/ui/CodeJsonViewer";
@@ -42,20 +43,22 @@ import {
 } from "@/src/features/scores/components/ScoreDetailColumnHelpers";
 import { useTableDateRange } from "@/src/hooks/useTableDateRange";
 import { useDebounce } from "@/src/hooks/useDebounce";
-import { type ScoreAggregate } from "@/src/features/scores/lib/types";
+import { type ScoreAggregate } from "@langfuse/shared";
 import { useIndividualScoreColumns } from "@/src/features/scores/hooks/useIndividualScoreColumns";
 import { joinTableCoreAndMetrics } from "@/src/components/table/utils/joinTableCoreAndMetrics";
 import { Skeleton } from "@/src/components/ui/skeleton";
 import useColumnOrder from "@/src/features/column-visibility/hooks/useColumnOrder";
+import { BatchExportTableButton } from "@/src/components/BatchExportTableButton";
+import { useClickhouse } from "@/src/components/layouts/ClickhouseAdminToggle";
 
 export type TracesTableRow = {
   bookmarked: boolean;
   id: string;
-  timestamp: string;
+  timestamp: Date;
   name: string;
   userId: string;
   level?: ObservationLevel;
-  observationCount?: number;
+  observationCount?: bigint;
   // scores holds grouped column with individual scores
   scores?: ScoreAggregate;
   latency?: number;
@@ -145,6 +148,7 @@ export default function TracesTable({
     page: 0,
     limit: 0,
     orderBy: null,
+    queryClickhouse: useClickhouse(),
   };
 
   const tracesAllQueryFilter = {
@@ -152,13 +156,16 @@ export default function TracesTable({
     page: paginationState.pageIndex,
     limit: paginationState.pageSize,
     orderBy: orderByState,
+    queryClickhouse: useClickhouse(),
   };
   const traces = api.traces.all.useQuery(tracesAllQueryFilter);
   const totalCountQuery = api.traces.countAll.useQuery(tracesAllCountFilter);
   const traceMetrics = api.traces.metrics.useQuery(
     {
       projectId,
+      filter: filterState,
       traceIds: traces.data?.traces.map((t) => t.id) ?? [],
+      queryClickhouse: useClickhouse(),
     },
     {
       enabled: traces.data !== undefined,
@@ -179,7 +186,10 @@ export default function TracesTable({
     if (traces.isSuccess) {
       setDetailPageList(
         "traces",
-        traces.data.traces.map((t) => t.id),
+        traces.data.traces.map((t) => ({
+          id: t.id,
+          params: { timestamp: t.timestamp.toISOString() },
+        })),
       );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -195,6 +205,7 @@ export default function TracesTable({
         dateRangeFilter[0]?.type === "datetime"
           ? dateRangeFilter[0]
           : undefined,
+      queryClickhouse: useClickhouse(),
     },
     {
       trpc: {
@@ -202,6 +213,10 @@ export default function TracesTable({
           skipBatch: true,
         },
       },
+      refetchOnMount: false,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+      staleTime: Infinity,
     },
   );
 
@@ -229,30 +244,32 @@ export default function TracesTable({
       size: 30,
       isPinned: true,
       header: ({ table }) => (
-        <Checkbox
-          checked={
-            table.getIsAllPageRowsSelected()
-              ? true
-              : table.getIsSomePageRowsSelected()
-                ? "indeterminate"
-                : false
-          }
-          onCheckedChange={(value) => {
-            table.toggleAllPageRowsSelected(!!value);
-            if (!value) {
-              setSelectedRows({});
+        <div className="flex h-full items-center">
+          <Checkbox
+            checked={
+              table.getIsAllPageRowsSelected()
+                ? true
+                : table.getIsSomePageRowsSelected()
+                  ? "indeterminate"
+                  : false
             }
-          }}
-          aria-label="Select all"
-          className="mt-1 opacity-60 data-[state=checked]:mt-[6px] data-[state=indeterminate]:mt-[6px]"
-        />
+            onCheckedChange={(value) => {
+              table.toggleAllPageRowsSelected(!!value);
+              if (!value) {
+                setSelectedRows({});
+              }
+            }}
+            aria-label="Select all"
+            className="opacity-60"
+          />
+        </div>
       ),
       cell: ({ row }) => (
         <Checkbox
           checked={row.getIsSelected()}
           onCheckedChange={(value) => row.toggleSelected(!!value)}
           aria-label="Select row"
-          className="mt-1 opacity-60 data-[state=checked]:mt-[5px]"
+          className="opacity-60"
         />
       ),
     },
@@ -287,9 +304,12 @@ export default function TracesTable({
       isPinned: true,
       cell: ({ row }) => {
         const value: TracesTableRow["id"] = row.getValue("id");
+        const timestamp: TracesTableRow["timestamp"] =
+          row.getValue("timestamp");
+
         return value && typeof value === "string" ? (
           <TableLink
-            path={`/project/${projectId}/traces/${value}`}
+            path={`/project/${projectId}/traces/${encodeURIComponent(value)}?timestamp=${encodeURIComponent(timestamp.toISOString())}`}
             value={value}
           />
         ) : undefined;
@@ -303,6 +323,10 @@ export default function TracesTable({
       size: 150,
       enableHiding: true,
       enableSorting: true,
+      cell: ({ row }) => {
+        const value: TracesTableRow["timestamp"] = row.getValue("timestamp");
+        return value ? new Date(value).toLocaleString() : undefined;
+      },
     },
     {
       accessorKey: "name",
@@ -507,10 +531,13 @@ export default function TracesTable({
       size: 400,
       cell: ({ row }) => {
         const traceId: TracesTableRow["id"] = row.getValue("id");
+        const traceTimestamp: TracesTableRow["timestamp"] =
+          row.getValue("timestamp");
         return (
           <TracesDynamicCell
             traceId={traceId}
             projectId={projectId}
+            timestamp={new Date(traceTimestamp)}
             col="input"
             singleLine={rowHeight === "s"}
           />
@@ -526,10 +553,13 @@ export default function TracesTable({
       size: 400,
       cell: ({ row }) => {
         const traceId: TracesTableRow["id"] = row.getValue("id");
+        const traceTimestamp: TracesTableRow["timestamp"] =
+          row.getValue("timestamp");
         return (
           <TracesDynamicCell
             traceId={traceId}
             projectId={projectId}
+            timestamp={new Date(traceTimestamp)}
             col="output"
             singleLine={rowHeight === "s"}
           />
@@ -548,10 +578,13 @@ export default function TracesTable({
       },
       cell: ({ row }) => {
         const traceId: TracesTableRow["id"] = row.getValue("id");
+        const traceTimestamp: TracesTableRow["timestamp"] =
+          row.getValue("timestamp");
         return (
           <TracesDynamicCell
             traceId={traceId}
             projectId={projectId}
+            timestamp={new Date(traceTimestamp)}
             col="metadata"
             singleLine={rowHeight === "s"}
           />
@@ -600,7 +633,7 @@ export default function TracesTable({
         const value: TracesTableRow["observationCount"] =
           row.getValue("observationCount");
         if (!traceMetrics.data) return <Skeleton className="h-3 w-1/2" />;
-        return <span>{value}</span>;
+        return <span>{numberFormatter(value, 0)}</span>;
       },
     },
     {
@@ -690,11 +723,11 @@ export default function TracesTable({
 
   const rows = useMemo(() => {
     return traces.isSuccess
-      ? traceRowData?.rows?.map((trace) => {
+      ? (traceRowData?.rows?.map((trace) => {
           return {
             bookmarked: trace.bookmarked,
             id: trace.id,
-            timestamp: trace.timestamp.toLocaleString(),
+            timestamp: trace.timestamp,
             name: trace.name ?? "",
             level: trace.level,
             observationCount: trace.observationCount,
@@ -719,10 +752,9 @@ export default function TracesTable({
             outputCost: trace.calculatedOutputCost ?? undefined,
             totalCost: trace.calculatedTotalCost ?? undefined,
           };
-        }) ?? []
+        }) ?? [])
       : [];
   }, [traces, traceRowData, scoreKeysAndProps]);
-
   return (
     <>
       <DataTableToolbar
@@ -736,7 +768,7 @@ export default function TracesTable({
         filterState={userFilterState}
         setFilterState={useDebounce(setUserFilterState)}
         columnsWithCustomSelect={["name", "tags"]}
-        actionButtons={
+        actionButtons={[
           Object.keys(selectedRows).filter((traceId) =>
             traces.data?.traces.map((t) => t.id).includes(traceId),
           ).length > 0 ? (
@@ -750,8 +782,13 @@ export default function TracesTable({
                 setSelectedRows({});
               }}
             />
-          ) : null
-        }
+          ) : null,
+          <BatchExportTableButton
+            {...{ projectId, filterState, orderByState }}
+            tableName={BatchExportTableName.Traces}
+            key="batchExport"
+          />,
+        ]}
         columnVisibility={columnVisibility}
         setColumnVisibility={setColumnVisibility}
         columnOrder={columnOrder}
@@ -800,16 +837,18 @@ export default function TracesTable({
 const TracesDynamicCell = ({
   traceId,
   projectId,
+  timestamp,
   col,
   singleLine = false,
 }: {
   traceId: string;
   projectId: string;
+  timestamp: Date;
   col: "input" | "output" | "metadata";
   singleLine?: boolean;
 }) => {
   const trace = api.traces.byId.useQuery(
-    { traceId, projectId },
+    { traceId, projectId, queryClickhouse: useClickhouse(), timestamp },
     {
       enabled: typeof traceId === "string",
       trpc: {

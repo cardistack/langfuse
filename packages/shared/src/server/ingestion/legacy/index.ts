@@ -1,24 +1,11 @@
 import { env } from "node:process";
 import z from "zod";
 import { ForbiddenError, UnauthorizedError } from "../../../errors";
-import { eventTypes, ingestionApiSchema, ingestionEvent } from "../types";
-import {
-  EventProcessor,
-  TraceProcessor,
-  ObservationProcessor,
-  ScoreProcessor,
-  SdkLogProcessor,
-} from "./EventProcessor";
-import { EventBodyType, EventName, TraceUpsertEventType } from "../../queues";
-import {
-  convertTraceUpsertEventsToRedisEvents,
-  getTraceUpsertQueue,
-} from "../../redis/trace-upsert";
+import { eventTypes, ingestionApiSchema, IngestionEventType } from "../types";
+import { getProcessorForEvent } from "./EventProcessor";
 import { ApiAccessScope } from "../../auth/types";
-import { redis } from "../../redis/redis";
 import { backOff } from "exponential-backoff";
 import { Model } from "../../..";
-import { enqueueIngestionEvents } from "./enqueueIngestionEvents";
 import { logger } from "../../logger";
 
 export type BatchResult = {
@@ -84,19 +71,10 @@ export const handleBatch = async (
       // Decide how to handle the error: rethrow, continue, or push an error object to results
       // For example, push an error object:
       errors.push({
-        error: error,
+        error,
         id: singleEvent.id,
         type: singleEvent.type,
       });
-    }
-  }
-
-  if (env.CLICKHOUSE_URL) {
-    try {
-      await enqueueIngestionEvents(authCheck.scope.projectId, events);
-      logger.info(`Added ${events.length} ingestion events to queue`);
-    } catch (err) {
-      logger.error("Error adding ingestion events to queue", err);
     }
   }
 
@@ -105,7 +83,7 @@ export const handleBatch = async (
 
 async function retry<T>(request: () => Promise<T>): Promise<T> {
   return await backOff(request, {
-    numOfAttempts: env.LANGFUSE_ASYNC_INGESTION_PROCESSING === "true" ? 5 : 3,
+    numOfAttempts: 5,
     retry: (e: Error, attemptNumber: number) => {
       if (e instanceof UnauthorizedError || e instanceof ForbiddenError) {
         logger.info("not retrying auth error");
@@ -118,7 +96,7 @@ async function retry<T>(request: () => Promise<T>): Promise<T> {
 }
 
 const handleSingleEvent = async (
-  event: z.infer<typeof ingestionEvent>,
+  event: IngestionEventType,
   apiScope: LegacyIngestionAccessScope,
   calculateTokenDelegate: (p: {
     model: Model;
@@ -138,46 +116,24 @@ const handleSingleEvent = async (
     restEvent = rest;
   }
 
-  logger.info(
+  logger.debug(
     `handling single event ${event.id} of type ${event.type}:  ${JSON.stringify({ body: restEvent })}`,
   );
 
-  const cleanedEvent = ingestionEvent.parse(cleanEvent(event));
-
-  const { type } = cleanedEvent;
-
-  let processor: EventProcessor;
-  switch (type) {
-    case eventTypes.TRACE_CREATE:
-      processor = new TraceProcessor(cleanedEvent);
-      break;
-    case eventTypes.OBSERVATION_CREATE:
-    case eventTypes.OBSERVATION_UPDATE:
-    case eventTypes.EVENT_CREATE:
-    case eventTypes.SPAN_CREATE:
-    case eventTypes.SPAN_UPDATE:
-    case eventTypes.GENERATION_CREATE:
-    case eventTypes.GENERATION_UPDATE:
-      processor = new ObservationProcessor(
-        cleanedEvent,
-        calculateTokenDelegate,
-      );
-      break;
-    case eventTypes.SCORE_CREATE: {
-      processor = new ScoreProcessor(cleanedEvent);
-      break;
-    }
-    case eventTypes.SDK_LOG:
-      processor = new SdkLogProcessor(cleanedEvent);
-  }
+  const cleanedEvent = cleanEvent(event) as IngestionEventType;
 
   // Deny access to non-score events if the access level is not "all"
   // This is an additional safeguard to auth checks in EventProcessor
-  if (apiScope.accessLevel !== "all" && type !== eventTypes.SCORE_CREATE) {
+  if (
+    apiScope.accessLevel !== "all" &&
+    cleanedEvent.type !== eventTypes.SCORE_CREATE
+  ) {
     throw new ForbiddenError("Access denied. Event type not allowed.");
   }
 
-  return await processor.process(apiScope);
+  return getProcessorForEvent(cleanedEvent, calculateTokenDelegate).process(
+    apiScope,
+  );
 };
 
 // cleans NULL characters from the event
@@ -201,68 +157,5 @@ export function cleanEvent(obj: unknown): unknown {
   }
 }
 
-export const isNotNullOrUndefined = <T>(
-  val?: T | null,
-): val is Exclude<T, null | undefined> => !isUndefinedOrNull(val);
-
 export const isUndefinedOrNull = <T>(val?: T | null): val is undefined | null =>
   val === undefined || val === null;
-
-export const sendToWorkerIfEnvironmentConfigured = async (
-  batchResults: BatchResult[],
-  projectId: string,
-): Promise<void> => {
-  const traceEvents: TraceUpsertEventType[] = batchResults
-    .filter((result) => result.type === eventTypes.TRACE_CREATE) // we only have create, no update.
-    .map((result) =>
-      result.result &&
-      typeof result.result === "object" &&
-      "id" in result.result
-        ? // ingestion API only gets traces for one projectId
-          { traceId: result.result.id as string, projectId }
-        : null,
-    )
-    .filter(isNotNullOrUndefined);
-
-  try {
-    if (env.NEXT_PUBLIC_LANGFUSE_CLOUD_REGION && redis) {
-      logger.info(`Sending ${traceEvents.length} events to worker via Redis`);
-
-      const queue = getTraceUpsertQueue();
-      if (!queue) {
-        logger.error("TraceUpsertQueue not initialized");
-        return;
-      }
-
-      await queue.addBulk(convertTraceUpsertEventsToRedisEvents(traceEvents));
-    } else if (
-      env.LANGFUSE_WORKER_HOST &&
-      env.LANGFUSE_WORKER_PASSWORD &&
-      env.NEXT_PUBLIC_LANGFUSE_CLOUD_REGION
-    ) {
-      logger.info(`Sending ${traceEvents.length} events to worker via HTTP`);
-      const body: EventBodyType = {
-        name: EventName.TraceUpsert,
-        payload: traceEvents,
-      };
-
-      if (traceEvents.length > 0) {
-        await fetch(`${env.LANGFUSE_WORKER_HOST}/api/events`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization:
-              "Basic " +
-              Buffer.from(
-                "admin" + ":" + env.LANGFUSE_WORKER_PASSWORD,
-              ).toString("base64"),
-          },
-          body: JSON.stringify(body),
-          signal: AbortSignal.timeout(8 * 1000),
-        });
-      }
-    }
-  } catch (error) {
-    logger.error("Error sending events to worker", error);
-  }
-};

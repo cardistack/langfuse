@@ -16,7 +16,6 @@ import React from "react";
 import { api } from "@/src/utils/api";
 import { showSuccessToast } from "@/src/features/notifications/showSuccessToast";
 import { useHasProjectAccess } from "@/src/features/rbac/utils/checkProjectAccess";
-import { useHasOrgEntitlement } from "@/src/features/entitlements/hooks";
 
 export type BatchExportTableButtonProps = {
   projectId: string;
@@ -30,8 +29,17 @@ export const BatchExportTableButton: React.FC<BatchExportTableButtonProps> = (
   props,
 ) => {
   const [isExporting, setIsExporting] = React.useState(false);
-  const createExport = api.batchExport.create.useMutation();
-  const entitled = useHasOrgEntitlement("batch-export");
+  const createExport = api.batchExport.create.useMutation({
+    onSettled: () => {
+      setIsExporting(false);
+    },
+    onSuccess: () => {
+      showSuccessToast({
+        title: "Export queued",
+        description: "You will receive an email when the export is ready.",
+      });
+    },
+  });
   const hasAccess = useHasProjectAccess({
     projectId: props.projectId,
     scope: "batchExport:create",
@@ -49,14 +57,9 @@ export const BatchExportTableButton: React.FC<BatchExportTableButtonProps> = (
         orderBy: props.orderByState,
       },
     });
-    setIsExporting(false);
-    showSuccessToast({
-      title: "Export queued",
-      description: "You will receive an email when the export is ready.",
-    });
   };
 
-  if (!entitled || !hasAccess) return null;
+  if (!hasAccess) return null;
 
   return (
     <DropdownMenu>

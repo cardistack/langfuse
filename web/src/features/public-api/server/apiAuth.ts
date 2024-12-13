@@ -16,7 +16,7 @@ import {
 } from "@langfuse/shared/src/db";
 import { isPrismaException } from "@/src/utils/exceptions";
 import { type Redis } from "ioredis";
-import { getOrganizationPlan } from "@/src/features/entitlements/server/getOrganizationPlan";
+import { getOrganizationPlanServerSide } from "@/src/features/entitlements/server/getPlan";
 import { API_KEY_NON_EXISTENT } from "@langfuse/shared/src/server";
 import { type z } from "zod";
 import { CloudConfigSchema, isPlan } from "@langfuse/shared";
@@ -33,7 +33,7 @@ export class ApiAuthService {
   // this function needs to be called, when the organisation is updated
   // - when projects move across organisations, the orgId in the API key cache needs to be updated
   // - when the plan of the org changes, the plan in the API key cache needs to be updated as well
-  private async invalidate(apiKeys: ApiKey[], identifier: string) {
+  async invalidate(apiKeys: ApiKey[], identifier: string) {
     const hashKeys = apiKeys.map((key) => key.fastHashedSecretKey);
 
     const filteredHashKeys = hashKeys.filter((hash): hash is string =>
@@ -47,9 +47,7 @@ export class ApiAuthService {
     if (this.redis) {
       logger.info(`Invalidating API keys in redis for ${identifier}`);
       await this.redis.del(
-        filteredHashKeys
-          .filter((hash): hash is string => Boolean(hash))
-          .map((hash) => this.createRedisKey(hash)),
+        filteredHashKeys.map((hash) => this.createRedisKey(hash)),
       );
     }
   }
@@ -213,7 +211,7 @@ export class ApiAuthService {
             projectId: dbKey.projectId,
             accessLevel: "scores",
             orgId: dbKey.project.organization.id,
-            plan: getOrganizationPlan(cloudConfig),
+            plan: getOrganizationPlanServerSide(cloudConfig),
             rateLimitOverrides: cloudConfig?.rateLimitOverrides ?? [],
           },
         };
@@ -270,17 +268,17 @@ export class ApiAuthService {
     const redisApiKey = await this.fetchApiKeyFromRedis(hash);
 
     if (redisApiKey === API_KEY_NON_EXISTENT) {
-      recordIncrement("api_key_cache_hit", 1);
+      recordIncrement("langfuse.api_key.cache_hit", 1);
       throw new Error("Invalid credentials");
     }
 
     // if we found something, return the object.
     if (redisApiKey) {
-      recordIncrement("api_key_cache_hit", 1);
+      recordIncrement("langfuse.api_key.cache_hit", 1);
       return redisApiKey;
     }
 
-    recordIncrement("api_key_cache_miss", 1);
+    recordIncrement("langfuse.api_key.cache_miss", 1);
 
     // if redis not available or object not found, try the database
     const apiKeyAndOrganisation = await this.prisma.apiKey.findUnique({
@@ -344,7 +342,11 @@ export class ApiAuthService {
       }
 
       if (!parsedApiKey.success) {
-        logger.error("Failed to parse API key from Redis:", parsedApiKey.error);
+        logger.error(
+          "Failed to parse API key from Redis, deleting existing key from cache",
+          parsedApiKey.error,
+        );
+        await this.redis.del(this.createRedisKey(hash));
       }
       return null;
     } catch (error: unknown) {
@@ -386,7 +388,7 @@ export const convertToRedisRepresentation = (
     ...apiKeyAndOrganisation,
     createdAt: apiKeyAndOrganisation.createdAt?.toISOString(),
     orgId,
-    plan: getOrganizationPlan(parsedCloudConfig),
+    plan: getOrganizationPlanServerSide(parsedCloudConfig),
     rateLimitOverrides: parsedCloudConfig?.rateLimitOverrides,
   });
 

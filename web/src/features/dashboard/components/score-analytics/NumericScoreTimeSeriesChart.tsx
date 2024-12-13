@@ -12,13 +12,14 @@ import {
   fillMissingValuesAndTransform,
   isEmptyTimeSeries,
 } from "@/src/features/dashboard/components/hooks";
-import { NoData } from "@/src/features/dashboard/components/NoData";
 import { createTracesTimeFilter } from "@/src/features/dashboard/lib/dashboard-utils";
 import {
   type DashboardDateRangeAggregationOption,
   dashboardDateRangeAggregationSettings,
 } from "@/src/utils/date-range-utils";
 import React, { useMemo } from "react";
+import { NoDataOrLoading } from "@/src/components/NoDataOrLoading";
+import { useClickhouse } from "@/src/components/layouts/ClickhouseAdminToggle";
 
 export function NumericScoreTimeSeriesChart(props: {
   projectId: string;
@@ -74,6 +75,8 @@ export function NumericScoreTimeSeriesChart(props: {
           column: "scoreDataType",
         },
       ],
+      queryClickhouse: useClickhouse(),
+      queryName: "numeric-score-time-series",
     },
     {
       trpc: {
@@ -109,6 +112,6 @@ export function NumericScoreTimeSeriesChart(props: {
       />
     </Card>
   ) : (
-    <NoData noDataText="No data" className="h-[21rem]"></NoData>
+    <NoDataOrLoading isLoading={scores.isLoading} />
   );
 }
