@@ -5,6 +5,7 @@ const EnvSchema = z.object({
   NODE_ENV: z
     .enum(["development", "test", "production"])
     .default("development"),
+  NEXTAUTH_URL: z.string().url().optional(),
   REDIS_HOST: z.string().nullish(),
   REDIS_PORT: z.coerce
     .number({
@@ -65,6 +66,10 @@ const EnvSchema = z.object({
     .default("false"),
   LANGFUSE_USE_AZURE_BLOB: z.enum(["true", "false"]).default("false"),
   STRIPE_SECRET_KEY: z.string().optional(),
+
+  LANGFUSE_S3_CORE_DATA_EXPORT_IS_ENABLED: z
+    .enum(["true", "false"])
+    .default("false"),
 });
 
 export const env: z.infer<typeof EnvSchema> =
