@@ -17,8 +17,22 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  pre-job:
+    runs-on: ubuntu-latest
+    outputs:
+      should_skip: ${{ steps.skip_check.outputs.should_skip }}
+    timeout-minutes: 15
+    steps:
+      - id: skip_check
+        uses: fkirc/skip-duplicate-actions@v5
+        with:
+          do_not_skip: '["workflow_dispatch"]'
+
   lint:
     runs-on: ubuntu-latest
+    needs:
+      - pre-job
+    if: needs.pre-job.outputs.should_skip != 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v3
@@ -41,6 +55,9 @@ jobs:
   test-docker-build:
     timeout-minutes: 20
     runs-on: ubuntu-latest
+    needs:
+      - pre-job
+    if: needs.pre-job.outputs.should_skip != 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -72,8 +89,11 @@ jobs:
           timeout 10 bash -c 'until curl -f http://localhost:3000/api/public/health; do sleep 2; done'
 
   tests-web-sync:
-    timeout-minutes: 20
+    timeout-minutes: 30
     runs-on: ubuntu-latest
+    needs:
+      - pre-job
+    if: needs.pre-job.outputs.should_skip != 'true'
     name: tests-web-sync (node${{ matrix.node-version }}, pg${{ matrix.postgres-version }})
     strategy:
       matrix:
@@ -87,7 +107,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install golang-migrate for Clickhouse migrations
         run: |
-          curl -L https://github.com/golang-migrate/migrate/releases/download/v4.16.2/migrate.linux-amd64.tar.gz | tar xvz
+          curl -L https://github.com/golang-migrate/migrate/releases/download/v4.18.2/migrate.linux-amd64.tar.gz | tar xvz
           sudo mv migrate /usr/bin/migrate
           which migrate
       - uses: pnpm/action-setup@v3
@@ -111,16 +131,17 @@ jobs:
       - name: Load default env
         run: |
           cp .env.dev.example .env
-          grep -v -e '^LANGFUSE_S3_BATCH_EXPORT_ENABLED=' -e '^REDIS_HOST=' -e '^NEXT_PUBLIC_LANGFUSE_RUN_NEXT_INIT=' .env.dev.legacy.example > .env
-          echo "LANGFUSE_POSTGRES_INGESTION_ENABLED=true" >> .env
-      - name: Run + migrate
+          grep -v -e '^LANGFUSE_S3_BATCH_EXPORT_ENABLED=' -e '^NEXT_PUBLIC_LANGFUSE_RUN_NEXT_INIT=' .env.dev.example > .env
+          echo "LANGFUSE_INGESTION_QUEUE_DELAY_MS=1" >> .env
+          echo "LANGFUSE_INGESTION_CLICKHOUSE_WRITE_INTERVAL_MS=1" >> .env
+      - name: Run dev containers
         run: |
           docker compose -f docker-compose.dev.yml up -d
           sleep 5 # Wait for PostgreSQL to accept connections
           docker compose ps
         env:
           POSTGRES_VERSION: ${{ matrix.postgres-version }}
-      - name: Seed DB
+      - name: Migrate DB
         run: |
           pnpm run db:migrate
           pnpm --filter=shared ch:up
@@ -131,6 +152,7 @@ jobs:
         env:
           LANGFUSE_INIT_ORG_ID: "seed-org-id"
           LANGFUSE_INIT_ORG_NAME: "Seed Org"
+          LANGFUSE_INIT_ORG_CLOUD_PLAN: "Team"
           LANGFUSE_INIT_PROJECT_ID: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a"
           LANGFUSE_INIT_PROJECT_NAME: "Seed Project"
           LANGFUSE_INIT_PROJECT_PUBLIC_KEY: "pk-lf-1234567890"
@@ -144,8 +166,11 @@ jobs:
         run: pnpm --filter=web run test-client
 
   tests-web-async:
-    timeout-minutes: 20
+    timeout-minutes: 30
     runs-on: ubuntu-latest
+    needs:
+      - pre-job
+    if: needs.pre-job.outputs.should_skip != 'true'
     name: tests-web-async (node${{ matrix.node-version }}, pg${{ matrix.postgres-version }}, mode${{ matrix.blob-provider }})
     strategy:
       matrix:
@@ -160,7 +185,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install golang-migrate for Clickhouse migrations
         run: |
-          curl -L https://github.com/golang-migrate/migrate/releases/download/v4.16.2/migrate.linux-amd64.tar.gz | tar xvz
+          curl -L https://github.com/golang-migrate/migrate/releases/download/v4.18.2/migrate.linux-amd64.tar.gz | tar xvz
           sudo mv migrate /usr/bin/migrate
           which migrate
       - uses: pnpm/action-setup@v3
@@ -184,15 +209,17 @@ jobs:
       - name: Load default env
         run: |
           cp .env.dev${{ matrix.blob-provider }}.example .env
-          grep -v -e '^LANGFUSE_S3_BATCH_EXPORT_ENABLED=' -e '^REDIS_HOST=' -e '^NEXT_PUBLIC_LANGFUSE_RUN_NEXT_INIT=' .env.dev${{ matrix.blob-provider }}.example > .env
-      - name: Run + migrate
+          grep -v -e '^LANGFUSE_S3_BATCH_EXPORT_ENABLED=' -e '^NEXT_PUBLIC_LANGFUSE_RUN_NEXT_INIT=' .env.dev${{ matrix.blob-provider }}.example > .env
+          echo "LANGFUSE_INGESTION_QUEUE_DELAY_MS=1" >> .env
+          echo "LANGFUSE_INGESTION_CLICKHOUSE_WRITE_INTERVAL_MS=1" >> .env
+      - name: Run dev containers
         run: |
           docker compose -f docker-compose.dev${{ matrix.blob-provider }}.yml up -d
           sleep 5 # Wait for PostgreSQL to accept connections
           docker compose ps
         env:
           POSTGRES_VERSION: ${{ matrix.postgres-version }}
-      - name: Seed DB
+      - name: Migrate DB
         run: |
           pnpm run db:migrate
           pnpm --filter=shared ch:up
@@ -203,6 +230,7 @@ jobs:
         env:
           LANGFUSE_INIT_ORG_ID: "seed-org-id"
           LANGFUSE_INIT_ORG_NAME: "Seed Org"
+          LANGFUSE_INIT_ORG_CLOUD_PLAN: "Team"
           LANGFUSE_INIT_PROJECT_ID: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a"
           LANGFUSE_INIT_PROJECT_NAME: "Seed Project"
           LANGFUSE_INIT_PROJECT_PUBLIC_KEY: "pk-lf-1234567890"
@@ -216,6 +244,9 @@ jobs:
   tests-worker:
     timeout-minutes: 20
     runs-on: ubuntu-latest
+    needs:
+      - pre-job
+    if: needs.pre-job.outputs.should_skip != 'true'
     name: tests-worker (node${{ matrix.node-version }}, pg${{ matrix.postgres-version }}, mode${{ matrix.blob-provider }})
     strategy:
       matrix:
@@ -248,7 +279,7 @@ jobs:
           pnpm install
       - name: Install golang-migrate for Clickhouse migrations
         run: |
-          curl -L https://github.com/golang-migrate/migrate/releases/download/v4.16.2/migrate.linux-amd64.tar.gz | tar xvz
+          curl -L https://github.com/golang-migrate/migrate/releases/download/v4.18.2/migrate.linux-amd64.tar.gz | tar xvz
           sudo mv migrate /usr/bin/migrate
           which migrate
       - name: Load default env
@@ -281,6 +312,9 @@ jobs:
 
   e2e-tests:
     runs-on: ubuntu-latest
+    needs:
+      - pre-job
+    if: needs.pre-job.outputs.should_skip != 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v3
@@ -322,6 +356,9 @@ jobs:
 
   e2e-server-tests:
     runs-on: ubuntu-latest
+    needs:
+      - pre-job
+    if: needs.pre-job.outputs.should_skip != 'true'
     steps:
       - uses: actions/checkout@v4
       - name: Login to Docker Hub
@@ -343,7 +380,7 @@ jobs:
           pnpm install
       - name: Install golang-migrate for Clickhouse migrations
         run: |
-          curl -L https://github.com/golang-migrate/migrate/releases/download/v4.16.2/migrate.linux-amd64.tar.gz | tar xvz
+          curl -L https://github.com/golang-migrate/migrate/releases/download/v4.18.2/migrate.linux-amd64.tar.gz | tar xvz
           sudo mv migrate /usr/bin/migrate
           which migrate
       - name: Load default env
@@ -501,3 +538,11 @@ jobs:
           platforms: |
             linux/amd64
             ${{ startsWith(github.ref, 'refs/tags/') && 'linux/arm64' || '' }}
+      - name: Notify Slack
+        uses: ravsamhq/notify-slack-action@v2
+        if: always()
+        with:
+          status: ${{ job.status }}
+          notify_when: "failure"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

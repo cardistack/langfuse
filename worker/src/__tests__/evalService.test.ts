@@ -20,12 +20,17 @@ import {
   LLMAdapter,
   LangfuseNotFoundError,
   variableMappingList,
+  ApiError,
 } from "@langfuse/shared";
 import { encrypt } from "@langfuse/shared/encryption";
 import { OpenAIServer } from "./network";
 import { afterEach } from "node:test";
 import {
   convertDateToClickhouseDateTime,
+  createObservation,
+  createObservationsCh,
+  createTrace,
+  createTracesCh,
   upsertObservation,
   upsertTrace,
 } from "@langfuse/shared/src/server";
@@ -64,14 +69,6 @@ describe("eval service tests", () => {
   describe("create eval jobs", () => {
     test("creates new 'trace' eval job", async () => {
       const traceId = randomUUID();
-
-      await kyselyPrisma.$kysely
-        .insertInto("traces")
-        .values({
-          id: traceId,
-          project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
-        })
-        .execute();
 
       await upsertTrace({
         id: traceId,
@@ -121,14 +118,6 @@ describe("eval service tests", () => {
       const datasetId = randomUUID();
       const datasetItemId = randomUUID();
 
-      await kyselyPrisma.$kysely
-        .insertInto("traces")
-        .values({
-          id: traceId,
-          project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
-        })
-        .execute();
-
       await upsertTrace({
         id: traceId,
         project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
@@ -136,16 +125,6 @@ describe("eval service tests", () => {
         created_at: convertDateToClickhouseDateTime(new Date()),
         updated_at: convertDateToClickhouseDateTime(new Date()),
       });
-
-      await kyselyPrisma.$kysely
-        .insertInto("observations")
-        .values({
-          id: observationId,
-          trace_id: traceId,
-          project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
-          type: sql`'GENERATION'::"ObservationType"`,
-        })
-        .execute();
 
       await upsertObservation({
         id: observationId,
@@ -293,14 +272,6 @@ describe("eval service tests", () => {
       expect(jobsAfterDataset.length).toBe(0);
 
       // Now upsert the trace and validate that the job was created.
-      await kyselyPrisma.$kysely
-        .insertInto("traces")
-        .values({
-          id: traceId,
-          project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
-        })
-        .execute();
-
       await upsertTrace({
         id: traceId,
         project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
@@ -347,14 +318,6 @@ describe("eval service tests", () => {
         .execute();
 
       // Create the trace and send the trace event. No job should be created
-      await kyselyPrisma.$kysely
-        .insertInto("traces")
-        .values({
-          id: traceId,
-          project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
-        })
-        .execute();
-
       await upsertTrace({
         id: traceId,
         project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
@@ -432,14 +395,6 @@ describe("eval service tests", () => {
     test("does not create job for inactive config", async () => {
       const traceId = randomUUID();
 
-      await kyselyPrisma.$kysely
-        .insertInto("traces")
-        .values({
-          id: traceId,
-          project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
-        })
-        .execute();
-
       await prisma.jobConfiguration.create({
         data: {
           id: randomUUID(),
@@ -473,14 +428,6 @@ describe("eval service tests", () => {
 
     test("does not create eval job for existing job execution", async () => {
       const traceId = randomUUID();
-
-      await kyselyPrisma.$kysely
-        .insertInto("traces")
-        .values({
-          id: traceId,
-          project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
-        })
-        .execute();
 
       await upsertTrace({
         id: traceId,
@@ -542,14 +489,6 @@ describe("eval service tests", () => {
     test("does not create job for inactive config", async () => {
       const traceId = randomUUID();
 
-      await kyselyPrisma.$kysely
-        .insertInto("traces")
-        .values({
-          id: traceId,
-          project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
-        })
-        .execute();
-
       await prisma.jobConfiguration.create({
         data: {
           id: randomUUID(),
@@ -583,14 +522,6 @@ describe("eval service tests", () => {
 
     test("does not create eval job for 0 sample rate", async () => {
       const traceId = randomUUID();
-
-      await kyselyPrisma.$kysely
-        .insertInto("traces")
-        .values({
-          id: traceId,
-          project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
-        })
-        .execute();
 
       await kyselyPrisma.$kysely
         .insertInto("llm_api_keys")
@@ -637,15 +568,6 @@ describe("eval service tests", () => {
 
     test("cancels a job if the second event deselects", async () => {
       const traceId = randomUUID();
-
-      await kyselyPrisma.$kysely
-        .insertInto("traces")
-        .values({
-          id: traceId,
-          project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
-          user_id: "a",
-        })
-        .execute();
 
       await upsertTrace({
         id: traceId,
@@ -721,12 +643,6 @@ describe("eval service tests", () => {
       await new Promise((resolve) => setTimeout(resolve, 500));
 
       // update the trace to deselect the trace
-      await kyselyPrisma.$kysely
-        .updateTable("traces")
-        .set("user_id", "b")
-        .where("id", "=", traceId)
-        .execute();
-
       await upsertTrace({
         id: traceId,
         project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
@@ -751,6 +667,223 @@ describe("eval service tests", () => {
       expect(jobs[0].status.toString()).toBe("CANCELLED");
       expect(jobs[0].start_time).not.toBeNull();
       expect(jobs[0].end_time).not.toBeNull();
+    }, 10_000);
+
+    test("does not create eval job for existing traces if time scope is EXISTING but handler enforces NEW only", async () => {
+      const traceId = randomUUID();
+
+      const trace = createTrace({
+        project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
+        id: traceId,
+      });
+
+      await createTracesCh([trace]);
+
+      const jobConfiguration = await prisma.jobConfiguration.create({
+        data: {
+          id: randomUUID(),
+          projectId: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
+          filter: JSON.parse("[]"),
+          jobType: "EVAL",
+          delay: 0,
+          sampling: new Decimal("1"),
+          targetObject: "trace",
+          scoreName: "score",
+          variableMapping: JSON.parse("[]"),
+          timeScope: ["EXISTING"],
+        },
+      });
+
+      // this one should not be selected for eval as it was not provided via the event.
+      const jobConfiguration2 = await prisma.jobConfiguration.create({
+        data: {
+          id: randomUUID(),
+          projectId: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
+          filter: JSON.parse("[]"),
+          jobType: "EVAL",
+          delay: 0,
+          sampling: new Decimal("1"),
+          targetObject: "trace",
+          scoreName: "score",
+          variableMapping: JSON.parse("[]"),
+          timeScope: ["NEW"],
+        },
+      });
+
+      const payload = {
+        projectId: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
+        traceId: traceId,
+        configId: jobConfiguration.id,
+      };
+
+      await createEvalJobs({
+        event: payload,
+        enforcedJobTimeScope: "NEW", // the config must contain NEW
+      });
+
+      const jobs = await kyselyPrisma.$kysely
+        .selectFrom("job_executions")
+        .selectAll()
+        .where("project_id", "=", "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a")
+        .where("job_configuration_id", "in", [
+          jobConfiguration.id,
+          jobConfiguration2.id,
+        ])
+        .where("job_input_trace_id", "=", traceId)
+        .execute();
+
+      expect(jobs.length).toBe(0);
+    }, 10_000);
+
+    test("does create eval for trace which is way in the past if timestamp is provided", async () => {
+      const traceId = randomUUID();
+
+      const timestamp = new Date(Date.now() - 1000 * 60 * 60 * 24 * 365 * 1);
+      const trace = createTrace({
+        project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
+        id: traceId,
+        timestamp: timestamp.getTime(),
+      });
+
+      await createTracesCh([trace]);
+
+      const jobConfiguration = await prisma.jobConfiguration.create({
+        data: {
+          id: randomUUID(),
+          projectId: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
+          filter: JSON.parse("[]"),
+          jobType: "EVAL",
+          delay: 0,
+          sampling: new Decimal("1"),
+          targetObject: "trace",
+          scoreName: "score",
+          variableMapping: JSON.parse("[]"),
+          timeScope: ["NEW"],
+        },
+      });
+
+      const payload = {
+        projectId: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
+        traceId: traceId,
+        configId: jobConfiguration.id,
+        timestamp: timestamp,
+      };
+
+      await createEvalJobs({
+        event: payload,
+        enforcedJobTimeScope: "NEW", // the config must contain NEW
+      });
+
+      const jobs = await kyselyPrisma.$kysely
+        .selectFrom("job_executions")
+        .selectAll()
+        .where("project_id", "=", "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a")
+        .where("job_configuration_id", "in", [jobConfiguration.id])
+        .where("job_input_trace_id", "=", traceId)
+        .execute();
+
+      expect(jobs.length).toBe(1);
+    }, 10_000);
+
+    test("does create eval for observation which is way in the past if timestamp is provided", async () => {
+      const traceId = randomUUID();
+
+      const timestamp = new Date(Date.now() - 1000 * 60 * 60 * 24 * 365 * 1);
+      const trace = createTrace({
+        project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
+        id: traceId,
+        timestamp: timestamp.getTime(),
+      });
+
+      const observation = createObservation({
+        project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
+        id: randomUUID(),
+        start_time: timestamp.getTime(),
+      });
+
+      await createObservationsCh([observation]);
+      await createTracesCh([trace]);
+
+      const jobConfiguration = await prisma.jobConfiguration.create({
+        data: {
+          id: randomUUID(),
+          projectId: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
+          filter: JSON.parse("[]"),
+          jobType: "EVAL",
+          delay: 0,
+          sampling: new Decimal("1"),
+          targetObject: "observation",
+          scoreName: "score",
+          variableMapping: JSON.parse("[]"),
+          timeScope: ["EXISTING"],
+        },
+      });
+
+      const payload = {
+        projectId: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
+        traceId: traceId,
+        configId: jobConfiguration.id,
+        timestamp: timestamp,
+        observationId: observation.id,
+      };
+
+      await createEvalJobs({
+        event: payload,
+        enforcedJobTimeScope: "EXISTING", // the config must contain NEW
+      });
+
+      const jobs = await kyselyPrisma.$kysely
+        .selectFrom("job_executions")
+        .selectAll()
+        .where("project_id", "=", "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a")
+        .where("job_configuration_id", "in", [jobConfiguration.id])
+        .execute();
+
+      expect(jobs.length).toBe(1);
+    }, 10_000);
+
+    test("creates eval for trace with timestamp in the future", async () => {
+      const traceId = randomUUID();
+
+      await prisma.jobConfiguration.create({
+        data: {
+          id: randomUUID(),
+          projectId: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
+          filter: JSON.parse("[]"),
+          jobType: "EVAL",
+          delay: 0,
+          sampling: new Decimal("1"),
+          targetObject: "trace",
+          scoreName: "score",
+          variableMapping: JSON.parse("[]"),
+          timeScope: ["NEW"],
+        },
+      });
+
+      const trace = createTrace({
+        project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
+        id: traceId,
+        timestamp: new Date(
+          Date.now() + 1000 * 60 * 60 * 24 * 365 * 1,
+        ).getTime(),
+      });
+
+      await createTracesCh([trace]);
+
+      await createEvalJobs({
+        event: {
+          projectId: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
+          traceId: traceId,
+        },
+      });
+
+      const jobs = await kyselyPrisma.$kysely
+        .selectFrom("job_executions")
+        .selectAll()
+        .where("project_id", "=", "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a")
+        .execute();
+
+      expect(jobs.length).toBe(1);
     }, 10_000);
   });
 
@@ -863,17 +996,6 @@ describe("eval service tests", () => {
     test("fails to eval without llm api key", async () => {
       const traceId = randomUUID();
 
-      await kyselyPrisma.$kysely
-        .insertInto("traces")
-        .values({
-          id: traceId,
-          project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
-          user_id: "a",
-          input: { input: "This is a great prompt" },
-          output: { output: "This is a great response" },
-        })
-        .execute();
-
       const templateId = randomUUID();
       await kyselyPrisma.$kysely
         .insertInto("eval_templates")
@@ -954,19 +1076,120 @@ describe("eval service tests", () => {
       expect(jobs[0].status.toString()).toBe("PENDING");
     }, 10_000);
 
-    test("evals should cancel if job is cancelled", async () => {
+    test("fails to eval on openai error", async () => {
+      openAIServer.respondWithError(401, "Not authorized");
+
       const traceId = randomUUID();
 
+      await upsertTrace({
+        id: traceId,
+        project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
+        user_id: "a",
+        input: JSON.stringify({ input: "This is a great prompt" }),
+        output: JSON.stringify({ output: "This is a great response" }),
+        timestamp: convertDateToClickhouseDateTime(new Date()),
+        created_at: convertDateToClickhouseDateTime(new Date()),
+        updated_at: convertDateToClickhouseDateTime(new Date()),
+      });
+
+      const templateId = randomUUID();
       await kyselyPrisma.$kysely
-        .insertInto("traces")
+        .insertInto("eval_templates")
         .values({
-          id: traceId,
+          id: templateId,
           project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
-          user_id: "a",
-          input: { input: "This is a great prompt" },
-          output: { output: "This is a great response" },
+          name: "test-template",
+          version: 1,
+          prompt: "Please evaluate toxicity {{input}} {{output}}",
+          model: "gpt-3.5-turbo",
+          provider: "openai",
+          model_params: {},
+          output_schema: {
+            reasoning: "Please explain your reasoning",
+            score: "Please provide a score between 0 and 1",
+          },
+        })
+        .executeTakeFirst();
+
+      const jobConfiguration = await prisma.jobConfiguration.create({
+        data: {
+          id: randomUUID(),
+          projectId: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
+          filter: [
+            {
+              type: "string",
+              value: "a",
+              column: "User ID",
+              operator: "contains",
+            },
+          ],
+          jobType: "EVAL",
+          delay: 0,
+          sampling: new Decimal("1"),
+          targetObject: "trace",
+          scoreName: "score",
+          variableMapping: JSON.parse("[]"),
+          evalTemplateId: templateId,
+        },
+      });
+
+      const jobExecutionId = randomUUID();
+
+      await kyselyPrisma.$kysely
+        .insertInto("job_executions")
+        .values({
+          id: jobExecutionId,
+          project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
+          job_configuration_id: jobConfiguration.id,
+          status: sql`'PENDING'::"JobExecutionStatus"`,
+          start_time: new Date(),
+          job_input_trace_id: traceId,
         })
         .execute();
+
+      await kyselyPrisma.$kysely
+        .insertInto("llm_api_keys")
+        .values({
+          id: randomUUID(),
+          project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
+          secret_key: encrypt(String(OPENAI_API_KEY)),
+          provider: "openai",
+          adapter: LLMAdapter.OpenAI,
+          custom_models: [],
+          display_secret_key: "123456",
+        })
+        .execute();
+
+      const payload = {
+        projectId: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
+        jobExecutionId: jobExecutionId,
+        delay: 1000,
+      };
+
+      await expect(evaluate({ event: payload })).rejects.toThrowError(
+        new ApiError(
+          "Failed to call LLM: Error: 401 status code (no body)\n" +
+            "\n" +
+            "Troubleshooting URL: https://js.langchain.com/docs/troubleshooting/errors/MODEL_AUTHENTICATION/\n",
+          401,
+        ),
+      );
+
+      const jobs = await kyselyPrisma.$kysely
+        .selectFrom("job_executions")
+        .selectAll()
+        .where("project_id", "=", "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a")
+        .execute();
+
+      expect(jobs.length).toBe(1);
+      expect(jobs[0].project_id).toBe("7a88fb47-b4e2-43b8-a06c-a5ce950dc53a");
+      expect(jobs[0].job_input_trace_id).toBe(traceId);
+      // the job will be failed when the exception is caught in the worker consumer
+      expect(jobs[0].status.toString()).toBe("PENDING");
+    }, 10_000);
+
+    test("evals should cancel if job is cancelled", async () => {
+      const traceId = randomUUID();
 
       const templateId = randomUUID();
       await kyselyPrisma.$kysely
@@ -1042,17 +1265,6 @@ describe("eval service tests", () => {
     test("evals a valid 'trace' event and inserts score to ingestion pipeline", async () => {
       openAIServer.respondWithDefault();
       const traceId = randomUUID();
-
-      await kyselyPrisma.$kysely
-        .insertInto("traces")
-        .values({
-          id: traceId,
-          project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
-          user_id: "a",
-          input: { input: "This is a great prompt" },
-          output: { output: "This is a great response" },
-        })
-        .execute();
 
       const templateId = randomUUID();
       await kyselyPrisma.$kysely
@@ -1152,17 +1364,6 @@ describe("eval service tests", () => {
       const traceId = randomUUID();
 
       await kyselyPrisma.$kysely
-        .insertInto("traces")
-        .values({
-          id: traceId,
-          project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
-          user_id: "a",
-          input: { input: "This is a great prompt" },
-          output: { output: "This is a great response" },
-        })
-        .execute();
-
-      await kyselyPrisma.$kysely
         .insertInto("datasets")
         .values({
           id: datasetId,
@@ -1218,21 +1419,11 @@ describe("eval service tests", () => {
     test("extracts variables from a trace", async () => {
       const traceId = randomUUID();
 
-      await kyselyPrisma.$kysely
-        .insertInto("traces")
-        .values({
-          id: traceId,
-          project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
-          user_id: "a",
-          input: { input: "This is a great prompt" },
-          output: { output: "This is a great response" },
-        })
-        .execute();
-
       await upsertTrace({
         id: traceId,
         project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
         user_id: "a",
+        environment: "production",
         input: JSON.stringify({ input: "This is a great prompt" }),
         output: JSON.stringify({ output: "This is a great response" }),
         timestamp: convertDateToClickhouseDateTime(new Date()),
@@ -1264,27 +1455,18 @@ describe("eval service tests", () => {
         {
           value: '{"input":"This is a great prompt"}',
           var: "input",
+          environment: "production",
         },
         {
           value: '{"output":"This is a great response"}',
           var: "output",
+          environment: "production",
         },
       ]);
     }, 10_000);
 
     test("extracts variables from a observation", async () => {
       const traceId = randomUUID();
-
-      await kyselyPrisma.$kysely
-        .insertInto("traces")
-        .values({
-          id: traceId,
-          project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
-          user_id: "a",
-          input: { input: "This is a great prompt" },
-          output: { output: "This is a great response" },
-        })
-        .execute();
 
       await upsertTrace({
         id: traceId,
@@ -1297,25 +1479,13 @@ describe("eval service tests", () => {
         updated_at: convertDateToClickhouseDateTime(new Date()),
       });
 
-      await kyselyPrisma.$kysely
-        .insertInto("observations")
-        .values({
-          id: randomUUID(),
-          trace_id: traceId,
-          name: "great-llm-name",
-          type: sql`'GENERATION'::"ObservationType"`,
-          project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
-          input: { huhu: "This is a great prompt" },
-          output: { haha: "This is a great response" },
-        })
-        .execute();
-
       await upsertObservation({
         id: randomUUID(),
         trace_id: traceId,
         project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
         name: "great-llm-name",
         type: "GENERATION",
+        environment: "production",
         input: JSON.stringify({ huhu: "This is a great prompt" }),
         output: JSON.stringify({ haha: "This is a great response" }),
         start_time: convertDateToClickhouseDateTime(new Date()),
@@ -1349,27 +1519,18 @@ describe("eval service tests", () => {
         {
           value: '{"huhu":"This is a great prompt"}',
           var: "input",
+          environment: "production",
         },
         {
           value: '{"haha":"This is a great response"}',
           var: "output",
+          environment: "production",
         },
       ]);
     }, 10_000);
 
     test("fails if observation is not present", async () => {
       const traceId = randomUUID();
-
-      await kyselyPrisma.$kysely
-        .insertInto("traces")
-        .values({
-          id: traceId,
-          project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
-          user_id: "a",
-          input: { input: "This is a great prompt" },
-          output: { output: "This is a great response" },
-        })
-        .execute();
 
       const variableMapping = variableMappingList.parse([
         {
@@ -1403,17 +1564,6 @@ describe("eval service tests", () => {
     test("does not fail if observation data is null", async () => {
       const traceId = randomUUID();
 
-      await kyselyPrisma.$kysely
-        .insertInto("traces")
-        .values({
-          id: traceId,
-          project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
-          user_id: "a",
-          input: { input: "This is a great prompt" },
-          output: { output: "This is a great response" },
-        })
-        .execute();
-
       await upsertTrace({
         id: traceId,
         project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
@@ -1426,17 +1576,6 @@ describe("eval service tests", () => {
       });
 
       // fetching input and output for an observation which has NULL values
-      await kyselyPrisma.$kysely
-        .insertInto("observations")
-        .values({
-          id: randomUUID(),
-          trace_id: traceId,
-          name: "great-llm-name",
-          type: sql`'GENERATION'::"ObservationType"`,
-          project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
-        })
-        .execute();
-
       await upsertObservation({
         id: randomUUID(),
         trace_id: traceId,
@@ -1472,10 +1611,12 @@ describe("eval service tests", () => {
 
       expect(result).toEqual([
         {
+          environment: "default",
           value: "",
           var: "input",
         },
         {
+          environment: "default",
           value: "",
           var: "output",
         },
@@ -1484,17 +1625,6 @@ describe("eval service tests", () => {
 
     test("extracts variables from a youngest observation", async () => {
       const traceId = randomUUID();
-
-      await kyselyPrisma.$kysely
-        .insertInto("traces")
-        .values({
-          id: traceId,
-          project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
-          user_id: "a",
-          input: { input: "This is a great prompt" },
-          output: { output: "This is a great response" },
-        })
-        .execute();
 
       await upsertTrace({
         id: traceId,
@@ -1506,20 +1636,6 @@ describe("eval service tests", () => {
         created_at: convertDateToClickhouseDateTime(new Date()),
         updated_at: convertDateToClickhouseDateTime(new Date()),
       });
-
-      await kyselyPrisma.$kysely
-        .insertInto("observations")
-        .values({
-          id: randomUUID(),
-          trace_id: traceId,
-          name: "great-llm-name",
-          start_time: new Date("2022-01-01T00:00:00.000Z"),
-          type: sql`'GENERATION'::"ObservationType"`,
-          project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
-          input: { huhu: "This is a great prompt" },
-          output: { haha: "This is a great response" },
-        })
-        .execute();
 
       await upsertObservation({
         id: randomUUID(),
@@ -1535,20 +1651,6 @@ describe("eval service tests", () => {
         created_at: convertDateToClickhouseDateTime(new Date()),
         updated_at: convertDateToClickhouseDateTime(new Date()),
       });
-
-      await kyselyPrisma.$kysely
-        .insertInto("observations")
-        .values({
-          id: randomUUID(),
-          trace_id: traceId,
-          name: "great-llm-name",
-          start_time: new Date("2022-01-02T00:00:00.000Z"),
-          type: sql`'GENERATION'::"ObservationType"`,
-          project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
-          input: { huhu: "This is a great prompt again" },
-          output: { haha: "This is a great response again" },
-        })
-        .execute();
 
       await upsertObservation({
         id: randomUUID(),
@@ -1589,10 +1691,12 @@ describe("eval service tests", () => {
 
       expect(result).toEqual([
         {
+          environment: "default",
           value: '{"huhu":"This is a great prompt again"}',
           var: "input",
         },
         {
+          environment: "default",
           value: '{"haha":"This is a great response again"}',
           var: "output",
         },

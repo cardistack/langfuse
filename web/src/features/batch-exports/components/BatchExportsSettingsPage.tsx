@@ -2,6 +2,7 @@ import Header from "@/src/components/layouts/header";
 import { Alert, AlertDescription, AlertTitle } from "@/src/components/ui/alert";
 import { BatchExportsTable } from "@/src/features/batch-exports/components/BatchExportsTable";
 import { useHasProjectAccess } from "@/src/features/rbac/utils/checkProjectAccess";
+import { SettingsTableCard } from "@/src/components/layouts/settings-table-card";
 
 export function BatchExportsSettingsPage(props: { projectId: string }) {
   const hasAccess = useHasProjectAccess({
@@ -11,7 +12,7 @@ export function BatchExportsSettingsPage(props: { projectId: string }) {
 
   return (
     <>
-      <Header title="Exports" level="h3" />
+      <Header title="Exports" />
       <p className="mb-4 text-sm">
         Export large datasets in your preferred format via the export buttons
         across Langfuse. Exports are processed asynchronously and remain
@@ -19,7 +20,9 @@ export function BatchExportsSettingsPage(props: { projectId: string }) {
         notification once your export is ready.
       </p>
       {hasAccess ? (
-        <BatchExportsTable projectId={props.projectId} />
+        <SettingsTableCard>
+          <BatchExportsTable projectId={props.projectId} />
+        </SettingsTableCard>
       ) : (
         <Alert>
           <AlertTitle>Access Denied</AlertTitle>

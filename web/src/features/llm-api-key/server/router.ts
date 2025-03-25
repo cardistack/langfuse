@@ -5,6 +5,7 @@ import { throwIfNoProjectAccess } from "@/src/features/rbac/utils/checkProjectAc
 import {
   createTRPCRouter,
   protectedProjectProcedure,
+  protectedProjectProcedureWithoutTracing,
 } from "@/src/server/api/trpc";
 import {
   type ChatMessage,
@@ -27,7 +28,7 @@ export function getDisplaySecretKey(secretKey: string) {
 }
 
 export const llmApiKeyRouter = createTRPCRouter({
-  create: protectedProjectProcedure
+  create: protectedProjectProcedureWithoutTracing
     .input(CreateLlmApiKey)
     .mutation(async ({ input, ctx }) => {
       try {
@@ -41,6 +42,12 @@ export const llmApiKeyRouter = createTRPCRouter({
           data: {
             projectId: input.projectId,
             secretKey: encrypt(input.secretKey),
+            extraHeaders: input.extraHeaders
+              ? encrypt(JSON.stringify(input.extraHeaders))
+              : undefined,
+            extraHeaderKeys: input.extraHeaders
+              ? Object.keys(input.extraHeaders)
+              : undefined,
             adapter: input.adapter,
             displaySecretKey: getDisplaySecretKey(input.secretKey),
             provider: input.provider,
@@ -104,10 +111,15 @@ export const llmApiKeyRouter = createTRPCRouter({
       });
 
       const apiKeys = z
-        .array(LLMApiKeySchema.extend({ secretKey: z.undefined() }))
+        .array(
+          LLMApiKeySchema.extend({
+            secretKey: z.undefined(),
+            extraHeaders: z.undefined(),
+          }),
+        )
         .parse(
           await ctx.prisma.llmApiKeys.findMany({
-            // we must not return the secret key via the API, hence not selected
+            // we must not return the secret key AND extra headers via the API, hence not selected
             select: {
               id: true,
               createdAt: true,
@@ -119,6 +131,7 @@ export const llmApiKeyRouter = createTRPCRouter({
               baseURL: true,
               customModels: true,
               withDefaultModels: true,
+              extraHeaderKeys: true,
             },
             where: {
               projectId: input.projectId,
@@ -138,7 +151,7 @@ export const llmApiKeyRouter = createTRPCRouter({
       };
     }),
 
-  test: protectedProjectProcedure
+  test: protectedProjectProcedureWithoutTracing
     .input(CreateLlmApiKey)
     .mutation(async ({ input }) => {
       try {
@@ -166,9 +179,11 @@ export const llmApiKeyRouter = createTRPCRouter({
             adapter: input.adapter,
             provider: input.provider,
             model,
+            top_p: 0.9, // Langchain sets 1 as default that is not supported HuggingFace
           },
           baseURL: input.baseURL,
           apiKey: input.secretKey,
+          extraHeaders: input.extraHeaders,
           messages: testMessages,
           streaming: false,
           maxRetries: 1,

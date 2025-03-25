@@ -6,18 +6,23 @@ import { DatasetRunItemUpsertQueue } from "./datasetRunItemUpsert";
 import { EvalExecutionQueue } from "./evalExecutionQueue";
 import { ExperimentCreateQueue } from "./experimentCreateQueue";
 import { IngestionQueue, SecondaryIngestionQueue } from "./ingestionQueue";
-import { LegacyIngestionQueue } from "./legacyIngestion";
 import { TraceUpsertQueue } from "./traceUpsert";
 import { TraceDeleteQueue } from "./traceDelete";
 import { ProjectDeleteQueue } from "./projectDelete";
 import { PostHogIntegrationQueue } from "./postHogIntegrationQueue";
 import { PostHogIntegrationProcessingQueue } from "./postHogIntegrationProcessingQueue";
+import { BlobStorageIntegrationQueue } from "./blobStorageIntegrationQueue";
+import { BlobStorageIntegrationProcessingQueue } from "./blobStorageIntegrationProcessingQueue";
 import { CoreDataS3ExportQueue } from "./coreDataS3ExportQueue";
+import { MeteringDataPostgresExportQueue } from "./meteringDataPostgresExportQueue";
+import { DataRetentionQueue } from "./dataRetentionQueue";
+import { DataRetentionProcessingQueue } from "./dataRetentionProcessingQueue";
+import { BatchActionQueue } from "./batchActionQueue";
+import { CreateEvalQueue } from "./createEvalQueue";
+import { ScoreDeleteQueue } from "./scoreDelete";
 
 export function getQueue(queueName: QueueName): Queue | null {
   switch (queueName) {
-    case QueueName.LegacyIngestionQueue:
-      return LegacyIngestionQueue.getInstance();
     case QueueName.BatchExport:
       return BatchExportQueue.getInstance();
     case QueueName.CloudUsageMeteringQueue:
@@ -40,10 +45,26 @@ export function getQueue(queueName: QueueName): Queue | null {
       return PostHogIntegrationQueue.getInstance();
     case QueueName.PostHogIntegrationProcessingQueue:
       return PostHogIntegrationProcessingQueue.getInstance();
+    case QueueName.BlobStorageIntegrationQueue:
+      return BlobStorageIntegrationQueue.getInstance();
+    case QueueName.BlobStorageIntegrationProcessingQueue:
+      return BlobStorageIntegrationProcessingQueue.getInstance();
     case QueueName.IngestionSecondaryQueue:
       return SecondaryIngestionQueue.getInstance();
     case QueueName.CoreDataS3ExportQueue:
       return CoreDataS3ExportQueue.getInstance();
+    case QueueName.MeteringDataPostgresExportQueue:
+      return MeteringDataPostgresExportQueue.getInstance();
+    case QueueName.DataRetentionQueue:
+      return DataRetentionQueue.getInstance();
+    case QueueName.DataRetentionProcessingQueue:
+      return DataRetentionProcessingQueue.getInstance();
+    case QueueName.BatchActionQueue:
+      return BatchActionQueue.getInstance();
+    case QueueName.CreateEvalQueue:
+      return CreateEvalQueue.getInstance();
+    case QueueName.ScoreDelete:
+      return ScoreDeleteQueue.getInstance();
     default:
       const exhaustiveCheckDefault: never = queueName;
       throw new Error(`Queue ${queueName} not found`);

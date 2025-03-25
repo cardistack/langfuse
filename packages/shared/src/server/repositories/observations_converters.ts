@@ -1,15 +1,14 @@
-import {
-  Observation,
-  ObservationView,
-  ObservationType,
-  ObservationLevel,
-  Prisma,
-} from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import Decimal from "decimal.js";
 import { parseClickhouseUTCDateTimeFormat } from "./clickhouse";
 import { ObservationRecordReadType } from "./definitions";
 import { parseJsonPrioritised } from "../../utils/json";
-import { jsonSchema } from "../../utils/zod";
+import {
+  Observation,
+  ObservationView,
+  ObservationType,
+  ObservationLevelType,
+} from "./types";
 
 export const convertObservationToView = (
   record: ObservationRecordReadType,
@@ -56,21 +55,29 @@ export const convertObservation = (
     traceId: record.trace_id ?? null,
     projectId: record.project_id,
     type: record.type as ObservationType,
+    environment: record.environment,
     parentObservationId: record.parent_observation_id ?? null,
     startTime: parseClickhouseUTCDateTimeFormat(record.start_time),
     endTime: record.end_time
       ? parseClickhouseUTCDateTimeFormat(record.end_time)
       : null,
     name: record.name ?? null,
-    metadata: record.metadata,
-    level: record.level as ObservationLevel,
+    metadata:
+      record.metadata &&
+      Object.fromEntries(
+        Object.entries(record.metadata ?? {}).map(([key, val]) => [
+          key,
+          val && parseJsonPrioritised(val),
+        ]),
+      ),
+    level: record.level as ObservationLevelType,
     statusMessage: record.status_message ?? null,
     version: record.version ?? null,
     input: (record.input
-      ? jsonSchema.parse(parseJsonPrioritised(record.input))
+      ? parseJsonPrioritised(record.input)
       : null) as Prisma.JsonValue | null,
     output: (record.output
-      ? jsonSchema.parse(parseJsonPrioritised(record.output))
+      ? parseJsonPrioritised(record.output)
       : null) as Prisma.JsonValue | null,
     modelParameters: record.model_parameters
       ? JSON.parse(record.model_parameters)

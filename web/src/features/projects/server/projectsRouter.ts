@@ -14,6 +14,7 @@ import {
   QueueJobs,
   redis,
   ProjectDeleteQueue,
+  getEnvironmentsForProject,
 } from "@langfuse/shared/src/server";
 import { randomUUID } from "crypto";
 
@@ -101,6 +102,39 @@ export const projectsRouter = createTRPCRouter({
       return true;
     }),
 
+  setRetention: protectedProjectProcedure
+    .input(
+      z.object({
+        projectId: z.string(),
+        retention: z.number().int().gte(7).nullable(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      throwIfNoProjectAccess({
+        session: ctx.session,
+        projectId: input.projectId,
+        scope: "project:update",
+      });
+
+      const project = await ctx.prisma.project.update({
+        where: {
+          id: input.projectId,
+          orgId: ctx.session.orgId,
+        },
+        data: {
+          retentionDays: input.retention,
+        },
+      });
+      await auditLog({
+        session: ctx.session,
+        resourceType: "project",
+        resourceId: input.projectId,
+        action: "update",
+        after: project,
+      });
+      return true;
+    }),
+
   delete: protectedProjectProcedure
     .input(
       z.object({
@@ -132,17 +166,17 @@ export const projectsRouter = createTRPCRouter({
         action: "delete",
       });
 
-      // Delete API keys from DB first
+      // API keys need to be deleted from cache. Otherwise, they will still be valid.
+      await new ApiAuthService(ctx.prisma, redis).invalidateProjectApiKeys(
+        input.projectId,
+      );
+
+      // Delete API keys from DB
       await ctx.prisma.apiKey.deleteMany({
         where: {
           projectId: input.projectId,
         },
       });
-
-      // API keys need to be deleted from cache. Otherwise, they will still be valid.
-      await new ApiAuthService(ctx.prisma, redis).invalidateProjectApiKeys(
-        input.projectId,
-      );
 
       await ctx.prisma.project.update({
         where: {
@@ -242,4 +276,8 @@ export const projectsRouter = createTRPCRouter({
         input.projectId,
       );
     }),
+
+  environmentFilterOptions: protectedProjectProcedure
+    .input(z.object({ projectId: z.string() }))
+    .query(async ({ input }) => getEnvironmentsForProject(input)),
 });

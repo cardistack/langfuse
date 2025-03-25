@@ -1,5 +1,5 @@
 import { Button } from "@/src/components/ui/button";
-import { CommandShortcut } from "@/src/components/ui/command";
+import { InputCommandShortcut } from "@/src/components/ui/input-command";
 import {
   Tooltip,
   TooltipContent,
@@ -67,12 +67,12 @@ export const DetailPageNav = (props: {
 
   if (entries.length > 1)
     return (
-      <div className="flex flex-row gap-2">
+      <div className="flex flex-row gap-1">
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
               variant="outline"
-              size="icon"
+              className="p-2"
               disabled={!previousPageEntry}
               onClick={() => {
                 if (previousPageEntry) {
@@ -87,13 +87,16 @@ export const DetailPageNav = (props: {
               }}
             >
               <ChevronUp className="h-4 w-4" />
+              <span className="ml-1 h-4 w-4 rounded-sm bg-primary/80 text-xs text-primary-foreground shadow-sm">
+                K
+              </span>
             </Button>
           </TooltipTrigger>
           <TooltipContent>
             <span>Navigate up</span>
-            <CommandShortcut className="ml-2 rounded-sm bg-muted p-1 px-2">
+            <InputCommandShortcut className="ml-2 rounded-sm bg-muted p-1 px-2">
               k
-            </CommandShortcut>
+            </InputCommandShortcut>
           </TooltipContent>
         </Tooltip>
 
@@ -101,7 +104,7 @@ export const DetailPageNav = (props: {
           <TooltipTrigger asChild>
             <Button
               variant="outline"
-              size="icon"
+              className="p-2"
               disabled={!nextPageEntry}
               onClick={() => {
                 if (nextPageEntry) {
@@ -116,13 +119,16 @@ export const DetailPageNav = (props: {
               }}
             >
               <ChevronDown className="h-4 w-4" />
+              <span className="ml-1 h-4 w-4 rounded-sm bg-primary/80 text-xs text-primary-foreground shadow-sm">
+                J
+              </span>
             </Button>
           </TooltipTrigger>
           <TooltipContent>
             <span>Navigate down</span>
-            <CommandShortcut className="ml-2 rounded-sm bg-muted p-1 px-2">
+            <InputCommandShortcut className="ml-2 rounded-sm bg-muted p-1 px-2">
               j
-            </CommandShortcut>
+            </InputCommandShortcut>
           </TooltipContent>
         </Tooltip>
       </div>

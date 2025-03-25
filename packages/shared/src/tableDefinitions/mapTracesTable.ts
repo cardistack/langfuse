@@ -1,6 +1,6 @@
-import { UiColumnMapping } from "./types";
+import { UiColumnMappings } from "./types";
 
-export const tracesTableUiColumnDefinitions: UiColumnMapping[] = [
+export const tracesTableUiColumnDefinitions: UiColumnMappings = [
   {
     uiTableName: "⭐️",
     uiTableId: "bookmarked",
@@ -12,7 +12,7 @@ export const tracesTableUiColumnDefinitions: UiColumnMapping[] = [
     uiTableName: "Level",
     uiTableId: "level",
     clickhouseTableName: "observations",
-    clickhouseSelect: "level",
+    clickhouseSelect: "aggregated_level",
   },
   {
     uiTableName: "ID",
@@ -63,10 +63,40 @@ export const tracesTableUiColumnDefinitions: UiColumnMapping[] = [
     clickhouseSelect: "release",
   },
   {
+    uiTableName: "Environment",
+    uiTableId: "environment",
+    clickhouseTableName: "traces",
+    clickhouseSelect: "environment",
+  },
+  {
     uiTableName: "Tags",
     uiTableId: "tags",
     clickhouseTableName: "traces",
     clickhouseSelect: "tags",
+  },
+  {
+    uiTableName: "Warning Level Count",
+    uiTableId: "warningCount",
+    clickhouseTableName: "observations",
+    clickhouseSelect: "warning_count",
+  },
+  {
+    uiTableName: "Error Level Count",
+    uiTableId: "errorCount",
+    clickhouseTableName: "observations",
+    clickhouseSelect: "error_count",
+  },
+  {
+    uiTableName: "Default Level Count",
+    uiTableId: "defaultCount",
+    clickhouseTableName: "observations",
+    clickhouseSelect: "default_count",
+  },
+  {
+    uiTableName: "Debug Level Count",
+    uiTableId: "debugCount",
+    clickhouseTableName: "observations",
+    clickhouseSelect: "debug_count",
   },
   {
     uiTableName: "Input Tokens",
@@ -74,6 +104,7 @@ export const tracesTableUiColumnDefinitions: UiColumnMapping[] = [
     clickhouseTableName: "observations",
     clickhouseSelect:
       "arraySum(mapValues(mapFilter(x -> positionCaseInsensitive(x.1, 'input') > 0, usage_details)))",
+    clickhouseTypeOverwrite: "Decimal64(3)",
   },
   {
     uiTableName: "Output Tokens",
@@ -81,6 +112,7 @@ export const tracesTableUiColumnDefinitions: UiColumnMapping[] = [
     clickhouseTableName: "observations",
     clickhouseSelect:
       "arraySum(mapValues(mapFilter(x -> positionCaseInsensitive(x.1, 'output') > 0, usage_details)))",
+    clickhouseTypeOverwrite: "Decimal64(3)",
   },
   {
     uiTableName: "Total Tokens",
@@ -88,6 +120,7 @@ export const tracesTableUiColumnDefinitions: UiColumnMapping[] = [
     clickhouseTableName: "observations",
     clickhouseSelect:
       "if(mapExists((k, v) -> (k = 'total'), usage_details), usage_details['total'], NULL)",
+    clickhouseTypeOverwrite: "Decimal64(3)",
   },
   {
     uiTableName: "Usage",
@@ -95,6 +128,7 @@ export const tracesTableUiColumnDefinitions: UiColumnMapping[] = [
     clickhouseTableName: "observations",
     clickhouseSelect:
       "if(mapExists((k, v) -> (k = 'total'), usage_details), usage_details['total'], NULL)",
+    clickhouseTypeOverwrite: "Decimal64(3)",
   },
   {
     uiTableName: "Scores",

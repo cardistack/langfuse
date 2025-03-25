@@ -4,11 +4,8 @@ import {
 } from "./clickhouse";
 import { createFilterFromFilterState } from "../queries/clickhouse-sql/factory";
 import { FilterState } from "../../types";
-import {
-  DateTimeFilter,
-  FilterList,
-} from "../queries/clickhouse-sql/clickhouse-filter";
-import { dashboardColumnDefinitions } from "../../tableDefinitions/mapDashboards";
+import { DateTimeFilter, FilterList } from "../queries";
+import { dashboardColumnDefinitions } from "../../tableDefinitions";
 import { convertDateToClickhouseDateTime } from "../clickhouse/client";
 import {
   OBSERVATIONS_TO_TRACE_INTERVAL,
@@ -18,12 +15,37 @@ import {
 
 export type DateTrunc = "year" | "month" | "week" | "day" | "hour" | "minute";
 
+const extractEnvironmentFilterFromFilters = (
+  filter: FilterState,
+): { envFilter: FilterState; remainingFilters: FilterState } => {
+  return {
+    envFilter: filter.filter((f) => f.column === "environment"),
+    remainingFilters: filter.filter((f) => f.column !== "environment"),
+  };
+};
+
+const convertEnvFilterToClickhouseFilter = (filter: FilterState) => {
+  return createFilterFromFilterState(filter, [
+    {
+      clickhouseSelect: "environment",
+      clickhouseTableName: "traces",
+      uiTableId: "environment",
+      uiTableName: "Environment",
+    },
+  ]);
+};
+
 export const getTotalTraces = async (
   projectId: string,
   filter: FilterState,
 ) => {
+  const { envFilter, remainingFilters } =
+    extractEnvironmentFilterFromFilters(filter);
+  const environmentFilter = new FilterList(
+    convertEnvFilterToClickhouseFilter(envFilter),
+  ).apply();
   const chFilter = new FilterList(
-    createFilterFromFilterState(filter, dashboardColumnDefinitions),
+    createFilterFromFilterState(remainingFilters, dashboardColumnDefinitions),
   ).apply();
 
   const query = `
@@ -31,13 +53,22 @@ export const getTotalTraces = async (
       count(id) as count 
     FROM traces t FINAL 
     WHERE project_id = {projectId: String}
-    AND ${chFilter.query}`;
+    AND ${chFilter.query}
+    ${environmentFilter.query ? `AND ${environmentFilter.query}` : ""}
+  `;
 
   const result = await queryClickhouse<{ count: number }>({
     query,
     params: {
       projectId,
       ...chFilter.params,
+      ...environmentFilter.params,
+    },
+    tags: {
+      feature: "dashboard",
+      type: "totalTraces",
+      kind: "analytic",
+      projectId,
     },
   });
 
@@ -52,14 +83,18 @@ export const getObservationsCostGroupedByName = async (
   projectId: string,
   filter: FilterState,
 ) => {
+  const { envFilter, remainingFilters } =
+    extractEnvironmentFilterFromFilters(filter);
+  const environmentFilter = new FilterList(
+    convertEnvFilterToClickhouseFilter(envFilter),
+  ).apply();
   const chFilter = new FilterList(
-    createFilterFromFilterState(filter, dashboardColumnDefinitions),
+    createFilterFromFilterState(remainingFilters, dashboardColumnDefinitions),
   );
 
   const appliedFilter = chFilter.apply();
 
   const hasTraceFilter = chFilter.find((f) => f.clickhouseTable === "traces");
-  // TODO: Validate whether we can filter traces on timestamp here.
 
   const query = `
     SELECT 
@@ -68,9 +103,11 @@ export const getObservationsCostGroupedByName = async (
       sumMap(usage_details)['total'] as sum_usage_details
     FROM observations o FINAL ${hasTraceFilter ? "LEFT JOIN traces t ON o.trace_id = t.id AND o.project_id = t.project_id" : ""}
     WHERE project_id = {projectId: String}
-    AND ${appliedFilter.query}
+    ${appliedFilter.query ? `AND ${appliedFilter.query}` : ""}
+    ${environmentFilter.query ? `AND ${environmentFilter.query}` : ""}
     GROUP BY provided_model_name
     ORDER BY sumMap(cost_details)['total'] DESC
+    LIMIT 50
     `;
 
   const result = await queryClickhouse<{
@@ -82,6 +119,13 @@ export const getObservationsCostGroupedByName = async (
     params: {
       projectId,
       ...appliedFilter.params,
+      ...environmentFilter.params,
+    },
+    tags: {
+      feature: "dashboard",
+      type: "observationCostGroupedByName",
+      kind: "analytic",
+      projectId,
     },
   });
 
@@ -92,8 +136,13 @@ export const getScoreAggregate = async (
   projectId: string,
   filter: FilterState,
 ) => {
+  const { envFilter, remainingFilters } =
+    extractEnvironmentFilterFromFilters(filter);
+  const environmentFilter = new FilterList(
+    convertEnvFilterToClickhouseFilter(envFilter),
+  ).apply();
   const chFilter = new FilterList(
-    createFilterFromFilterState(filter, dashboardColumnDefinitions),
+    createFilterFromFilterState(remainingFilters, dashboardColumnDefinitions),
   );
 
   const timeFilter = chFilter.find(
@@ -117,6 +166,7 @@ export const getScoreAggregate = async (
      ${hasTraceFilter ? "JOIN traces t FINAL ON t.id = s.trace_id AND t.project_id = s.project_id" : ""}
     WHERE s.project_id = {projectId: String}
     AND ${chFilterApplied.query}
+    ${environmentFilter.query ? `AND ${environmentFilter.query}` : ""}
     ${timeFilter && hasTraceFilter ? `AND t.timestamp >= {tracesTimestamp: DateTime64(3)} - ${SCORE_TO_TRACE_OBSERVATIONS_INTERVAL}` : ""}
     GROUP BY s.name, s.source, s.data_type
     ORDER BY count(*) DESC
@@ -133,9 +183,16 @@ export const getScoreAggregate = async (
     params: {
       projectId,
       ...chFilterApplied.params,
+      ...environmentFilter.params,
       ...(timeFilter
         ? { tracesTimestamp: convertDateToClickhouseDateTime(timeFilter.value) }
         : {}),
+    },
+    tags: {
+      feature: "dashboard",
+      type: "scoreAggregate",
+      kind: "analytic",
+      projectId,
     },
   });
 
@@ -145,23 +202,32 @@ export const getScoreAggregate = async (
 export const groupTracesByTime = async (
   projectId: string,
   filter: FilterState,
-  groupBy: DateTrunc,
 ) => {
-  const chFilter = new FilterList(
-    createFilterFromFilterState(filter, dashboardColumnDefinitions),
+  const { envFilter, remainingFilters } =
+    extractEnvironmentFilterFromFilters(filter);
+  const environmentFilter = new FilterList(
+    convertEnvFilterToClickhouseFilter(envFilter),
   ).apply();
+  const chFilter = new FilterList(
+    createFilterFromFilterState(remainingFilters, dashboardColumnDefinitions),
+  ).apply();
+
+  const [orderByQuery, orderByParams, bucketSizeInSeconds] = orderByTimeSeries(
+    filter,
+    "timestamp",
+  );
 
   const query = `
     SELECT 
-      ${selectTimeseriesColumn(groupBy, "timestamp", "timestamp")},
+      ${selectTimeseriesColumn(bucketSizeInSeconds, "timestamp", "timestamp")},
       count(*) as count
     FROM traces t FINAL
     WHERE project_id = {projectId: String}
     AND ${chFilter.query}
+    ${environmentFilter.query ? `AND ${environmentFilter.query}` : ""}
     GROUP BY timestamp
-    ${orderByTimeSeries(groupBy, "timestamp")}
+    ${orderByQuery}
     `;
-
   const result = await queryClickhouse<{
     timestamp: string;
     count: string;
@@ -170,11 +236,19 @@ export const groupTracesByTime = async (
     params: {
       projectId,
       ...chFilter.params,
+      ...environmentFilter.params,
+      ...orderByParams,
+    },
+    tags: {
+      feature: "dashboard",
+      type: "tracesByTime",
+      kind: "analytic",
+      projectId,
     },
   });
 
   return result.map((row) => ({
-    timestamp: new Date(row.timestamp),
+    timestamp: parseClickhouseUTCDateTimeFormat(row.timestamp),
     countTraceId: Number(row.count),
   }));
 };
@@ -182,10 +256,14 @@ export const groupTracesByTime = async (
 export const getObservationUsageByTime = async (
   projectId: string,
   filter: FilterState,
-  groupBy: DateTrunc,
 ) => {
+  const { envFilter, remainingFilters } =
+    extractEnvironmentFilterFromFilters(filter);
+  const environmentFilter = new FilterList(
+    convertEnvFilterToClickhouseFilter(envFilter),
+  ).apply();
   const chFilter = new FilterList(
-    createFilterFromFilterState(filter, dashboardColumnDefinitions),
+    createFilterFromFilterState(remainingFilters, dashboardColumnDefinitions),
   );
 
   const appliedFilter = chFilter.apply();
@@ -200,9 +278,14 @@ export const getObservationUsageByTime = async (
       ) as DateTimeFilter | undefined)
     : undefined;
 
+  const [orderByQuery, orderByParams, bucketSizeInSeconds] = orderByTimeSeries(
+    filter,
+    "start_time",
+  );
+
   const query = `
     SELECT 
-      ${selectTimeseriesColumn(groupBy, "start_time", "start_time")},
+      ${selectTimeseriesColumn(bucketSizeInSeconds, "start_time", "start_time")},
       sumMap(usage_details) as units,
       sumMap(cost_details) as cost, 
       provided_model_name
@@ -210,9 +293,10 @@ export const getObservationUsageByTime = async (
     ${tracesFilter ? "LEFT JOIN traces t ON o.trace_id = t.id AND o.project_id = t.project_id" : ""}
     WHERE project_id = {projectId: String}
     AND ${appliedFilter.query}
+    ${environmentFilter.query ? `AND ${environmentFilter.query}` : ""}
     ${timeFilter ? `AND t.timestamp >= {traceTimestamp: DateTime64(3)} - ${OBSERVATIONS_TO_TRACE_INTERVAL}` : ""}
     GROUP BY start_time, provided_model_name
-    ${orderByTimeSeries(groupBy, "start_time")}
+    ${orderByQuery}
     `;
 
   const result = await queryClickhouse<{
@@ -225,14 +309,22 @@ export const getObservationUsageByTime = async (
     params: {
       projectId,
       ...appliedFilter.params,
+      ...environmentFilter.params,
+      ...orderByParams,
       ...(timeFilter
         ? { traceTimestamp: convertDateToClickhouseDateTime(timeFilter.value) }
         : {}),
     },
+    tags: {
+      feature: "dashboard",
+      type: "observationUsageByTime",
+      kind: "analytic",
+      projectId,
+    },
   });
 
   return result.map((row) => ({
-    start_time: new Date(row.start_time),
+    start_time: parseClickhouseUTCDateTimeFormat(row.start_time),
     units: Object.fromEntries(
       Object.entries(row.units ?? {}).map(([key, value]) => [
         key,
@@ -253,8 +345,13 @@ export const getDistinctModels = async (
   projectId: string,
   filter: FilterState,
 ) => {
+  const { envFilter, remainingFilters } =
+    extractEnvironmentFilterFromFilters(filter);
+  const environmentFilter = new FilterList(
+    convertEnvFilterToClickhouseFilter(envFilter),
+  ).apply();
   const chFilter = new FilterList(
-    createFilterFromFilterState(filter, dashboardColumnDefinitions),
+    createFilterFromFilterState(remainingFilters, dashboardColumnDefinitions),
   );
 
   const appliedFilter = chFilter.apply();
@@ -271,12 +368,16 @@ export const getDistinctModels = async (
 
   // No need for final as duplicates are caught by distinct anyway.
   const query = `
-    SELECT distinct(provided_model_name) as model
+    SELECT distinct(provided_model_name) as model, count(*) as count
     FROM observations o
     ${tracesFilter ? "LEFT JOIN traces t ON o.trace_id = t.id AND o.project_id = t.project_id" : ""}
     WHERE project_id = {projectId: String}
     AND ${appliedFilter.query}
+    ${environmentFilter.query ? `AND ${environmentFilter.query}` : ""}
     ${timeFilter ? `AND t.timestamp >= {traceTimestamp: DateTime64(3)} - ${OBSERVATIONS_TO_TRACE_INTERVAL}` : ""}
+    GROUP BY provided_model_name
+    ORDER BY count(*) DESC
+    LIMIT 1000
     `;
 
   const result = await queryClickhouse<{ model: string }>({
@@ -284,9 +385,16 @@ export const getDistinctModels = async (
     params: {
       projectId,
       ...appliedFilter.params,
+      ...environmentFilter.params,
       ...(timeFilter
         ? { traceTimestamp: convertDateToClickhouseDateTime(timeFilter.value) }
         : {}),
+    },
+    tags: {
+      feature: "dashboard",
+      type: "distinctModels",
+      kind: "analytic",
+      projectId,
     },
   });
 
@@ -296,10 +404,14 @@ export const getDistinctModels = async (
 export const getScoresAggregateOverTime = async (
   projectId: string,
   filter: FilterState,
-  groupBy: DateTrunc,
 ) => {
+  const { envFilter, remainingFilters } =
+    extractEnvironmentFilterFromFilters(filter);
+  const environmentFilter = new FilterList(
+    convertEnvFilterToClickhouseFilter(envFilter),
+  ).apply();
   const chFilter = new FilterList(
-    createFilterFromFilterState(filter, dashboardColumnDefinitions),
+    createFilterFromFilterState(remainingFilters, dashboardColumnDefinitions),
   );
 
   const appliedFilter = chFilter.apply();
@@ -307,9 +419,14 @@ export const getScoresAggregateOverTime = async (
   const traceFilter = chFilter.find((f) => f.clickhouseTable === "traces");
   // TODO: Validate whether we can filter traces on timestamp here.
 
+  const [orderByQuery, orderByParams, bucketSizeInSeconds] = orderByTimeSeries(
+    filter,
+    "timestamp",
+  );
+
   const query = `
   SELECT 
-    ${selectTimeseriesColumn(groupBy, "timestamp", "timestamp")},
+    ${selectTimeseriesColumn(bucketSizeInSeconds, "timestamp", "timestamp")},
     name,
     data_type,
     source,
@@ -317,6 +434,7 @@ export const getScoresAggregateOverTime = async (
   FROM scores FINAL
   ${traceFilter ? "JOIN traces t ON scores.trace_id = t.id AND scores.project_id = t.project_id" : ""}
   WHERE project_id = {projectId: String}
+  ${environmentFilter.query ? `AND ${environmentFilter.query}` : ""}
   AND ${appliedFilter.query}
   AND data_type IN ('NUMERIC', 'BOOLEAN')
   GROUP BY 
@@ -324,7 +442,7 @@ export const getScoresAggregateOverTime = async (
     name,
     data_type,
     source
-  ${orderByTimeSeries(groupBy, "timestamp")};
+  ${orderByQuery};
 `;
 
   const result = await queryClickhouse<{
@@ -338,11 +456,19 @@ export const getScoresAggregateOverTime = async (
     params: {
       projectId,
       ...appliedFilter.params,
+      ...environmentFilter.params,
+      ...orderByParams,
+    },
+    tags: {
+      feature: "dashboard",
+      type: "scoresAggregateOverTime",
+      kind: "analytic",
+      projectId,
     },
   });
 
   return result.map((row) => ({
-    scoreTimestamp: new Date(row.timestamp),
+    scoreTimestamp: parseClickhouseUTCDateTimeFormat(row.timestamp),
     scoreName: row.name,
     scoreDataType: row.data_type,
     scoreSource: row.source,
@@ -354,8 +480,13 @@ export const getModelUsageByUser = async (
   projectId: string,
   filter: FilterState,
 ) => {
+  const { envFilter, remainingFilters } =
+    extractEnvironmentFilterFromFilters(filter);
+  const environmentFilter = new FilterList(
+    convertEnvFilterToClickhouseFilter(envFilter),
+  ).apply();
   const chFilter = new FilterList(
-    createFilterFromFilterState(filter, dashboardColumnDefinitions),
+    createFilterFromFilterState(remainingFilters, dashboardColumnDefinitions),
   );
 
   const appliedFilter = chFilter.apply();
@@ -378,6 +509,7 @@ export const getModelUsageByUser = async (
     WHERE project_id = {projectId: String}
     AND t.user_id IS NOT NULL
     AND ${appliedFilter.query}
+    ${environmentFilter.query ? `AND ${environmentFilter.query}` : ""}
     ${timeFilter ? `AND t.timestamp >= {traceTimestamp: DateTime64(3)} - ${OBSERVATIONS_TO_TRACE_INTERVAL}` : ""}
     GROUP BY user_id
     ORDER BY sum_cost_details DESC
@@ -392,9 +524,16 @@ export const getModelUsageByUser = async (
     params: {
       projectId,
       ...appliedFilter.params,
+      ...environmentFilter.params,
       ...(timeFilter
         ? { traceTimestamp: convertDateToClickhouseDateTime(timeFilter.value) }
         : {}),
+    },
+    tags: {
+      feature: "dashboard",
+      type: "modelUsageByUser",
+      kind: "analytic",
+      projectId,
     },
   });
 
@@ -409,8 +548,13 @@ export const getObservationLatencies = async (
   projectId: string,
   filter: FilterState,
 ) => {
+  const { envFilter, remainingFilters } =
+    extractEnvironmentFilterFromFilters(filter);
+  const environmentFilter = new FilterList(
+    convertEnvFilterToClickhouseFilter(envFilter),
+  ).apply();
   const chFilter = new FilterList(
-    createFilterFromFilterState(filter, dashboardColumnDefinitions),
+    createFilterFromFilterState(remainingFilters, dashboardColumnDefinitions),
   );
 
   const appliedFilter = chFilter.apply();
@@ -418,19 +562,30 @@ export const getObservationLatencies = async (
   // Skipping FINAL here, as the quantiles are approximate to begin with.
   const query = `
     SELECT
-      quantiles(0.5, 0.9, 0.95, 0.99)(date_diff('milliseconds', o.start_time, o.end_time)) as quantiles,
+      quantiles(0.5, 0.9, 0.95, 0.99)(date_diff('millisecond', o.start_time, o.end_time)) as quantiles,
       name
     FROM observations o
     ${chFilter.find((f) => f.clickhouseTable === "traces") ? "LEFT JOIN traces t ON o.trace_id = t.id AND o.project_id = t.project_id" : ""}
     WHERE project_id = {projectId: String}
     AND ${appliedFilter.query}
+    ${environmentFilter.query ? `AND ${environmentFilter.query}` : ""}
     GROUP BY name
     ORDER BY quantiles[2] DESC
     `;
 
   const result = await queryClickhouse<{ quantiles: string[]; name: string }>({
     query,
-    params: { projectId, ...appliedFilter.params },
+    params: {
+      projectId,
+      ...appliedFilter.params,
+      ...environmentFilter.params,
+    },
+    tags: {
+      feature: "dashboard",
+      type: "observationLatencies",
+      kind: "analytic",
+      projectId,
+    },
   });
 
   return result.map((row) => ({
@@ -446,8 +601,13 @@ export const getTracesLatencies = async (
   projectId: string,
   filter: FilterState,
 ) => {
+  const { envFilter, remainingFilters } =
+    extractEnvironmentFilterFromFilters(filter);
+  const environmentFilter = new FilterList(
+    convertEnvFilterToClickhouseFilter(envFilter),
+  ).apply();
   const chFilter = new FilterList(
-    createFilterFromFilterState(filter, dashboardColumnDefinitions),
+    createFilterFromFilterState(remainingFilters, dashboardColumnDefinitions),
   );
 
   const appliedFilter = chFilter.apply();
@@ -465,12 +625,13 @@ export const getTracesLatencies = async (
       select o.trace_id,
              t.name,
              o.project_id,
-             date_diff('milliseconds', min(o.start_time), coalesce(max(o.end_time), max(o.start_time))) as duration
+             date_diff('millisecond', min(o.start_time), coalesce(max(o.end_time), max(o.start_time))) as duration
       FROM traces t 
       JOIN observations o
       ON o.trace_id = t.id AND o.project_id = t.project_id
       WHERE project_id = {projectId: String}
       AND ${appliedFilter.query}
+      ${environmentFilter.query ? `AND ${environmentFilter.query}` : ""}
       ${timestampFilter ? `AND o.start_time > {dateTimeFilterObservations: DateTime64(3)} - ${TRACE_TO_OBSERVATIONS_INTERVAL}` : ""}
       GROUP BY o.project_id, o.trace_id, t.name
     )
@@ -488,9 +649,16 @@ export const getTracesLatencies = async (
     params: {
       projectId,
       ...appliedFilter.params,
+      ...environmentFilter.params,
       ...(timestampFilter
         ? { dateTimeFilterObservations: timestampFilter.value }
         : {}),
+    },
+    tags: {
+      feature: "dashboard",
+      type: "tracesLatencies",
+      kind: "analytic",
+      projectId,
     },
   });
 
@@ -506,35 +674,59 @@ export const getTracesLatencies = async (
 export const getModelLatenciesOverTime = async (
   projectId: string,
   filter: FilterState,
-  groupBy: DateTrunc,
 ) => {
+  const { envFilter, remainingFilters } =
+    extractEnvironmentFilterFromFilters(filter);
+  const environmentFilter = new FilterList(
+    convertEnvFilterToClickhouseFilter(envFilter),
+  ).apply();
   const chFilter = new FilterList(
-    createFilterFromFilterState(filter, dashboardColumnDefinitions),
+    createFilterFromFilterState(remainingFilters, dashboardColumnDefinitions),
   );
 
   const appliedFilter = chFilter.apply();
 
   const traceFilter = chFilter.find((f) => f.clickhouseTable === "traces");
 
+  const [orderByQuery, orderByParams, bucketSizeInSeconds] = orderByTimeSeries(
+    filter,
+    "start_time_bucket",
+  );
+
   // Skipping FINAL here, as the quantiles are approximate to begin with.
   const query = `
   SELECT 
-    ${selectTimeseriesColumn(groupBy, "o.start_time", "start_time_bucket")},
+    ${selectTimeseriesColumn(bucketSizeInSeconds, "o.start_time", "start_time_bucket")},
     provided_model_name,
-    quantiles(0.5, 0.75, 0.9, 0.95, 0.99)(date_diff('milliseconds', o.start_time, o.end_time)) as quantiles
+    quantiles(0.5, 0.75, 0.9, 0.95, 0.99)(date_diff('millisecond', o.start_time, o.end_time)) as quantiles
   FROM observations o
   ${traceFilter ? "JOIN traces t ON o.trace_id = t.id AND o.project_id = t.project_id" : ""}
   WHERE project_id = {projectId: String}
+  ${environmentFilter.query ? `AND ${environmentFilter.query}` : ""}
   AND ${appliedFilter.query}
   GROUP BY provided_model_name, start_time_bucket
-  ${orderByTimeSeries(groupBy, "start_time_bucket")};
+  ${orderByQuery};
 `;
 
   const result = await queryClickhouse<{
     start_time_bucket: string;
     provided_model_name: string;
     quantiles: string[];
-  }>({ query, params: { projectId, ...appliedFilter.params } });
+  }>({
+    query,
+    params: {
+      projectId,
+      ...appliedFilter.params,
+      ...environmentFilter.params,
+      ...orderByParams,
+    },
+    tags: {
+      feature: "dashboard",
+      type: "modelLatenciesOverTime",
+      kind: "analytic",
+      projectId,
+    },
+  });
 
   return result.map((row) => ({
     p50: Number(row.quantiles[0]) / 1000,
@@ -543,37 +735,47 @@ export const getModelLatenciesOverTime = async (
     p95: Number(row.quantiles[3]) / 1000,
     p99: Number(row.quantiles[4]) / 1000,
     model: row.provided_model_name,
-    start_time: new Date(row.start_time_bucket),
+    start_time: parseClickhouseUTCDateTimeFormat(row.start_time_bucket),
   }));
 };
 
 export const getNumericScoreTimeSeries = async (
   projectId: string,
   filter: FilterState,
-  groupBy: DateTrunc,
 ) => {
+  const { envFilter, remainingFilters } =
+    extractEnvironmentFilterFromFilters(filter);
+  const environmentFilter = new FilterList(
+    convertEnvFilterToClickhouseFilter(envFilter),
+  ).apply();
   const chFilter = new FilterList(
-    createFilterFromFilterState(filter, dashboardColumnDefinitions),
+    createFilterFromFilterState(remainingFilters, dashboardColumnDefinitions),
   );
   const chFilterRes = chFilter.apply();
 
   const traceFilter = chFilter.find((f) => f.clickhouseTable === "traces");
 
+  const [orderByQuery, orderByParams, bucketSizeInSeconds] = orderByTimeSeries(
+    filter,
+    "score_timestamp",
+  );
+
   const query = `
     SELECT
-    ${selectTimeseriesColumn(groupBy, "s.timestamp", "score_timestamp")},
+    ${selectTimeseriesColumn(bucketSizeInSeconds, "s.timestamp", "score_timestamp")},
     s.name as score_name,
     AVG(s.value) as avg_value
     FROM scores s final
     ${traceFilter ? "JOIN traces t ON s.trace_id = t.id AND s.project_id = t.project_id" : ""}
     WHERE s.project_id = {projectId: String}
+    ${environmentFilter.query ? `AND ${environmentFilter.query}` : ""}
     ${chFilterRes?.query ? `AND ${chFilterRes.query}` : ""}
     GROUP BY score_name, score_timestamp
-    ${orderByTimeSeries(groupBy, "score_timestamp")}
+    ${orderByQuery}
   `;
 
-  return queryClickhouse<{
-    score_timestamp: Date;
+  const result = await queryClickhouse<{
+    score_timestamp: string;
     score_name: string;
     avg_value: number;
   }>({
@@ -581,25 +783,48 @@ export const getNumericScoreTimeSeries = async (
     params: {
       projectId,
       ...(chFilterRes ? chFilterRes.params : {}),
+      ...environmentFilter.params,
+      ...orderByParams,
+    },
+    tags: {
+      feature: "dashboard",
+      type: "numericScoreTimeSeries",
+      kind: "analytic",
+      projectId,
     },
   });
+
+  return result.map((row) => ({
+    scoreTimestamp: parseClickhouseUTCDateTimeFormat(row.score_timestamp),
+    scoreName: row.score_name,
+    avgValue: Number(row.avg_value),
+  }));
 };
 
 export const getCategoricalScoreTimeSeries = async (
   projectId: string,
   filter: FilterState,
-  groupBy: DateTrunc | undefined,
 ) => {
+  const { envFilter, remainingFilters } =
+    extractEnvironmentFilterFromFilters(filter);
+  const environmentFilter = new FilterList(
+    convertEnvFilterToClickhouseFilter(envFilter),
+  ).apply();
   const chFilter = new FilterList(
-    createFilterFromFilterState(filter, dashboardColumnDefinitions),
+    createFilterFromFilterState(remainingFilters, dashboardColumnDefinitions),
   );
   const chFilterRes = chFilter.apply();
 
   const traceFilter = chFilter.find((f) => f.clickhouseTable === "traces");
 
+  const [orderByQuery, orderByParams, bucketSizeInSeconds] = orderByTimeSeries(
+    filter,
+    "score_timestamp",
+  );
+
   const query = `
     SELECT
-    ${groupBy ? selectTimeseriesColumn(groupBy, "s.timestamp", "score_timestamp") + ", " : ""}
+    ${bucketSizeInSeconds ? selectTimeseriesColumn(bucketSizeInSeconds, "s.timestamp", "score_timestamp") + ", " : ""}
     s.name as score_name,
     s.data_type as score_data_type,
     s.source as score_source,
@@ -608,13 +833,14 @@ export const getCategoricalScoreTimeSeries = async (
     FROM scores s final
     ${traceFilter ? "JOIN traces t ON s.trace_id = t.id AND s.project_id = t.project_id" : ""}
     WHERE s.project_id = {projectId: String}
+    ${environmentFilter.query ? `AND ${environmentFilter.query}` : ""}
     ${chFilterRes?.query ? `AND ${chFilterRes.query}` : ""}
-    GROUP BY score_name, score_data_type, score_source, score_value ${groupBy ? ", score_timestamp" : ""}
-    ${groupBy ? orderByTimeSeries(groupBy, "score_timestamp") : ""}
+    GROUP BY score_name, score_data_type, score_source, score_value ${bucketSizeInSeconds ? ", score_timestamp" : ""}
+      ${orderByQuery}
   `;
 
-  return queryClickhouse<{
-    score_timestamp?: Date;
+  const result = await queryClickhouse<{
+    score_timestamp?: string;
     score_name: string;
     score_data_type: string;
     score_source: string;
@@ -625,34 +851,63 @@ export const getCategoricalScoreTimeSeries = async (
     params: {
       projectId,
       ...(chFilterRes ? chFilterRes.params : {}),
+      ...environmentFilter.params,
+      ...orderByParams,
+    },
+    tags: {
+      feature: "dashboard",
+      type: "categoricalScoreTimeSeries",
+      kind: "analytic",
+      projectId,
     },
   });
+
+  return result.map((row) => ({
+    scoreTimestamp: row.score_timestamp
+      ? parseClickhouseUTCDateTimeFormat(row.score_timestamp)
+      : undefined,
+    scoreName: row.score_name,
+    scoreDataType: row.score_data_type,
+    scoreSource: row.score_source,
+    scoreValue: row.score_value,
+    count: Number(row.count),
+  }));
 };
 
 export const getObservationsStatusTimeSeries = async (
   projectId: string,
   filter: FilterState,
-  groupBy: DateTrunc | undefined,
 ) => {
+  const { envFilter, remainingFilters } =
+    extractEnvironmentFilterFromFilters(filter);
+  const environmentFilter = new FilterList(
+    convertEnvFilterToClickhouseFilter(envFilter),
+  ).apply();
   const chFilter = new FilterList(
-    createFilterFromFilterState(filter, dashboardColumnDefinitions),
+    createFilterFromFilterState(remainingFilters, dashboardColumnDefinitions),
   );
   const chFilterRes = chFilter.apply();
 
   const traceFilter = chFilter.find((f) => f.clickhouseTable === "traces");
 
+  const [orderByQuery, orderByParams, bucketSizeInSeconds] = orderByTimeSeries(
+    filter,
+    "start_time_bucket",
+  );
+
   const query = `
     SELECT 
-      ${groupBy ? selectTimeseriesColumn(groupBy, "o.start_time", "start_time_bucket") + ", " : ""}
+      ${bucketSizeInSeconds ? selectTimeseriesColumn(bucketSizeInSeconds, "o.start_time", "start_time_bucket") + ", " : ""}
       count(*) as observation_count,
       level as level
     FROM observations o
     ${traceFilter ? "JOIN traces t ON o.trace_id = t.id AND o.project_id = t.project_id" : ""}
     WHERE project_id = {projectId: String}
+    ${environmentFilter.query ? `AND ${environmentFilter.query}` : ""}
     AND o.level IS NOT NULL
     AND ${chFilterRes?.query}
-    GROUP BY level ${groupBy ? ", start_time_bucket" : ""}
-    ${groupBy ? orderByTimeSeries(groupBy, "start_time_bucket") : ""}
+    GROUP BY level ${bucketSizeInSeconds ? ", start_time_bucket" : ""}
+    ${orderByQuery}
   `;
 
   const result = await queryClickhouse<{
@@ -661,7 +916,18 @@ export const getObservationsStatusTimeSeries = async (
     level: string;
   }>({
     query,
-    params: { projectId, ...(chFilterRes ? chFilterRes.params : {}) },
+    params: {
+      projectId,
+      ...(chFilterRes ? chFilterRes.params : {}),
+      ...environmentFilter.params,
+      ...orderByParams,
+    },
+    tags: {
+      feature: "dashboard",
+      type: "observationStatusTimeSeries",
+      kind: "analytic",
+      projectId,
+    },
   });
 
   return result.map((row) => ({
@@ -673,61 +939,70 @@ export const getObservationsStatusTimeSeries = async (
   }));
 };
 
-const orderByTimeSeries = (dateTrunc: DateTrunc, col: string) => {
-  let interval;
-  switch (dateTrunc) {
-    case "year":
-      interval = "toIntervalYear(1)";
-      break;
-    case "month":
-      interval = "toIntervalMonth(1)";
-      break;
-    case "week":
-      interval = "toIntervalWeek(1)";
-      break;
-    case "day":
-      interval = "toIntervalDay(1)";
-      break;
-    case "hour":
-      interval = "toIntervalHour(1)";
-      break;
-    case "minute":
-      interval = "toIntervalMinute(1)";
-      break;
-    default:
-      return undefined;
+export const orderByTimeSeries = (
+  filter: FilterState,
+  col: string,
+): [string, { fromTime: number; toTime: number }, number] => {
+  const potentialBucketSizesSeconds = [
+    5, 10, 30, 60, 300, 600, 1800, 3600, 18000, 36000, 86400, 604800, 2592000,
+  ];
+
+  // Calculate time difference in seconds
+  const [from, to] = extractFromAndToTimestampsFromFilter(filter);
+
+  if (!from || !to) {
+    throw new Error("Time Filter is required for time series queries");
   }
 
-  return `ORDER BY ${col} ASC WITH FILL STEP ${interval}`;
+  const fromDate = new Date(from.value as Date);
+  const toDate = new Date(to.value as Date);
+
+  const diffInSeconds = Math.abs(toDate.getTime() - fromDate.getTime()) / 1000;
+
+  // choose the bucket size that is the closest to the desired number of buckets
+  const bucketSizeInSeconds = potentialBucketSizesSeconds.reduce(
+    (closest, size) => {
+      const diffFromDesiredBuckets = Math.abs(diffInSeconds / size - 50);
+      return diffFromDesiredBuckets < closest.diffFromDesiredBuckets
+        ? { size, diffFromDesiredBuckets }
+        : closest;
+    },
+    { size: 0, diffFromDesiredBuckets: Infinity },
+  ).size;
+
+  // Convert to interval string
+  const interval = `toIntervalSecond(${bucketSizeInSeconds})`;
+
+  return [
+    `ORDER BY ${col} ASC 
+    WITH FILL
+    FROM toStartOfInterval(toDateTime({fromTime: DateTime64(3)}), INTERVAL ${bucketSizeInSeconds} SECOND)
+    TO toDateTime({toTime: DateTime64(3)}) + INTERVAL ${bucketSizeInSeconds} SECOND
+    STEP ${interval}`,
+    { fromTime: fromDate.getTime(), toTime: toDate.getTime() },
+    bucketSizeInSeconds,
+  ];
 };
 
-const selectTimeseriesColumn = (
-  dateTrunc: DateTrunc,
+export const selectTimeseriesColumn = (
+  bucketSizeInSeconds: number,
   col: string,
   as: String,
 ) => {
-  let interval;
-  switch (dateTrunc) {
-    case "year":
-      interval = "toStartOfYear";
-      break;
-    case "month":
-      interval = "toStartOfMonth";
-      break;
-    case "week":
-      interval = "toStartOfWeek";
-      break;
-    case "day":
-      interval = "toStartOfDay";
-      break;
-    case "hour":
-      interval = "toStartOfHour";
-      break;
-    case "minute":
-      interval = "toStartOfMinute";
-      break;
-    default:
-      return undefined;
-  }
-  return `${interval}(${col}) as ${as}`;
+  return `toStartOfInterval(${col}, INTERVAL ${bucketSizeInSeconds} SECOND) as ${as}`;
+};
+
+export const extractFromAndToTimestampsFromFilter = (filter?: FilterState) => {
+  if (!filter)
+    throw new Error("Time Filter is required for time series queries");
+
+  const fromTimestamp = filter.filter(
+    (f) => f.type === "datetime" && (f.operator === ">" || f.operator === ">="),
+  );
+
+  const toTimestamp = filter.filter(
+    (f) => f.type === "datetime" && (f.operator === "<" || f.operator === "<="),
+  );
+
+  return [fromTimestamp[0], toTimestamp[0]];
 };

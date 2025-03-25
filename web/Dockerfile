@@ -95,6 +95,11 @@ ARG BUILDPLATFORM
 
 WORKDIR /app
 
+ARG NEXT_PUBLIC_BUILD_ID
+ENV BUILD_ID=$NEXT_PUBLIC_BUILD_ID
+ARG NEXT_PUBLIC_LANGFUSE_CLOUD_REGION
+ENV NEXT_PUBLIC_LANGFUSE_CLOUD_REGION=$NEXT_PUBLIC_LANGFUSE_CLOUD_REGION
+
 ENV NODE_ENV production
 # Uncomment the following line in case you want to disable telemetry during runtime.
 ENV NEXT_TELEMETRY_DISABLED 1
@@ -105,13 +110,22 @@ ENV NEXT_MANUAL_SIG_HANDLE true
 
 RUN apk add --no-cache dumb-init tzdata
 
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 nextjs
+# Don't run production as root
+ARG UID=1001
+ARG GID=1001
+RUN addgroup --system --gid ${GID} nodejs
+RUN adduser --system --uid ${UID} nextjs
 
-RUN npm install -g --no-package-lock --no-save prisma@5.22.0
+RUN npm install -g --no-package-lock --no-save prisma@6.3.0
+
+# Install dd-trace only if NEXT_PUBLIC_LANGFUSE_CLOUD_REGION is configured
+ARG NEXT_PUBLIC_LANGFUSE_CLOUD_REGION
+RUN if [ -n "$NEXT_PUBLIC_LANGFUSE_CLOUD_REGION" ]; then \
+        npm install --no-package-lock --no-save dd-trace@5.36.0; \
+    fi
 
 RUN MIGRATE_TARGET_ARCH=$(echo ${TARGETPLATFORM:-linux/amd64} | sed 's/\//-/g') && \
-    wget -q -O- https://github.com/golang-migrate/migrate/releases/download/v4.18.0/migrate.$MIGRATE_TARGET_ARCH.tar.gz | tar xvz && \
+    wget -q -O- https://github.com/golang-migrate/migrate/releases/download/v4.18.2/migrate.$MIGRATE_TARGET_ARCH.tar.gz | tar xvz && \
     mv migrate /usr/bin/migrate
 
 COPY --from=builder --chown=nextjs:nodejs /app/web/next.config.mjs .
@@ -135,8 +149,11 @@ USER nextjs
 # Default port to 3000
 ENV PORT 3000
 
-
 ENTRYPOINT ["dumb-init", "--", "./web/entrypoint.sh"]
 
-# startup command
-CMD ["node", "./web/server.js", "--keepAliveTimeout", "110000"]
+# startup command - use dd-trace if NEXT_PUBLIC_LANGFUSE_CLOUD_REGION is configured
+CMD if [ -n "$NEXT_PUBLIC_LANGFUSE_CLOUD_REGION" ]; then \
+      node --import dd-trace/initialize.mjs ./web/server.js --keepAliveTimeout 110000; \
+    else \
+      node ./web/server.js --keepAliveTimeout 110000; \
+    fi

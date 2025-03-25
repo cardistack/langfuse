@@ -10,6 +10,7 @@ import {
 } from "@langfuse/shared/src/server";
 import { type RateLimitResource } from "@langfuse/shared";
 import { RateLimitService } from "@/src/features/public-api/server/RateLimitService";
+import { env } from "@/src/env.mjs";
 
 type RouteConfig<
   TQuery extends ZodType<any>,
@@ -54,18 +55,17 @@ export const createAuthedAPIRoute = <
       return;
     }
 
-    const rateLimitResponse = await new RateLimitService(
-      redis,
-    ).rateLimitRequest(
-      auth.scope,
-      routeConfig.rateLimitResource || "public-api",
-    );
+    const rateLimitResponse =
+      await RateLimitService.getInstance().rateLimitRequest(
+        auth.scope,
+        routeConfig.rateLimitResource || "public-api",
+      );
 
     if (rateLimitResponse?.isRateLimited()) {
       return rateLimitResponse.sendRestResponseIfLimited(res);
     }
 
-    logger.info(
+    logger.debug(
       `Request to route ${routeConfig.name} projectId ${auth.scope.projectId}`,
       {
         query: req.query,
@@ -88,7 +88,7 @@ export const createAuthedAPIRoute = <
       auth,
     });
 
-    if (routeConfig.responseSchema) {
+    if (env.NODE_ENV === "development" && routeConfig.responseSchema) {
       const parsingResult = routeConfig.responseSchema.safeParse(response);
       if (!parsingResult.success) {
         logger.error("Response validation failed:", parsingResult.error);

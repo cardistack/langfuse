@@ -1,4 +1,4 @@
-import { ObservationLevel } from "@prisma/client";
+import { ObservationLevelType } from "../server";
 import { ColumnDefinition, OptionsDefinition } from "..";
 
 export const tracesOnlyCols: ColumnDefinition[] = [
@@ -62,7 +62,12 @@ export const tracesOnlyCols: ColumnDefinition[] = [
     id: "level",
     type: "stringOptions",
     internal: '"level"',
-    options: Object.values(ObservationLevel).map((value) => ({ value })),
+    options: [
+      { value: "DEBUG" },
+      { value: "DEFAULT" },
+      { value: "WARNING" },
+      { value: "ERROR" },
+    ] as { value: ObservationLevelType }[],
   },
   {
     name: "Tags",
@@ -89,6 +94,30 @@ export const tracesTableCols: ColumnDefinition[] = [
     nullable: true,
   },
   {
+    name: "Error Level Count",
+    id: "errorCount",
+    type: "number",
+    internal: 'generation_metrics."errorCount"',
+  },
+  {
+    name: "Warning Level Count",
+    id: "warningCount",
+    type: "number",
+    internal: 'generation_metrics."warningCount"',
+  },
+  {
+    name: "Default Level Count",
+    id: "defaultCount",
+    type: "number",
+    internal: 'generation_metrics."defaultCount"',
+  },
+  {
+    name: "Debug Level Count",
+    id: "debugCount",
+    type: "number",
+    internal: 'generation_metrics."debugCount"',
+  },
+  {
     name: "Total Tokens",
     id: "totalTokens",
     type: "number",
@@ -102,7 +131,6 @@ export const tracesTableCols: ColumnDefinition[] = [
     internal: 'generation_metrics."totalTokens"',
     nullable: true,
   },
-
   {
     name: "Scores",
     id: "scores_avg",

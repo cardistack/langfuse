@@ -2,7 +2,7 @@ import { PlusCircleIcon } from "lucide-react";
 import { useEffect, useRef } from "react";
 
 import { Button } from "@/src/components/ui/button";
-import { ChatMessageRole } from "@langfuse/shared";
+import { ChatMessageRole, SYSTEM_ROLES } from "@langfuse/shared";
 
 import { ChatMessageComponent } from "./ChatMessageComponent";
 
@@ -57,7 +57,7 @@ export const ChatMessages: React.FC<ChatMessagesProps> = (props) => {
           return;
         }
         // prevent reordering system messages
-        if (messages[newIndex].role === ChatMessageRole.System) {
+        if (SYSTEM_ROLES.includes(messages[newIndex].role)) {
           return;
         }
         const newMessages = arrayMove(messages, oldIndex, newIndex);
@@ -74,18 +74,21 @@ export const ChatMessages: React.FC<ChatMessagesProps> = (props) => {
       sensors={sensors}
     >
       <div className="flex h-full flex-col">
-        <div className="mb-2 font-semibold">Messages</div>
         <div className="flex-1 overflow-auto scroll-smooth" ref={scrollAreaRef}>
           <div className="mb-4 flex-1 space-y-3">
             <SortableContext
               items={props.messages.map((message) => message.id)}
               strategy={verticalListSortingStrategy}
             >
-              {props.messages.map((message) => {
+              {props.messages.map((message, index) => {
                 return (
                   <ChatMessageComponent
-                    {...{ message, ...props }}
                     key={message.id}
+                    message={message}
+                    index={index}
+                    deleteMessage={props.deleteMessage}
+                    updateMessage={props.updateMessage}
+                    availableRoles={props.availableRoles}
                   />
                 );
               })}

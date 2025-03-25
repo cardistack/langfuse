@@ -1,5 +1,5 @@
 import { type DashboardDateRangeAggregationOption } from "@/src/utils/date-range-utils";
-import { type DatabaseRow } from "@/src/server/api/services/queryBuilder";
+import { type DatabaseRow } from "@/src/server/api/services/sqlInterface";
 import {
   type CategoryCounts,
   type ChartBin,
@@ -12,7 +12,7 @@ export const RESOURCE_METRICS = [
     key: "latency",
     value: "Latency",
     objectKey: "avgLatency",
-    label: "Latency (ms)",
+    label: "Latency (s)",
   },
   {
     key: "cost",
@@ -110,16 +110,19 @@ function aggregateCategoricalScoreData(data: DatabaseRow[]): {
   const labels: string[] = [];
 
   const categoryCounts = data.reduce((acc: CategoryCounts, row) => {
-    const label = row["stringValue"];
+    const label = row["scoreValue"];
     if (typeof label === "string") {
       labels.push(label);
-      const currentBinCount = (row["countStringValue"] as number) ?? 0;
+      const currentBinCount = (row["count"] as number) ?? 0;
       return { ...acc, [label]: currentBinCount };
     }
     return acc;
   }, {} as CategoryCounts);
 
-  return { categoryCounts, labels };
+  return {
+    categoryCounts,
+    labels,
+  };
 }
 
 function groupCategoricalScoreDataByTimestamp(

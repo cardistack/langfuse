@@ -26,12 +26,27 @@ export const generateObservationsForPublicApi = async (props: QueryType) => {
   const traceFilter = chFilter.find((f) => f.clickhouseTable === "traces");
 
   const query = `
-        SELECT
+    with clickhouse_keys as (
+      SELECT DISTINCT
+        id,
+        project_id,
+        type,
+        toDate(start_time),
+      FROM observations o
+      ${traceFilter ? `LEFT JOIN traces t ON o.trace_id = t.id AND t.project_id = o.project_id` : ""}
+      WHERE o.project_id = {projectId: String}
+      ${traceFilter ? `AND t.project_id = {projectId: String}` : ""}
+      AND ${appliedFilter.query}
+      ORDER BY start_time DESC
+      ${props.limit !== undefined && props.page !== undefined ? `LIMIT {limit: Int32} OFFSET {offset: Int32}` : ""}
+    )
+      SELECT 
         id,
         trace_id,
         project_id,
         type,
         parent_observation_id,
+        environment,
         start_time,
         end_time,
         name,
@@ -56,17 +71,13 @@ export const generateObservationsForPublicApi = async (props: QueryType) => {
         created_at,
         updated_at,
         event_ts
-      FROM observations o
-      ${traceFilter ? `LEFT JOIN traces t ON o.trace_id = t.id AND t.project_id = o.project_id` : ""}
+      FROM observations o FINAL
       WHERE o.project_id = {projectId: String}
-      ${traceFilter ? `AND t.project_id = {projectId: String}` : ""}
-      AND ${appliedFilter.query}
-      ORDER BY start_time desc
-      LIMIT 1 by id, project_id
-      ${props.limit !== undefined && props.page !== undefined ? `LIMIT {limit: Int32} OFFSET {offset: Int32}` : ""}
-      `;
+      AND (id, project_id, type, toDate(start_time)) in (select * from clickhouse_keys)
+      ORDER BY start_time DESC
+    `;
 
-  const records = await queryClickhouse<ObservationRecordReadType>({
+  const result = await queryClickhouse<ObservationRecordReadType>({
     query,
     params: {
       ...appliedFilter.params,
@@ -77,7 +88,7 @@ export const generateObservationsForPublicApi = async (props: QueryType) => {
         : {}),
     },
   });
-  return records.map(convertObservationToView);
+  return result.map(convertObservationToView);
 };
 
 export const getObservationsCountForPublicApi = async (props: QueryType) => {
@@ -156,6 +167,13 @@ const filterParams = [
   {
     id: "version",
     clickhouseSelect: "version",
+    filterType: "StringFilter",
+    clickhouseTable: "observations",
+    clickhousePrefix: "o",
+  },
+  {
+    id: "environment",
+    clickhouseSelect: "environment",
     filterType: "StringFilter",
     clickhouseTable: "observations",
     clickhousePrefix: "o",

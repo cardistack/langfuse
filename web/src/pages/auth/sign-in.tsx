@@ -28,10 +28,11 @@ import { CloudRegionSwitch } from "@/src/features/auth/components/AuthCloudRegio
 import { PasswordInput } from "@/src/components/ui/password-input";
 import { Turnstile } from "@marsidev/react-turnstile";
 import { isAnySsoConfigured } from "@/src/ee/features/multi-tenant-sso/utils";
-import { Shield } from "lucide-react";
+import { Shield, Code } from "lucide-react";
 import { useRouter } from "next/router";
 import { captureException } from "@sentry/nextjs";
 import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePostHogClientCapture";
+import { openChat } from "@/src/features/support-chat/chat";
 
 const credentialAuthForm = z.object({
   email: z.string().email(),
@@ -53,6 +54,14 @@ export type PageProps = {
     auth0: boolean;
     cognito: boolean;
     keycloak: boolean;
+    workos:
+      | {
+          organizationId: string;
+        }
+      | {
+          connectionId: string;
+        }
+      | boolean;
     custom:
       | {
           name: string;
@@ -105,6 +114,15 @@ export const getServerSideProps: GetServerSideProps<PageProps> = async () => {
           env.AUTH_KEYCLOAK_CLIENT_ID !== undefined &&
           env.AUTH_KEYCLOAK_CLIENT_SECRET !== undefined &&
           env.AUTH_KEYCLOAK_ISSUER !== undefined,
+        workos:
+          env.AUTH_WORKOS_CLIENT_ID !== undefined &&
+          env.AUTH_WORKOS_CLIENT_SECRET !== undefined
+            ? env.AUTH_WORKOS_ORGANIZATION_ID !== undefined
+              ? { organizationId: env.AUTH_WORKOS_ORGANIZATION_ID }
+              : env.AUTH_WORKOS_CONNECTION_ID !== undefined
+                ? { connectionId: env.AUTH_WORKOS_CONNECTION_ID }
+                : true
+            : false,
         custom:
           env.AUTH_CUSTOM_CLIENT_ID !== undefined &&
           env.AUTH_CUSTOM_CLIENT_SECRET !== undefined &&
@@ -251,6 +269,78 @@ export function SSOButtons({
               <SiKeycloak className="mr-3" size={18} />
               Keycloak
             </Button>
+          )}
+          {typeof authProviders.workos === "object" &&
+            "connectionId" in authProviders.workos && (
+              <Button
+                onClick={() => {
+                  capture("sign_in:button_click", { provider: "workos" });
+                  void signIn("workos", undefined, {
+                    connection: (
+                      authProviders.workos as { connectionId: string }
+                    ).connectionId,
+                  });
+                }}
+                variant="secondary"
+              >
+                <Code className="mr-3" size={18} />
+                WorkOS
+              </Button>
+            )}
+          {typeof authProviders.workos === "object" &&
+            "organizationId" in authProviders.workos && (
+              <Button
+                onClick={() => {
+                  capture("sign_in:button_click", { provider: "workos" });
+                  void signIn("workos", undefined, {
+                    organization: (
+                      authProviders.workos as { organizationId: string }
+                    ).organizationId,
+                  });
+                }}
+                variant="secondary"
+              >
+                <Code className="mr-3" size={18} />
+                WorkOS
+              </Button>
+            )}
+          {authProviders.workos === true && (
+            <>
+              <Button
+                onClick={() => {
+                  const organization = window.prompt(
+                    "Please enter your organization ID",
+                  );
+                  if (organization) {
+                    capture("sign_in:button_click", { provider: "workos" });
+                    void signIn("workos", undefined, {
+                      organization,
+                    });
+                  }
+                }}
+                variant="secondary"
+              >
+                <Code className="mr-3" size={18} />
+                WorkOS (organization)
+              </Button>
+              <Button
+                onClick={() => {
+                  const connection = window.prompt(
+                    "Please enter your connection ID",
+                  );
+                  if (connection) {
+                    capture("sign_in:button_click", { provider: "workos" });
+                    void signIn("workos", undefined, {
+                      connection,
+                    });
+                  }
+                }}
+                variant="secondary"
+              >
+                <Code className="mr-3" size={18} />
+                WorkOS (connection)
+              </Button>
+            </>
           )}
           {authProviders.custom && (
             <Button
@@ -436,16 +526,23 @@ export default function SignIn({
         </div>
 
         {env.NEXT_PUBLIC_LANGFUSE_CLOUD_REGION !== undefined && (
-          <div className="-mb-10 mt-4 rounded-lg bg-card p-3 text-center text-sm sm:mx-auto sm:w-full sm:max-w-[480px] sm:rounded-lg sm:px-6">
+          <div className="-mb-4 mt-4 rounded-lg bg-card p-3 text-center text-sm sm:mx-auto sm:w-full sm:max-w-[480px] sm:rounded-lg sm:px-6">
             If you are experiencing issues signing in, please force refresh this
-            page (CMD + SHIFT + R) or clear your browser cache. We have made a
-            fix that is currently rolling out to all users.
+            page (CMD + SHIFT + R) or clear your browser cache. We are working
+            on a solution.{" "}
+            <span
+              className="cursor-pointer whitespace-nowrap text-xs font-medium text-primary-accent hover:text-hover-primary-accent"
+              onClick={openChat}
+            >
+              (contact us)
+            </span>
           </div>
         )}
 
+        <CloudRegionSwitch />
+
         <div className="mt-14 bg-background px-6 py-10 shadow sm:mx-auto sm:w-full sm:max-w-[480px] sm:rounded-lg sm:px-10">
           <div className="space-y-6">
-            <CloudRegionSwitch />
             {authProviders.credentials ? (
               <Form {...credentialsForm}>
                 <form
@@ -476,6 +573,7 @@ export default function SignIn({
                           <Link
                             href="/auth/reset-password"
                             className="ml-1 text-xs text-primary-accent hover:text-hover-primary-accent"
+                            tabIndex={-1}
                             title="What is this?"
                           >
                             (forgot password?)

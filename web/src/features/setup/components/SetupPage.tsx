@@ -1,5 +1,5 @@
 import Header from "@/src/components/layouts/header";
-import { ScrollScreenPage } from "@/src/components/layouts/scroll-screen-page";
+import ContainerPage from "@/src/components/layouts/container-page";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -28,7 +28,7 @@ import { cn } from "@/src/utils/tailwind";
 import { type RouterOutput } from "@/src/utils/types";
 import { Check } from "lucide-react";
 import { useRouter } from "next/router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { StringParam, useQueryParam } from "use-query-params";
 
 // Multi-step setup process
@@ -72,146 +72,165 @@ export function SetupPage() {
   }, [hasAnyTrace, capture]);
 
   return (
-    <ScrollScreenPage>
-      <Header
-        title="Setup"
-        help={{
+    <ContainerPage
+      headerProps={{
+        title: "Setup",
+        help: {
           description:
             "Create a new organization. This will be used to manage your projects and teams.",
-        }}
-      />
-      <div className="md:container md:mx-auto">
-        <Breadcrumb className="mb-3">
-          <BreadcrumbList>
-            <BreadcrumbItem>
-              <BreadcrumbPage
-                className={cn(
-                  stepInt !== 1
-                    ? "text-muted-foreground"
-                    : "font-semibold text-foreground",
-                )}
-              >
-                1. Create Organization
-                {stepInt > 1 && <Check className="ml-1 inline-block h-3 w-3" />}
-              </BreadcrumbPage>
-            </BreadcrumbItem>
-            <BreadcrumbSeparator />
-            <BreadcrumbItem>
-              <BreadcrumbPage
-                className={cn(
-                  stepInt !== 2
-                    ? "text-muted-foreground"
-                    : "font-semibold text-foreground",
-                )}
-              >
-                2. Invite Members
-                {stepInt > 2 && <Check className="ml-1 inline-block h-3 w-3" />}
-              </BreadcrumbPage>
-            </BreadcrumbItem>
-            <BreadcrumbSeparator />
-            <BreadcrumbItem>
-              <BreadcrumbPage
-                className={cn(
-                  stepInt !== 3
-                    ? "text-muted-foreground"
-                    : "font-semibold text-foreground",
-                )}
-              >
-                3. Create Project
-                {stepInt > 3 && <Check className="ml-1 inline-block h-3 w-3" />}
-              </BreadcrumbPage>
-            </BreadcrumbItem>
-            <BreadcrumbSeparator />
-            <BreadcrumbItem>
-              <BreadcrumbPage
-                className={cn(
-                  stepInt !== 4
-                    ? "text-muted-foreground"
-                    : "font-semibold text-foreground",
-                )}
-              >
-                4. Setup Tracing
-                {stepInt === 4 && (
-                  <Check className="ml-1 inline-block h-3 w-3" />
-                )}
-              </BreadcrumbPage>
-            </BreadcrumbItem>
-          </BreadcrumbList>
-        </Breadcrumb>
-        <Card className="p-3">
-          {
-            // 1. Create Org
-            stepInt === 1 && (
+        },
+        ...(stepInt === 1 && {
+          breadcrumb: [
+            {
+              name: "Organizations",
+              href: "/",
+            },
+          ],
+        }),
+      }}
+    >
+      <Breadcrumb className="mb-3">
+        <BreadcrumbList>
+          <BreadcrumbItem>
+            <BreadcrumbPage
+              className={cn(
+                stepInt !== 1
+                  ? "text-muted-foreground"
+                  : "font-semibold text-foreground",
+              )}
+            >
+              1. Create Organization
+              {stepInt > 1 && <Check className="ml-1 inline-block h-3 w-3" />}
+            </BreadcrumbPage>
+          </BreadcrumbItem>
+          <BreadcrumbSeparator />
+          <BreadcrumbItem>
+            <BreadcrumbPage
+              className={cn(
+                stepInt !== 2
+                  ? "text-muted-foreground"
+                  : "font-semibold text-foreground",
+              )}
+            >
+              2. Invite Members
+              {stepInt > 2 && <Check className="ml-1 inline-block h-3 w-3" />}
+            </BreadcrumbPage>
+          </BreadcrumbItem>
+          <BreadcrumbSeparator />
+          <BreadcrumbItem>
+            <BreadcrumbPage
+              className={cn(
+                stepInt !== 3
+                  ? "text-muted-foreground"
+                  : "font-semibold text-foreground",
+              )}
+            >
+              3. Create Project
+              {stepInt > 3 && <Check className="ml-1 inline-block h-3 w-3" />}
+            </BreadcrumbPage>
+          </BreadcrumbItem>
+          <BreadcrumbSeparator />
+          <BreadcrumbItem>
+            <BreadcrumbPage
+              className={cn(
+                stepInt !== 4
+                  ? "text-muted-foreground"
+                  : "font-semibold text-foreground",
+              )}
+            >
+              4. Setup Tracing
+              {stepInt === 4 && <Check className="ml-1 inline-block h-3 w-3" />}
+            </BreadcrumbPage>
+          </BreadcrumbItem>
+        </BreadcrumbList>
+      </Breadcrumb>
+      <Card className="p-3">
+        {
+          // 1. Create Org
+          stepInt === 1 && (
+            <div>
+              <Header title="New Organization" />
+              <p className="mb-4 text-sm text-muted-foreground">
+                Organizations are used to manage your projects and teams.
+              </p>
               <NewOrganizationForm
                 onSuccess={(orgId) => {
                   router.push(inviteMembersRoute(orgId));
                 }}
               />
-            )
-          }
-          {
-            // 2. Invite Members
-            stepInt === 2 && organization && (
-              <div className="flex flex-col gap-10">
-                <div>
-                  <Header title="Organization Members" level="h3" />
-                  <MembersTable orgId={organization.id} />
-                </div>
-                <div>
-                  <MembershipInvitesPage orgId={organization.id} />
-                </div>
+            </div>
+          )
+        }
+        {
+          // 2. Invite Members
+          stepInt === 2 && organization && (
+            <div className="flex flex-col gap-10">
+              <div>
+                <Header title="Organization Members" />
+                <p className="mb-4 text-sm text-muted-foreground">
+                  Invite members to your organization to collaborate on
+                  projects. You can always add more members later.
+                </p>
+                <MembersTable orgId={organization.id} />
               </div>
-            )
-          }
-          {
-            // 3. Create Project
-            stepInt === 3 && organization && (
+              <div>
+                <MembershipInvitesPage orgId={organization.id} />
+              </div>
+            </div>
+          )
+        }
+        {
+          // 3. Create Project
+          stepInt === 3 && organization && (
+            <div>
+              <Header title="New Project" />
+              <p className="mb-4 text-sm text-muted-foreground">
+                Projects are used to group traces, datasets, evals and prompts.
+                Multiple environments are best separated via tags within a
+                project.
+              </p>
               <NewProjectForm
                 orgId={organization.id}
                 onSuccess={(projectId) =>
                   router.push(setupTracingRoute(projectId))
                 }
               />
-            )
-          }
-          {
-            // 4. Setup Tracing
-            stepInt === 4 && project && organization && (
-              <div className="space-y-8">
-                <div>
-                  <Header title="API Keys" level="h3" />
-                  <TracingSetup
-                    projectId={project.id}
-                    hasAnyTrace={hasAnyTrace ?? false}
-                  />
-                </div>
-              </div>
-            )
-          }
-        </Card>
-        {stepInt === 2 && organization && (
-          <Button
-            className="mt-4"
-            data-testid="btn-skip-add-members"
-            onClick={() => router.push(createProjectRoute(organization.id))}
-          >
-            Next
-          </Button>
-        )}
-        {
-          // 4. Setup Tracing
-          stepInt === 4 && project && (
-            <Button
-              className="mt-4"
-              onClick={() => router.push(`/project/${project.id}`)}
-              variant={hasAnyTrace ? "default" : "secondary"}
-            >
-              {hasAnyTrace ? "Open Dashboard" : "Skip for now"}
-            </Button>
+            </div>
           )
         }
-      </div>
-    </ScrollScreenPage>
+        {
+          // 4. Setup Tracing
+          stepInt === 4 && project && organization && (
+            <TracingSetup
+              projectId={project.id}
+              hasAnyTrace={hasAnyTrace ?? false}
+            />
+          )
+        }
+      </Card>
+
+      {stepInt === 2 && organization && (
+        <Button
+          className="mt-4 self-start"
+          data-testid="btn-skip-add-members"
+          onClick={() => router.push(createProjectRoute(organization.id))}
+        >
+          Next
+        </Button>
+      )}
+      {
+        // 4. Setup Tracing
+        stepInt === 4 && project && (
+          <Button
+            className="mt-4 self-start"
+            onClick={() => router.push(`/project/${project.id}`)}
+            variant={hasAnyTrace ? "default" : "secondary"}
+          >
+            {hasAnyTrace ? "Open Dashboard" : "Skip for now"}
+          </Button>
+        )
+      }
+    </ContainerPage>
   );
 }
 
@@ -227,51 +246,61 @@ const TracingSetup = ({
   >(null);
   const utils = api.useUtils();
   const mutCreateApiKey = api.apiKeys.create.useMutation({
-    onSuccess: () => {
+    onSuccess: (data) => {
       utils.apiKeys.invalidate();
+      setApiKeys(data);
       showChat();
     },
   });
-  const isLoadingRef = useRef(false);
 
-  useEffect(() => {
-    const createApiKey = async () => {
-      if (projectId && !isLoadingRef.current && !apiKeys) {
-        isLoadingRef.current = true;
-        try {
-          const apiKey = await mutCreateApiKey.mutateAsync({ projectId });
-          setApiKeys(apiKey);
-        } catch (error) {
-          console.error("Error creating API key:", error);
-        } finally {
-          isLoadingRef.current = false;
-        }
-      }
-    };
-    if (!apiKeys) {
-      createApiKey();
+  const createApiKey = async () => {
+    try {
+      await mutCreateApiKey.mutateAsync({ projectId });
+    } catch (error) {
+      console.error("Error creating API key:", error);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  };
 
   return (
     <div className="space-y-8">
       <div>
-        <ApiKeyRender generatedKeys={apiKeys ?? undefined} />
+        <Header title="API Keys" />
+        <p className="mb-4 text-sm text-muted-foreground">
+          These keys are used to authenticate your API requests. You can create
+          more keys later in the project settings.
+        </p>
+        {apiKeys ? (
+          <ApiKeyRender generatedKeys={apiKeys} />
+        ) : (
+          <div className="flex flex-col gap-4">
+            <p className="text-sm text-muted-foreground">
+              You need to create an API key to start tracing your application.
+            </p>
+            <Button
+              onClick={createApiKey}
+              loading={mutCreateApiKey.isLoading}
+              className="self-start"
+            >
+              Create API Key
+            </Button>
+          </div>
+        )}
       </div>
-      {apiKeys && (
-        <div>
-          <Header
-            title="Setup Tracing"
-            level="h3"
-            status={hasAnyTrace ? "active" : "pending"}
-          />
-          <QuickstartExamples
-            secretKey={apiKeys.secretKey}
-            publicKey={apiKeys.publicKey}
-          />
-        </div>
-      )}
+
+      <div>
+        <Header
+          title="Setup Tracing"
+          status={hasAnyTrace ? "active" : "pending"}
+        />
+        <p className="mb-4 text-sm text-muted-foreground">
+          Tracing is used to track and analyze your LLM calls. You can always
+          skip this step and setup tracing later.
+        </p>
+        <QuickstartExamples
+          secretKey={apiKeys?.secretKey}
+          publicKey={apiKeys?.publicKey}
+        />
+      </div>
     </div>
   );
 };

@@ -17,6 +17,7 @@ import {
   LLMApiKeySchema,
   logger,
   fetchLLMCompletion,
+  decryptAndParseExtraHeaders,
 } from "@langfuse/shared/src/server";
 
 export default async function chatCompletionHandler(req: NextRequest) {
@@ -51,6 +52,7 @@ export default async function chatCompletionHandler(req: NextRequest) {
       streaming: true,
       callbacks: [new PosthogCallbackHandler("playground", body, userId)],
       apiKey: decrypt(parsedKey.data.secretKey),
+      extraHeaders: decryptAndParseExtraHeaders(parsedKey.data.extraHeaders),
       baseURL: parsedKey.data.baseURL || undefined,
       config: parsedKey.data.config,
     });
@@ -75,7 +77,9 @@ export default async function chatCompletionHandler(req: NextRequest) {
           message: err.message,
           error: err,
         },
-        { status: 500 },
+        {
+          status: (err as any)?.response?.status ?? (err as any)?.status ?? 500,
+        },
       );
     }
 

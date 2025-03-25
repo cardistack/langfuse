@@ -67,6 +67,7 @@ export const prepareClickhouse = async (
       concat('release_', toString(randUniform(0, 100))) AS release,
       concat('version_', toString(randUniform(0, 100))) AS version,
       '${projectId}' AS project_id,
+      'default' AS environment,
       if(rand() < 0.8, true, false) as public,
       if(rand() < 0.8, true, false) as bookmarked,
       array('tag1', 'tag2') as tags,
@@ -85,6 +86,7 @@ export const prepareClickhouse = async (
     SELECT toString(number) AS id,
       toString(floor(randUniform(0, ${tracesPerProject}))) AS trace_id,
       '${projectId}' AS project_id,
+      'default' AS environment,
       if(randUniform(0, 1) < 0.47, 'GENERATION', if(randUniform(0, 1) < 0.94, 'SPAN', 'EVENT')) AS type,
       toString(rand()) AS parent_observation_id,
       toDateTime(now() - randUniform(0, ${opts.numberOfDays} * 24 * 60 * 60)) AS start_time,
@@ -97,19 +99,31 @@ export const prepareClickhouse = async (
       repeat('input', toInt64(randExponential(1 / 100))) AS input,
       repeat('output', toInt64(randExponential(1 / 100))) AS output,
       case
-        when number % 2 = 0 then 'claude-3-haiku-20240307'
+        when number % 2 = 0 then 'clause-3-haiku-20230407'
         else 'gpt-4'
       end as provided_model_name,
       case
-        when number % 2 = 0 then 'cltr0w45b000008k1407o9qv1'
-        else 'clrntkjgy000f08jx79v9g1xj'
+        when number % 2 = 0 then 'cltra4wbs0000k1407g0ya3'
+        else '1cmtk9y0000y3y79x9jgxj'
       end as internal_model_id,
-      '{"temperature": 0.7, "max_tokens": 150}' AS model_parameters,
-      map('input', toUInt64(randUniform(0, 1000)), 'output', toUInt64(randUniform(0, 1000)), 'total', toUInt64(randUniform(0, 2000))) AS provided_usage_details,
-      map('input', toUInt64(randUniform(0, 1000)), 'output', toUInt64(randUniform(0, 1000)), 'total', toUInt64(randUniform(0, 2000))) AS usage_details,
-      map('input', toDecimal64(randUniform(0, 1000), 12), 'output', toDecimal64(randUniform(0, 1000), 12), 'total', toDecimal64(randUniform(0, 2000), 12)) AS provided_cost_details,
-      map('input', toDecimal64(randUniform(0, 1000), 12), 'output', toDecimal64(randUniform(0, 1000), 12), 'total', toDecimal64(randUniform(0, 2000), 12)) AS cost_details,
-      toDecimal64(randUniform(0, 2000), 12) AS total_cost,
+      if("type" = 'GENERATION',
+        '{"temperature": 0.7, "max_tokens": 150}',
+        '{}') AS model_parameters,
+      if("type" = 'GENERATION',
+        map('input', toUInt64(randUniform(0, 1000)), 'output', toUInt64(randUniform(0, 1000)), 'total', toUInt64(randUniform(0, 2000))),
+        map()) AS provided_usage_details,
+      if("type" = 'GENERATION',
+        map('input', toUInt64(randUniform(0, 1000)), 'output', toUInt64(randUniform(0, 1000)), 'total', toUInt64(randUniform(0, 2000))),
+        map()) AS usage_details,
+      if("type" = 'GENERATION',
+        map('input', toDecimal64(randUniform(0, 1000), 12), 'output', toDecimal64(randUniform(0, 1000), 12), 'total', toDecimal64(randUniform(0, 2000), 12)),
+        map()) AS provided_cost_details,
+      if("type" = 'GENERATION',
+        map('input', toDecimal64(randUniform(0, 1000), 12), 'output', toDecimal64(randUniform(0, 1000), 12), 'total', toDecimal64(randUniform(0, 2000), 12)),
+        map()) AS cost_details,
+      if("type" = 'GENERATION',
+        toDecimal64(randUniform(0, 2000), 12),
+        NULL) AS total_cost,
       addMilliseconds(start_time, if(rand() < 0.6, floor(randUniform(0, 500)), floor(randUniform(0, 600)))) AS completion_start_time,
       array(${SEED_PROMPTS.map((p) => `concat('${p.id}',project_id)`).join(
         ",",
@@ -131,9 +145,10 @@ export const prepareClickhouse = async (
 
     const scoresQuery = `
     INSERT INTO scores
-    SELECT toString(floor(randUniform(0, 100))) AS id,
+    SELECT toString(number) AS id,
       toDateTime(now() - randUniform(0, ${opts.numberOfDays} * 24 * 60 * 60)) AS timestamp,
       '${projectId}' AS project_id,
+      'default' AS environment,
       toString(floor(randUniform(0, ${tracesPerProject}))) AS trace_id,
       if(
         rand() > 0.9,

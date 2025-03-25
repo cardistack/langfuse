@@ -1,8 +1,6 @@
-import Header from "@/src/components/layouts/header";
-import { ScrollScreenPage } from "@/src/components/layouts/scroll-screen-page";
+import Page from "@/src/components/layouts/page";
 import { EvalTemplateForm } from "@/src/ee/features/evals/components/template-form";
 import { useHasProjectAccess } from "@/src/features/rbac/utils/checkProjectAccess";
-
 import { useRouter } from "next/router";
 
 export default function NewTemplatesPage() {
@@ -19,16 +17,19 @@ export default function NewTemplatesPage() {
   }
 
   return (
-    <ScrollScreenPage>
-      <Header
-        title="Create eval template"
-        help={{
+    <Page
+      withPadding
+      scrollable
+      headerProps={{
+        title: "Create eval template",
+        help: {
           description:
             "Create an evaluation template. Choose from one of the pre-defined templates or create your own.",
           href: "https://langfuse.com/docs/scores/model-based-evals",
-        }}
-      />
+        },
+      }}
+    >
       <EvalTemplateForm projectId={projectId} isEditing={true} />
-    </ScrollScreenPage>
+    </Page>
   );
 }

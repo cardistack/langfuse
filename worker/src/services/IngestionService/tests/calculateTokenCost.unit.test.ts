@@ -1,8 +1,8 @@
 import Decimal from "decimal.js";
 import { v4 as uuidv4 } from "uuid";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ModelUsageUnit, Price } from "@langfuse/shared";
+import { Price } from "@langfuse/shared";
 import { prisma } from "@langfuse/shared/src/db";
 
 import { pruneDatabase } from "../../../__tests__/utils";
@@ -80,12 +80,6 @@ describe("Token Cost Calculation", () => {
           usageType: price.usageType,
           price: price.price,
         })),
-      }),
-      prisma.trace.create({
-        data: {
-          id: traceId,
-          projectId,
-        },
       }),
     ]);
     vi.clearAllMocks();
@@ -427,6 +421,7 @@ describe("Token Cost Calculation", () => {
     await (mockIngestionService as any).processObservationEventList({
       projectId,
       entityId: generationId,
+      createdAtTimestamp: new Date(),
       observationEventList: events,
     });
     expect(mockAddToClickhouseWriter).toHaveBeenCalled();
@@ -507,6 +502,7 @@ describe("Token Cost Calculation", () => {
     await (mockIngestionService as any).processObservationEventList({
       projectId,
       entityId: generationId,
+      createdAtTimestamp: new Date(),
       observationEventList: events,
     });
     expect(mockAddToClickhouseWriter).toHaveBeenCalled();
@@ -585,6 +581,7 @@ describe("Token Cost Calculation", () => {
     await (mockIngestionService as any).processObservationEventList({
       projectId,
       entityId: generationId,
+      createdAtTimestamp: new Date(),
       observationEventList: events,
     });
     expect(mockAddToClickhouseWriter).toHaveBeenCalled();
@@ -665,6 +662,7 @@ describe("Token Cost Calculation", () => {
     await (mockIngestionService as any).processObservationEventList({
       projectId,
       entityId: generationId,
+      createdAtTimestamp: new Date(),
       observationEventList: events,
     });
     expect(mockAddToClickhouseWriter).toHaveBeenCalled();
@@ -748,6 +746,7 @@ describe("Token Cost Calculation", () => {
     await (mockIngestionService as any).processObservationEventList({
       projectId,
       entityId: generationId,
+      createdAtTimestamp: new Date(),
       observationEventList: events,
     });
     expect(mockAddToClickhouseWriter).toHaveBeenCalled();
@@ -837,6 +836,7 @@ describe("Token Cost Calculation", () => {
     await (mockIngestionService as any).processObservationEventList({
       projectId,
       entityId: generationId,
+      createdAtTimestamp: new Date(),
       observationEventList: events,
     });
     expect(mockAddToClickhouseWriter).toHaveBeenCalled();
@@ -921,6 +921,7 @@ describe("Token Cost Calculation", () => {
     await (mockIngestionService as any).processObservationEventList({
       projectId,
       entityId: generationId,
+      createdAtTimestamp: new Date(),
       observationEventList: events,
     });
     expect(mockAddToClickhouseWriter).toHaveBeenCalled();
@@ -1002,6 +1003,7 @@ describe("Token Cost Calculation", () => {
     await (mockIngestionService as any).processObservationEventList({
       projectId,
       entityId: generationId,
+      createdAtTimestamp: new Date(),
       observationEventList: events,
     });
     expect(mockAddToClickhouseWriter).toHaveBeenCalled();
@@ -1088,6 +1090,7 @@ describe("Token Cost Calculation", () => {
     await (mockIngestionService as any).processObservationEventList({
       projectId,
       entityId: generationId,
+      createdAtTimestamp: new Date(),
       observationEventList: events,
     });
     expect(mockAddToClickhouseWriter).toHaveBeenCalled();
@@ -1159,6 +1162,7 @@ describe("Token Cost Calculation", () => {
     await (mockIngestionService as any).processObservationEventList({
       projectId,
       entityId: generationId,
+      createdAtTimestamp: new Date(),
       observationEventList: events,
     });
     expect(mockAddToClickhouseWriter).toHaveBeenCalled();

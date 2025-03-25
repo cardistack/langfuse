@@ -1,15 +1,14 @@
 import { randomUUID } from "crypto";
 import { sql } from "kysely";
 import { z } from "zod";
-import { ScoreSource, JobConfigState } from "@prisma/client";
+import { JobConfigState } from "@prisma/client";
 import {
+  ScoreSource,
   QueueJobs,
   QueueName,
   EvalExecutionEvent,
   tableColumnsToSqlFilterAndPrefix,
   traceException,
-  StorageServiceFactory,
-  StorageService,
   eventTypes,
   redis,
   IngestionQueue,
@@ -21,11 +20,13 @@ import {
   getObservationForTraceIdByName,
   DatasetRunItemUpsertEventType,
   TraceQueueEventType,
+  StorageService,
+  StorageServiceFactory,
+  CreateEvalQueueEventType,
 } from "@langfuse/shared/src/server";
 import {
   availableTraceEvalVariables,
   ChatMessageRole,
-  evalTraceTableCols,
   ForbiddenError,
   LangfuseNotFoundError,
   LLMApiKeySchema,
@@ -36,14 +37,17 @@ import {
   ZodModelConfig,
   evalDatasetFormFilterCols,
   availableDatasetEvalVariables,
+  variableMapping,
+  JobTimeScope,
 } from "@langfuse/shared";
 import { kyselyPrisma, prisma } from "@langfuse/shared/src/db";
 import { backOff } from "exponential-backoff";
-import { env } from "../../env";
 import {
   callStructuredLLM,
   compileHandlebarString,
 } from "../../features/utilities";
+import { JSONPath } from "jsonpath-plus";
+import { env } from "../../env";
 
 let s3StorageServiceClient: StorageService;
 
@@ -65,16 +69,37 @@ const getS3StorageServiceClient = (bucketName: string): StorageService => {
 // there might be multiple eval jobs to create for a single trace
 export const createEvalJobs = async ({
   event,
+  enforcedJobTimeScope,
 }: {
-  event: TraceQueueEventType | DatasetRunItemUpsertEventType;
+  event:
+    | TraceQueueEventType
+    | DatasetRunItemUpsertEventType
+    | CreateEvalQueueEventType;
+  enforcedJobTimeScope?: JobTimeScope;
 }) => {
   // Fetch all configs for a given project. Those may be dataset or trace configs.
-  const configs = await kyselyPrisma.$kysely
+  let configsQuery = kyselyPrisma.$kysely
     .selectFrom("job_configurations")
     .selectAll()
     .where(sql.raw("job_type::text"), "=", "EVAL")
-    .where("project_id", "=", event.projectId)
-    .execute();
+    .where("project_id", "=", event.projectId);
+
+  if ("configId" in event) {
+    // if configid is set in the event, we only want to fetch the one config
+    configsQuery = configsQuery.where("id", "=", event.configId);
+  }
+
+  // for dataset_run_item_upsert queue + trace queue, we do not want to execute evals on configs,
+  // which were only allowed to run on historic data. Hence, we need to filter all configs which have "NEW" in the time_scope column.
+  if (enforcedJobTimeScope) {
+    configsQuery = configsQuery.where(
+      "time_scope",
+      "@>",
+      sql<string[]>`ARRAY[${enforcedJobTimeScope}]`,
+    );
+  }
+
+  const configs = await configsQuery.execute();
 
   if (configs.length === 0) {
     logger.debug("No evaluation jobs found for project", event.projectId);
@@ -95,50 +120,28 @@ export const createEvalJobs = async ({
     const validatedFilter = z.array(singleFilter).parse(config.filter);
 
     // Check whether the trace already exists in the database.
-    let traceExists: boolean = false;
-    if (env.LANGFUSE_RETURN_FROM_CLICKHOUSE === "true") {
-      traceExists = await checkTraceExists(
-        event.projectId,
-        event.traceId,
-        new Date(),
-        config.target_object === "trace" ? validatedFilter : [],
-      );
-    } else {
-      const condition = tableColumnsToSqlFilterAndPrefix(
-        config.target_object === "trace" ? validatedFilter : [],
-        evalTraceTableCols,
-        "traces",
-      );
-
-      const joinedQuery = Prisma.sql`
-        SELECT id
-        FROM traces as t
-        WHERE project_id = ${event.projectId}
-        AND id = ${event.traceId}
-        ${condition}
-      `;
-
-      const traces = await prisma.$queryRaw<Array<{ id: string }>>(joinedQuery);
-      traceExists = traces.length > 0;
-    }
+    const traceExists = await checkTraceExists(
+      event.projectId,
+      event.traceId,
+      "timestamp" in event ? new Date(event.timestamp) : new Date(),
+      config.target_object === "trace" ? validatedFilter : [],
+    );
 
     const isDatasetConfig = config.target_object === "dataset";
-    let datasetItem:
-      | { id: string; sourceObservationId: string | undefined }
-      | undefined;
+    let datasetItem: { id: string } | undefined;
     if (isDatasetConfig) {
+      const condition = tableColumnsToSqlFilterAndPrefix(
+        config.target_object === "dataset" ? validatedFilter : [],
+        evalDatasetFormFilterCols,
+        "dataset_items",
+      );
+
       // If the target object is a dataset and the event type has a datasetItemId, we try to fetch it based on our filter
       if ("datasetItemId" in event && event.datasetItemId) {
-        const condition = tableColumnsToSqlFilterAndPrefix(
-          config.target_object === "dataset" ? validatedFilter : [],
-          evalDatasetFormFilterCols,
-          "dataset_items",
-        );
-
         const datasetItems = await prisma.$queryRaw<
-          Array<{ id: string; sourceObservationId: string | undefined }>
+          Array<{ id: string }>
         >(Prisma.sql`
-          SELECT id, source_observation_id as "sourceObservationId"
+          SELECT id
           FROM dataset_items as di
           WHERE project_id = ${event.projectId}
             AND id = ${event.datasetItemId}
@@ -149,12 +152,14 @@ export const createEvalJobs = async ({
         // Otherwise, try to find the dataset item id from datasetRunItems.
         // Here, we can search for the traceId and projectId and should only get one result.
         const datasetItems = await prisma.$queryRaw<
-          Array<{ id: string; sourceObservationId: string | undefined }>
+          Array<{ id: string }>
         >(Prisma.sql`
-          SELECT dataset_item_id as id, observation_id as "sourceObservationId"
+          SELECT dataset_item_id as id
           FROM dataset_run_items as dri
-          WHERE project_id = ${event.projectId}
-          AND trace_id = ${event.traceId}
+          JOIN dataset_items as di ON di.id = dri.dataset_item_id
+          WHERE dri.project_id = ${event.projectId}
+            AND dri.trace_id = ${event.traceId}
+            ${condition}
         `);
         datasetItem = datasetItems.shift();
       }
@@ -166,22 +171,13 @@ export const createEvalJobs = async ({
     const observationId =
       "observationId" in event && event.observationId
         ? event.observationId
-        : datasetItem?.sourceObservationId;
+        : undefined;
     if (observationId) {
-      const observationExists =
-        env.LANGFUSE_RETURN_FROM_CLICKHOUSE === "true"
-          ? await checkObservationExists(
-              event.projectId,
-              observationId,
-              new Date(),
-            )
-          : await kyselyPrisma.$kysely
-              .selectFrom("observations")
-              .select("id")
-              .where("project_id", "=", event.projectId)
-              .where("id", "=", observationId)
-              .executeTakeFirst();
-
+      const observationExists = await checkObservationExists(
+        event.projectId,
+        observationId,
+        "timestamp" in event ? new Date(event.timestamp) : new Date(),
+      );
       if (!observationExists) {
         logger.warn(
           `Observation ${observationId} not found, retrying dataset eval later`,
@@ -252,7 +248,7 @@ export const createEvalJobs = async ({
           ...(datasetItem
             ? {
                 jobInputDatasetItemId: datasetItem.id,
-                jobInputObservationId: datasetItem.sourceObservationId || null,
+                jobInputObservationId: observationId || null,
               }
             : {}),
         },
@@ -352,7 +348,7 @@ export const evaluate = async ({
     },
   });
 
-  logger.info(
+  logger.debug(
     `Evaluating job ${job.id} for project ${event.projectId} with template ${template.id}. Searching for context...`,
   );
 
@@ -373,6 +369,9 @@ export const evaluate = async ({
   logger.debug(
     `Evaluating job ${event.jobExecutionId} extracted variables ${JSON.stringify(mappingResult)} `,
   );
+
+  // Get environment from trace or observation variables
+  const environment = mappingResult.find((r) => r.environment)?.environment;
 
   // compile the prompt and send out the LLM request
   let prompt;
@@ -431,13 +430,7 @@ export const evaluate = async ({
     );
   }
 
-  const messages = [
-    {
-      role: ChatMessageRole.System,
-      content: "You are an expert at evaluating LLM outputs.",
-    },
-    { role: ChatMessageRole.User, content: prompt },
-  ];
+  const messages = [{ role: ChatMessageRole.User, content: prompt }];
 
   const parsedLLMOutput = await backOff(
     async () =>
@@ -470,36 +463,26 @@ export const evaluate = async ({
     value: parsedLLMOutput.score,
     comment: parsedLLMOutput.reasoning,
     source: ScoreSource.EVAL,
+    environment: environment ?? "default",
   };
-
-  if (env.LANGFUSE_POSTGRES_INGESTION_ENABLED === "true") {
-    await prisma.score.create({
-      data: {
-        ...baseScore,
-        projectId: event.projectId,
-      },
-    });
-  }
 
   // Write score to S3 and ingest into queue for Clickhouse processing
   try {
-    const s3Client = getS3StorageServiceClient(
+    const eventId = randomUUID();
+    const bucketPath = `${env.LANGFUSE_S3_EVENT_UPLOAD_PREFIX}${event.projectId}/score/${scoreId}/${eventId}.json`;
+    await getS3StorageServiceClient(
       env.LANGFUSE_S3_EVENT_UPLOAD_BUCKET,
-    );
-    await s3Client.uploadJson(
-      `${env.LANGFUSE_S3_EVENT_UPLOAD_PREFIX}${event.projectId}/score/${scoreId}/${randomUUID()}.json`,
-      [
-        {
-          id: randomUUID(),
-          timestamp: new Date().toISOString(),
-          type: eventTypes.SCORE_CREATE,
-          body: {
-            ...baseScore,
-            dataType: "NUMERIC",
-          },
+    ).uploadJson(bucketPath, [
+      {
+        id: eventId,
+        timestamp: new Date().toISOString(),
+        type: eventTypes.SCORE_CREATE,
+        body: {
+          ...baseScore,
+          dataType: "NUMERIC",
         },
-      ],
-    );
+      },
+    ]);
 
     if (redis) {
       const queue = IngestionQueue.getInstance();
@@ -514,6 +497,7 @@ export const evaluate = async ({
           data: {
             type: eventTypes.SCORE_CREATE,
             eventBodyId: scoreId,
+            fileKey: eventId,
           },
           authCheck: {
             validKey: true,
@@ -561,7 +545,7 @@ export async function extractVariablesFromTracingData({
   // this here are variables which were inserted by users. Need to validate before DB query.
   variableMapping: z.infer<typeof variableMappingList>;
   datasetItemId?: string;
-}): Promise<{ var: string; value: string }[]> {
+}): Promise<{ var: string; value: string; environment?: string }[]> {
   return Promise.all(
     variables.map(async (variable) => {
       const mapping = variableMapping.find(
@@ -617,7 +601,7 @@ export async function extractVariablesFromTracingData({
 
         return {
           var: variable,
-          value: parseUnknownToString(datasetItem[mapping.selectedColumnId]),
+          value: parseDatabaseRowToString(datasetItem, mapping),
         };
       }
 
@@ -635,19 +619,7 @@ export async function extractVariablesFromTracingData({
           return { var: variable, value: "" };
         }
 
-        const trace: Record<string, unknown> | undefined =
-          env.LANGFUSE_RETURN_FROM_CLICKHOUSE === "true"
-            ? await getTraceById(traceId, projectId)
-            : await kyselyPrisma.$kysely
-                .selectFrom("traces as t")
-                .select(
-                  sql`${sql.raw(safeInternalColumn.internal)}`.as(
-                    safeInternalColumn.id,
-                  ),
-                ) // query the internal column name raw
-                .where("id", "=", traceId)
-                .where("project_id", "=", projectId)
-                .executeTakeFirst();
+        const trace = await getTraceById(traceId, projectId);
 
         // user facing errors
         if (!trace) {
@@ -661,7 +633,8 @@ export async function extractVariablesFromTracingData({
 
         return {
           var: variable,
-          value: parseUnknownToString(trace[mapping.selectedColumnId]),
+          value: parseDatabaseRowToString(trace, mapping),
+          environment: trace.environment,
         };
       }
 
@@ -684,29 +657,15 @@ export async function extractVariablesFromTracingData({
           return { var: variable, value: "" };
         }
 
-        const observation: Record<string, unknown> | undefined =
-          env.LANGFUSE_RETURN_FROM_CLICKHOUSE === "true"
-            ? (
-                await getObservationForTraceIdByName(
-                  traceId,
-                  projectId,
-                  mapping.objectName,
-                  undefined,
-                  true,
-                )
-              ).shift() // We only take the first match and ignore duplicate generation-names in a trace.
-            : await kyselyPrisma.$kysely
-                .selectFrom("observations as o")
-                .select(
-                  sql`${sql.raw(safeInternalColumn.internal)}`.as(
-                    safeInternalColumn.id,
-                  ),
-                ) // query the internal column name raw
-                .where("trace_id", "=", traceId)
-                .where("project_id", "=", projectId)
-                .where("name", "=", mapping.objectName)
-                .orderBy("start_time", "desc")
-                .executeTakeFirst();
+        const observation = (
+          await getObservationForTraceIdByName(
+            traceId,
+            projectId,
+            mapping.objectName,
+            undefined,
+            true,
+          )
+        ).shift(); // We only take the first match and ignore duplicate generation-names in a trace.
 
         // user facing errors
         if (!observation) {
@@ -720,7 +679,8 @@ export async function extractVariablesFromTracingData({
 
         return {
           var: variable,
-          value: parseUnknownToString(observation[mapping.selectedColumnId]),
+          value: parseDatabaseRowToString(observation, mapping),
+          environment: observation.environment,
         };
       }
 
@@ -728,6 +688,39 @@ export async function extractVariablesFromTracingData({
     }),
   );
 }
+
+export const parseDatabaseRowToString = (
+  dbRow: Record<string, unknown>,
+  mapping: z.infer<typeof variableMapping>,
+): string => {
+  const selectedColumn = dbRow[mapping.selectedColumnId];
+
+  let jsonSelectedColumn;
+  if (mapping.jsonSelector) {
+    logger.debug(
+      `Parsing JSON for json selector ${mapping.jsonSelector} from ${JSON.stringify(selectedColumn)}`,
+    );
+    try {
+      jsonSelectedColumn = JSONPath({
+        path: mapping.jsonSelector,
+        json:
+          typeof selectedColumn === "string"
+            ? JSON.parse(selectedColumn)
+            : selectedColumn,
+      });
+    } catch (error) {
+      logger.error(
+        `Error parsing JSON for json selector ${mapping.jsonSelector}. Falling back to original value.`,
+        error,
+      );
+      jsonSelectedColumn = selectedColumn;
+    }
+  } else {
+    jsonSelectedColumn = selectedColumn;
+  }
+
+  return parseUnknownToString(jsonSelectedColumn);
+};
 
 export const parseUnknownToString = (value: unknown): string => {
   if (value === null || value === undefined) {

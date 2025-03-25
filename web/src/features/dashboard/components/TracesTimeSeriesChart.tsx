@@ -10,7 +10,6 @@ import {
   type DashboardDateRangeAggregationOption,
 } from "@/src/utils/date-range-utils";
 import { NoDataOrLoading } from "@/src/components/NoDataOrLoading";
-import { useClickhouse } from "@/src/components/layouts/ClickhouseAdminToggle";
 import { TabComponent } from "@/src/features/dashboard/components/TabsComponent";
 
 export const TracesAndObservationsTimeSeriesChart = ({
@@ -18,11 +17,13 @@ export const TracesAndObservationsTimeSeriesChart = ({
   projectId,
   globalFilterState,
   agg,
+  isLoading = false,
 }: {
   className?: string;
   projectId: string;
   globalFilterState: FilterState;
   agg: DashboardDateRangeAggregationOption;
+  isLoading?: boolean;
 }) => {
   const traces = api.dashboard.chart.useQuery(
     {
@@ -39,7 +40,6 @@ export const TracesAndObservationsTimeSeriesChart = ({
           temporalUnit: dashboardDateRangeAggregationSettings[agg].date_trunc,
         },
       ],
-      queryClickhouse: useClickhouse(),
       queryName: "traces-timeseries",
     },
     {
@@ -48,6 +48,7 @@ export const TracesAndObservationsTimeSeriesChart = ({
           skipBatch: true,
         },
       },
+      enabled: !isLoading,
     },
   );
 
@@ -87,7 +88,6 @@ export const TracesAndObservationsTimeSeriesChart = ({
           temporalUnit: dashboardDateRangeAggregationSettings[agg].date_trunc,
         },
       ],
-      queryClickhouse: useClickhouse(),
       queryName: "observations-status-timeseries",
     },
     {
@@ -96,6 +96,7 @@ export const TracesAndObservationsTimeSeriesChart = ({
           skipBatch: true,
         },
       },
+      enabled: !isLoading,
     },
   );
 
@@ -150,7 +151,7 @@ export const TracesAndObservationsTimeSeriesChart = ({
     <DashboardCard
       className={className}
       title="Traces by time"
-      isLoading={traces.isLoading}
+      isLoading={isLoading || traces.isLoading}
       cardContentClassName="flex flex-col content-end "
     >
       <TabComponent
@@ -177,7 +178,7 @@ export const TracesAndObservationsTimeSeriesChart = ({
                   />
                 ) : (
                   <NoDataOrLoading
-                    isLoading={traces.isLoading}
+                    isLoading={isLoading || traces.isLoading}
                     description="Traces contain details about LLM applications and can be created using the SDK."
                     href="https://langfuse.com/docs/tracing"
                   />

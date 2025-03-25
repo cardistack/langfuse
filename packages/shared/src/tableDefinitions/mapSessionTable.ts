@@ -1,6 +1,6 @@
-import { UiColumnMapping } from ".";
+import { UiColumnMappings } from ".";
 
-export const sessionCols: UiColumnMapping[] = [
+export const sessionCols: UiColumnMappings = [
   // we do not access the traces scores in ClickHouse. We default back to the trace timestamps.
 
   {
@@ -20,6 +20,12 @@ export const sessionCols: UiColumnMapping[] = [
     uiTableId: "userIds",
     clickhouseTableName: "traces",
     clickhouseSelect: "user_ids",
+  },
+  {
+    uiTableName: "Environment",
+    uiTableId: "environment",
+    clickhouseTableName: "traces",
+    clickhouseSelect: "environment",
   },
   {
     uiTableName: "Session Duration",
@@ -58,30 +64,35 @@ export const sessionCols: UiColumnMapping[] = [
     uiTableId: "inputTokens",
     clickhouseTableName: "traces",
     clickhouseSelect: "session_input_usage",
+    clickhouseTypeOverwrite: "Decimal64(3)",
   },
   {
     uiTableName: "Output Tokens",
     uiTableId: "outputTokens",
     clickhouseTableName: "traces",
     clickhouseSelect: "session_output_usage",
+    clickhouseTypeOverwrite: "Decimal64(3)",
   },
   {
     uiTableName: "Total Tokens",
     uiTableId: "totalTokens",
     clickhouseTableName: "traces",
     clickhouseSelect: "session_total_usage",
+    clickhouseTypeOverwrite: "Decimal64(3)",
   },
   {
     uiTableName: "Usage",
     uiTableId: "totalTokens",
     clickhouseTableName: "traces",
     clickhouseSelect: "session_total_usage",
+    clickhouseTypeOverwrite: "Decimal64(3)",
   },
   {
     uiTableName: "Session Total Usage",
     uiTableId: "usage",
     clickhouseTableName: "traces",
     clickhouseSelect: "session_total_usage",
+    clickhouseTypeOverwrite: "Decimal64(3)",
   },
   {
     uiTableName: "Session Duration (s)",

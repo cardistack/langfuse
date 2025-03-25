@@ -24,7 +24,7 @@ module.exports = {
       colors: {
         "primary-accent": "hsl(var(--primary-accent))",
         "hover-primary-accent": "hsl(var(--hover-primary-accent))",
-        "muted-orange": "hsl(var(--muted-orange))",
+        "muted-magenta": "hsl(var(--muted-magenta))",
         "muted-blue": "hsl(var(--muted-blue))",
         "muted-green": "hsl(var(--muted-green))",
         "muted-gray": "hsl(var(--muted-gray))",
@@ -113,6 +113,10 @@ module.exports = {
           DEFAULT: "hsl(var(--secondary))",
           foreground: "hsl(var(--secondary-foreground))",
         },
+        tertiary: {
+          DEFAULT: "hsl(var(--tertiary))",
+          foreground: "hsl(var(--tertiary-foreground))",
+        },
         destructive: {
           DEFAULT: "hsl(var(--destructive))",
           foreground: "hsl(var(--destructive-foreground))",
@@ -132,6 +136,10 @@ module.exports = {
         card: {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
+        },
+        header: {
+          DEFAULT: "hsl(var(--header))",
+          foreground: "hsl(var(--header-foreground))",
         },
         sidebar: {
           DEFAULT: "hsl(var(--sidebar-background))",

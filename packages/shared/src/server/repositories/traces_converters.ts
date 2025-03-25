@@ -1,9 +1,9 @@
-import { Prisma, Trace } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { parseClickhouseUTCDateTimeFormat } from "./clickhouse";
 import { TraceRecordReadType } from "./definitions";
 import { convertDateToClickhouseDateTime } from "../clickhouse/client";
 import { parseJsonPrioritised } from "../../utils/json";
-import { jsonSchema } from "../../utils/zod";
+import { Trace } from "./types";
 
 export const convertTraceDomainToClickhouse = (
   trace: Trace,
@@ -14,6 +14,7 @@ export const convertTraceDomainToClickhouse = (
     name: trace.name,
     user_id: trace.userId,
     metadata: trace.metadata as Record<string, string>,
+    environment: trace.environment,
     release: trace.release,
     version: trace.version,
     project_id: trace.projectId,
@@ -38,6 +39,7 @@ export const convertClickhouseToDomain = (
     projectId: record.project_id,
     name: record.name ?? null,
     timestamp: parseClickhouseUTCDateTimeFormat(record.timestamp),
+    environment: record.environment,
     tags: record.tags,
     bookmarked: record.bookmarked,
     release: record.release ?? null,
@@ -46,12 +48,19 @@ export const convertClickhouseToDomain = (
     sessionId: record.session_id ?? null,
     public: record.public,
     input: (record.input
-      ? jsonSchema.parse(parseJsonPrioritised(record.input))
+      ? parseJsonPrioritised(record.input)
       : null) as Prisma.JsonValue | null,
     output: (record.output
-      ? jsonSchema.parse(parseJsonPrioritised(record.output))
+      ? parseJsonPrioritised(record.output)
       : null) as Prisma.JsonValue | null,
-    metadata: record.metadata,
+    metadata:
+      record.metadata &&
+      Object.fromEntries(
+        Object.entries(record.metadata ?? {}).map(([key, val]) => [
+          key,
+          val && parseJsonPrioritised(val),
+        ]),
+      ),
     createdAt: parseClickhouseUTCDateTimeFormat(record.created_at),
     updatedAt: parseClickhouseUTCDateTimeFormat(record.updated_at),
     externalId: null,

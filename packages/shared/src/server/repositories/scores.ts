@@ -1,11 +1,13 @@
-import { Score, ScoreDataType, ScoreSource } from "@prisma/client";
+import { ScoreDataType } from "@prisma/client";
+import { Score, ScoreSourceType } from "./types";
 import {
   commandClickhouse,
   parseClickhouseUTCDateTimeFormat,
   queryClickhouse,
+  queryClickhouseStream,
   upsertClickhouse,
 } from "./clickhouse";
-import { FilterList } from "../queries/clickhouse-sql/clickhouse-filter";
+import { FilterList, orderByToClickhouseSql } from "../queries";
 import { FilterCondition, FilterState, TimeFilter } from "../../types";
 import {
   createFilterFromFilterState,
@@ -16,7 +18,6 @@ import {
   dashboardColumnDefinitions,
   scoresTableUiColumnDefinitions,
 } from "../../tableDefinitions";
-import { orderByToClickhouseSql } from "../queries/clickhouse-sql/orderby-factory";
 import {
   convertScoreAggregation,
   convertToScore,
@@ -63,6 +64,12 @@ export const searchExistingAnnotationScore = async (
       traceId,
       observationId,
     },
+    tags: {
+      feature: "tracing",
+      type: "score",
+      kind: "list",
+      projectId,
+    },
   });
   return rows.map(convertToScore).shift();
 };
@@ -70,7 +77,7 @@ export const searchExistingAnnotationScore = async (
 export const getScoreById = async (
   projectId: string,
   scoreId: string,
-  source?: ScoreSource,
+  source?: ScoreSourceType,
 ) => {
   const query = `
     SELECT *
@@ -90,6 +97,12 @@ export const getScoreById = async (
       scoreId,
       ...(source !== undefined ? { source } : {}),
     },
+    tags: {
+      feature: "tracing",
+      type: "score",
+      kind: "byId",
+      projectId,
+    },
   });
   return rows.map(convertToScore).shift();
 };
@@ -97,7 +110,7 @@ export const getScoreById = async (
 export const getScoresByIds = async (
   projectId: string,
   scoreId: string[],
-  source?: ScoreSource,
+  source?: ScoreSourceType,
 ) => {
   const query = `
     SELECT *
@@ -116,6 +129,12 @@ export const getScoresByIds = async (
       scoreId,
       ...(source !== undefined ? { source } : {}),
     },
+    tags: {
+      feature: "tracing",
+      type: "score",
+      kind: "byId",
+      projectId,
+    },
   });
   return rows.map(convertToScore);
 };
@@ -132,16 +151,25 @@ export const upsertScore = async (score: Partial<ScoreRecordReadType>) => {
     table: "scores",
     records: [score as ScoreRecordReadType],
     eventBodyMapper: convertToScore,
+    tags: {
+      feature: "tracing",
+      type: "score",
+      kind: "upsert",
+      projectId: score.project_id ?? "",
+    },
   });
 };
 
-export const getScoresForTraces = async (
-  projectId: string,
-  traceIds: string[],
-  timestamp?: Date,
-  limit?: number,
-  offset?: number,
-) => {
+export type GetScoresForTracesProps = {
+  projectId: string;
+  traceIds: string[];
+  timestamp?: Date;
+  limit?: number;
+  offset?: number;
+};
+
+export const getScoresForTraces = async (props: GetScoresForTracesProps) => {
+  const { projectId, traceIds, timestamp, limit, offset } = props;
   const query = `
       select 
         *
@@ -164,6 +192,12 @@ export const getScoresForTraces = async (
       ...(timestamp
         ? { traceTimestamp: convertDateToClickhouseDateTime(timestamp) }
         : {}),
+    },
+    tags: {
+      feature: "tracing",
+      type: "score",
+      kind: "list",
+      projectId,
     },
   });
 
@@ -195,25 +229,35 @@ export const getScoresForObservations = async (
       limit: limit,
       offset: offset,
     },
+    tags: {
+      feature: "tracing",
+      type: "score",
+      kind: "list",
+      projectId,
+    },
   });
 
   return rows.map(convertToScore);
 };
 
-export const getScoresGroupedByNameSourceType = async (projectId: string) => {
+export const getScoresGroupedByNameSourceType = async (
+  projectId: string,
+  timestamp: Date | undefined,
+) => {
   // We mainly use queries like this to retrieve filter options.
   // Therefore, we can skip final as some inaccuracy in count is acceptable.
   const query = `
-      select 
-        name,
-        source,
-        data_type
-      from scores s
-      WHERE s.project_id = {projectId: String}
-      GROUP BY name, source, data_type
-      ORDER BY count() desc
-      LIMIT 1000;
-    `;
+    select 
+      name,
+      source,
+      data_type
+    from scores s
+    WHERE s.project_id = {projectId: String}
+    ${timestamp ? `AND s.timestamp >= {timestamp: DateTime64(3)}` : ""}
+    GROUP BY name, source, data_type
+    ORDER BY count() desc
+    LIMIT 1000;
+  `;
 
   const rows = await queryClickhouse<{
     name: string;
@@ -223,12 +267,21 @@ export const getScoresGroupedByNameSourceType = async (projectId: string) => {
     query: query,
     params: {
       projectId: projectId,
+      ...(timestamp
+        ? { timestamp: convertDateToClickhouseDateTime(timestamp) }
+        : {}),
+    },
+    tags: {
+      feature: "tracing",
+      type: "score",
+      kind: "list",
+      projectId,
     },
   });
 
   return rows.map((row) => ({
     name: row.name,
-    source: row.source as ScoreSource,
+    source: row.source as ScoreSourceType,
     dataType: row.data_type as ScoreDataType,
   }));
 };
@@ -274,6 +327,12 @@ export const getScoresGroupedByName = async (
       projectId: projectId,
       ...(timestampFilterRes ? timestampFilterRes.params : {}),
     },
+    tags: {
+      feature: "tracing",
+      type: "score",
+      kind: "list",
+      projectId,
+    },
   });
 
   return rows;
@@ -287,9 +346,8 @@ export const getScoresUiCount = async (props: {
   offset?: number;
 }) => {
   const rows = await getScoresUiGeneric<{ count: string }>({
-    select: `
-    count(*) as count
-    `,
+    select: "count",
+    tags: { kind: "count" },
     ...props,
   });
 
@@ -312,6 +370,7 @@ export const getScoresUiTable = async (props: {
   const rows = await getScoresUiGeneric<{
     id: string;
     project_id: string;
+    environment: string;
     name: string;
     value: number;
     string_value: string | null;
@@ -333,9 +392,53 @@ export const getScoresUiTable = async (props: {
     created_at: string;
     updated_at: string;
   }>({
-    select: `
+    select: "rows",
+    tags: { kind: "analytic" },
+    ...props,
+  });
+
+  return rows.map((row) => ({
+    projectId: row.project_id,
+    environment: row.environment,
+    authorUserId: row.author_user_id,
+    traceId: row.trace_id,
+    observationId: row.observation_id,
+    traceUserId: row.user_id,
+    traceName: row.trace_name,
+    traceTags: row.trace_tags,
+    configId: row.config_id,
+    queueId: row.queue_id,
+    createdAt: parseClickhouseUTCDateTimeFormat(row.created_at),
+    updatedAt: parseClickhouseUTCDateTimeFormat(row.updated_at),
+    stringValue: row.string_value,
+    comment: row.comment,
+    dataType: row.data_type as ScoreDataType,
+    source: row.source as ScoreSourceType,
+    name: row.name,
+    value: row.value,
+    timestamp: parseClickhouseUTCDateTimeFormat(row.timestamp),
+    id: row.id,
+  }));
+};
+
+export const getScoresUiGeneric = async <T>(props: {
+  select: "count" | "rows";
+  projectId: string;
+  filter: FilterState;
+  orderBy: OrderByState;
+  limit?: number;
+  offset?: number;
+  tags?: Record<string, string>;
+}): Promise<T[]> => {
+  const { projectId, filter, orderBy, limit, offset } = props;
+
+  const select =
+    props.select === "count"
+      ? "count(*) as count"
+      : `
         s.id,
         s.project_id,
+        s.environment,
         s.name,
         s.value,
         s.string_value,
@@ -357,60 +460,26 @@ export const getScoresUiTable = async (props: {
         t.user_id,
         t.name as trace_name,
         t.tags as trace_tags
-    `,
-    ...props,
+      `;
+
+  const { scoresFilter } = getProjectIdDefaultFilter(projectId, {
+    tracesPrefix: "t",
   });
-
-  return rows.map((row) => ({
-    projectId: row.project_id,
-    authorUserId: row.author_user_id,
-    traceId: row.trace_id,
-    observationId: row.observation_id,
-    traceUserId: row.user_id,
-    traceName: row.trace_name,
-    traceTags: row.trace_tags,
-    configId: row.config_id,
-    queueId: row.queue_id,
-    createdAt: parseClickhouseUTCDateTimeFormat(row.created_at),
-    updatedAt: parseClickhouseUTCDateTimeFormat(row.updated_at),
-    stringValue: row.string_value,
-    comment: row.comment,
-    dataType: row.data_type as ScoreDataType,
-    source: row.source as ScoreSource,
-    name: row.name,
-    value: row.value,
-    timestamp: parseClickhouseUTCDateTimeFormat(row.timestamp),
-    id: row.id,
-  }));
-};
-
-export const getScoresUiGeneric = async <T>(props: {
-  select: string;
-  projectId: string;
-  filter: FilterState;
-  orderBy: OrderByState;
-  limit?: number;
-  offset?: number;
-}): Promise<T[]> => {
-  const { select, projectId, filter, orderBy, limit, offset } = props;
-
-  const { tracesFilter, scoresFilter, observationsFilter } =
-    getProjectIdDefaultFilter(projectId, { tracesPrefix: "t" });
-
   scoresFilter.push(
     ...createFilterFromFilterState(filter, scoresTableUiColumnDefinitions),
   );
-
   const scoresFilterRes = scoresFilter.apply();
 
-  // TODO: Can we realistically apply a traces time filter here? Is an order by event_ts a risk?
+  // Only join traces for rows or if there is a trace filter on counts
+  const performTracesJoin =
+    props.select === "rows" ||
+    scoresFilter.some((f) => f.clickhouseTable === "traces");
+
   const query = `
       SELECT 
           ${select}
       FROM scores s final
-      LEFT JOIN traces t
-      ON s.trace_id = t.id 
-      AND t.project_id = s.project_id
+      ${performTracesJoin ? "LEFT JOIN traces t ON s.trace_id = t.id AND t.project_id = s.project_id" : ""}
       WHERE s.project_id = {projectId: String}
       ${scoresFilterRes?.query ? `AND ${scoresFilterRes.query}` : ""}
       ${orderByToClickhouseSql(orderBy ?? null, scoresTableUiColumnDefinitions)}
@@ -424,6 +493,12 @@ export const getScoresUiGeneric = async <T>(props: {
       ...(scoresFilterRes ? scoresFilterRes.params : {}),
       limit: limit,
       offset: offset,
+    },
+    tags: {
+      ...(props.tags ?? {}),
+      feature: "tracing",
+      type: "score",
+      projectId,
     },
   });
 
@@ -465,6 +540,12 @@ export const getScoreNames = async (
       projectId: projectId,
       ...(timestampFilterRes ? timestampFilterRes.params : {}),
     },
+    tags: {
+      feature: "tracing",
+      type: "score",
+      kind: "list",
+      projectId,
+    },
   });
 
   return rows.map((row) => ({
@@ -473,17 +554,23 @@ export const getScoreNames = async (
   }));
 };
 
-export const deleteScore = async (projectId: string, scoreId: string) => {
+export const deleteScores = async (projectId: string, scoreIds: string[]) => {
   const query = `
     DELETE FROM scores
     WHERE project_id = {projectId: String}
-    AND id = {scoreId: String};
+    AND id in ({scoreIds: Array(String)});
   `;
   await commandClickhouse({
     query: query,
     params: {
       projectId,
-      scoreId,
+      scoreIds,
+    },
+    tags: {
+      feature: "tracing",
+      type: "score",
+      kind: "delete",
+      projectId,
     },
   });
 };
@@ -506,6 +593,12 @@ export const deleteScoresByTraceIds = async (
     clickhouseConfigs: {
       request_timeout: 120_000, // 2 minutes
     },
+    tags: {
+      feature: "tracing",
+      type: "score",
+      kind: "delete",
+      projectId,
+    },
   });
 };
 
@@ -521,6 +614,39 @@ export const deleteScoresByProjectId = async (projectId: string) => {
     },
     clickhouseConfigs: {
       request_timeout: 120_000, // 2 minutes
+    },
+    tags: {
+      feature: "tracing",
+      type: "score",
+      kind: "delete",
+      projectId,
+    },
+  });
+};
+
+export const deleteScoresOlderThanDays = async (
+  projectId: string,
+  days: number,
+) => {
+  const query = `
+    DELETE FROM scores
+    WHERE project_id = {projectId: String}
+    AND timestamp < now() - INTERVAL {numDays: Int} DAYS;
+  `;
+  await commandClickhouse({
+    query: query,
+    params: {
+      projectId,
+      numDays: days,
+    },
+    clickhouseConfigs: {
+      request_timeout: 120_000, // 2 minutes
+    },
+    tags: {
+      feature: "tracing",
+      type: "score",
+      kind: "delete",
+      projectId,
     },
   });
 };
@@ -555,6 +681,12 @@ export const getNumericScoreHistogram = async (
       projectId,
       limit,
       ...(chFilterRes ? chFilterRes.params : {}),
+    },
+    tags: {
+      feature: "tracing",
+      type: "score",
+      kind: "analytic",
+      projectId,
     },
   });
 };
@@ -592,6 +724,12 @@ export const getAggregatedScoresForPrompts = async (
       projectId,
       promptIds,
     },
+    tags: {
+      feature: "tracing",
+      type: "score",
+      kind: "analytic",
+      projectId,
+    },
   });
 
   return rows.map((row) => ({
@@ -623,12 +761,48 @@ export const getScoreCountsByProjectInCreationInterval = async ({
       start: convertDateToClickhouseDateTime(start),
       end: convertDateToClickhouseDateTime(end),
     },
+    tags: {
+      feature: "tracing",
+      type: "score",
+      kind: "analytic",
+    },
   });
 
   return rows.map((row) => ({
     projectId: row.project_id,
     count: Number(row.count),
   }));
+};
+
+export const getScoreCountOfProjectsSinceCreationDate = async ({
+  projectIds,
+  start,
+}: {
+  projectIds: string[];
+  start: Date;
+}) => {
+  const query = `
+    SELECT 
+      count(*) as count
+    FROM scores
+    WHERE project_id IN ({projectIds: Array(String)})
+    AND created_at >= {start: DateTime64(3)}
+  `;
+
+  const rows = await queryClickhouse<{ count: string }>({
+    query,
+    params: {
+      projectIds,
+      start: convertDateToClickhouseDateTime(start),
+    },
+    tags: {
+      feature: "tracing",
+      type: "score",
+      kind: "analytic",
+    },
+  });
+
+  return Number(rows[0]?.count ?? 0);
 };
 
 export const getDistinctScoreNames = async (
@@ -661,16 +835,65 @@ export const getDistinctScoreNames = async (
           }
         : {}),
     },
+    tags: {
+      feature: "tracing",
+      type: "score",
+      kind: "list",
+      projectId,
+    },
   });
 
   return rows.map((row) => row.name);
 };
 
-export const getScoresForPostHog = async (
+export const getScoresForBlobStorageExport = function (
   projectId: string,
   minTimestamp: Date,
   maxTimestamp: Date,
-) => {
+) {
+  const query = `
+    SELECT
+      id,
+      timestamp,
+      project_id,
+      environment,
+      trace_id,
+      observation_id,
+      name,
+      value,
+      source,
+      comment,
+      data_type,
+      string_value
+    FROM scores FINAL
+    WHERE project_id = {projectId: String}
+    AND timestamp >= {minTimestamp: DateTime64(3)}
+    AND timestamp <= {maxTimestamp: DateTime64(3)}
+  `;
+
+  const records = queryClickhouseStream<Record<string, unknown>>({
+    query,
+    params: {
+      projectId,
+      minTimestamp: convertDateToClickhouseDateTime(minTimestamp),
+      maxTimestamp: convertDateToClickhouseDateTime(maxTimestamp),
+    },
+    tags: {
+      feature: "blobstorage",
+      type: "score",
+      kind: "analytic",
+      projectId,
+    },
+  });
+
+  return records;
+};
+
+export const getScoresForPostHog = async function* (
+  projectId: string,
+  minTimestamp: Date,
+  maxTimestamp: Date,
+) {
   const query = `
     SELECT
       s.id as id,
@@ -694,34 +917,66 @@ export const getScoresForPostHog = async (
     AND t.timestamp <= {maxTimestamp: DateTime64(3)}
   `;
 
-  const records = await queryClickhouse<Record<string, unknown>>({
+  const records = queryClickhouseStream<Record<string, unknown>>({
     query,
     params: {
       projectId,
       minTimestamp: convertDateToClickhouseDateTime(minTimestamp),
       maxTimestamp: convertDateToClickhouseDateTime(maxTimestamp),
     },
+    tags: {
+      feature: "posthog",
+      type: "score",
+      kind: "analytic",
+      projectId,
+    },
   });
 
   const baseUrl = env.NEXTAUTH_URL?.replace("/api/auth", "");
-  return records.map((record) => ({
-    timestamp: record.timestamp,
-    langfuse_score_name: record.name,
-    langfuse_score_value: record.value,
-    langfuse_score_comment: record.comment,
-    langfuse_trace_name: record.trace_name,
-    langfuse_id: record.id,
-    langfuse_session_id: record.trace_session_id,
-    langfuse_project_id: projectId,
-    langfuse_user_id: record.trace_user_id || "langfuse_unknown_user",
-    langfuse_release: record.trace_release,
-    langfuse_tags: record.trace_tags,
-    langfuse_event_version: "1.0.0",
-    $session_id: record.posthog_session_id ?? null,
-    $set: {
-      langfuse_user_url: record.user_id
-        ? `${baseUrl}/project/${projectId}/users/${encodeURIComponent(record.user_id as string)}`
-        : null,
+  for await (const record of records) {
+    yield {
+      timestamp: record.timestamp,
+      langfuse_score_name: record.name,
+      langfuse_score_value: record.value,
+      langfuse_score_comment: record.comment,
+      langfuse_trace_name: record.trace_name,
+      langfuse_id: record.id,
+      langfuse_session_id: record.trace_session_id,
+      langfuse_project_id: projectId,
+      langfuse_user_id: record.trace_user_id || "langfuse_unknown_user",
+      langfuse_release: record.trace_release,
+      langfuse_tags: record.trace_tags,
+      langfuse_event_version: "1.0.0",
+      $session_id: record.posthog_session_id ?? null,
+      $set: {
+        langfuse_user_url: record.user_id
+          ? `${baseUrl}/project/${projectId}/users/${encodeURIComponent(record.user_id as string)}`
+          : null,
+      },
+    };
+  }
+};
+
+export const hasAnyScore = async (projectId: string) => {
+  const query = `
+    SELECT 1
+    FROM scores
+    WHERE project_id = {projectId: String}
+    LIMIT 1
+  `;
+
+  const rows = await queryClickhouse<{ 1: number }>({
+    query,
+    params: {
+      projectId,
     },
-  }));
+    tags: {
+      feature: "tracing",
+      type: "score",
+      kind: "hasAny",
+      projectId,
+    },
+  });
+
+  return rows.length > 0;
 };

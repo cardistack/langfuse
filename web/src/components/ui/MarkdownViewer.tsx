@@ -4,7 +4,6 @@ import {
   type ReactNode,
   type ReactElement,
   memo,
-  useState,
   isValidElement,
   Children,
   createElement,
@@ -13,11 +12,11 @@ import ReactMarkdown, { type Options } from "react-markdown";
 import Link from "next/link";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
+import { unified } from "unified";
+import remarkParse from "remark-parse";
 import { CodeBlock } from "@/src/components/ui/Codeblock";
 import { useTheme } from "next-themes";
-import { Button } from "@/src/components/ui/button";
-import { Check, Copy, ImageOff } from "lucide-react";
-import { BsMarkdown } from "react-icons/bs";
+import { ImageOff, Info } from "lucide-react";
 import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePostHogClientCapture";
 import { useMarkdownContext } from "@/src/features/theming/useMarkdownContext";
 import { type ExtraProps as ReactMarkdownExtraProps } from "react-markdown";
@@ -32,6 +31,8 @@ import { type z } from "zod";
 import { ResizableImage } from "@/src/components/ui/resizable-image";
 import { LangfuseMediaView } from "@/src/components/ui/LangfuseMediaView";
 import { type MediaReturnType } from "@/src/features/media/validation";
+import { JSONView } from "@/src/components/ui/CodeJsonViewer";
+import { MarkdownJsonViewHeader } from "@/src/components/ui/MarkdownJsonView";
 
 type ReactMarkdownNode = ReactMarkdownExtraProps["node"];
 type ReactMarkdownNodeChildren = Exclude<
@@ -87,130 +88,159 @@ function MarkdownRenderer({
   className?: string;
   customCodeHeaderClassName?: string;
 }) {
-  return (
-    <MemoizedReactMarkdown
-      className={cn("space-y-2 overflow-x-auto break-words text-sm", className)}
-      remarkPlugins={[remarkGfm, remarkMath]}
-      components={{
-        p({ children, node }) {
-          if (isImageNode(node)) {
-            return <>{children}</>;
-          }
-          return (
-            <p className="mb-2 whitespace-pre-wrap last:mb-0">{children}</p>
-          );
-        },
-        a({ children, href }) {
-          if (href)
+  // Try to parse markdown content
+
+  try {
+    const parseMarkdown = () => {
+      const processor = unified()
+        .use(remarkParse)
+        .use(remarkGfm)
+        .use(remarkMath);
+      return processor.parse(markdown);
+    };
+    parseMarkdown();
+
+    // If parsing succeeds, render with ReactMarkdown
+    return (
+      <MemoizedReactMarkdown
+        className={cn(
+          "space-y-2 overflow-x-auto break-words text-sm",
+          className,
+        )}
+        remarkPlugins={[remarkGfm, remarkMath]}
+        components={{
+          p({ children, node }) {
+            if (isImageNode(node)) {
+              return <>{children}</>;
+            }
             return (
-              <Link href={href} className="underline" target="_blank">
-                {children}
-              </Link>
+              <p className="mb-2 whitespace-pre-wrap last:mb-0">{children}</p>
             );
-        },
-        ul({ children }) {
-          if (isChecklist(children))
-            return <ul className="list-none">{children}</ul>;
+          },
+          a({ children, href }) {
+            if (href)
+              return (
+                <Link href={href} className="underline" target="_blank">
+                  {children}
+                </Link>
+              );
+          },
+          ul({ children }) {
+            if (isChecklist(children))
+              return <ul className="list-none">{children}</ul>;
 
-          return <ul className="list-inside list-disc">{children}</ul>;
-        },
-        ol({ children }) {
-          return <ol className="list-inside list-decimal">{children}</ol>;
-        },
-        li({ children }) {
-          return (
-            <li className="mt-1 [&>ol]:pl-4 [&>ul]:pl-4">
-              {transformListItemChildren(children)}
-            </li>
-          );
-        },
-        pre({ children }) {
-          return <pre className="rounded p-2">{children}</pre>;
-        },
-        h1({ children }) {
-          return <h1 className="text-2xl font-bold">{children}</h1>;
-        },
-        h2({ children }) {
-          return <h2 className="text-xl font-bold">{children}</h2>;
-        },
-        h3({ children }) {
-          return <h3 className="text-lg font-bold">{children}</h3>;
-        },
-        h4({ children }) {
-          return <h4 className="text-base font-bold">{children}</h4>;
-        },
-        h5({ children }) {
-          return <h5 className="text-sm font-bold">{children}</h5>;
-        },
-        h6({ children }) {
-          return <h6 className="text-xs font-bold">{children}</h6>;
-        },
-        code({ children, className }) {
-          const languageMatch = /language-(\w+)/.exec(className || "");
-          const language = languageMatch ? languageMatch[1] : "";
-          const codeContent = String(children).replace(/\n$/, "");
-          const isMultiLine = codeContent.includes("\n");
+            return <ul className="list-inside list-disc">{children}</ul>;
+          },
+          ol({ children }) {
+            return <ol className="list-inside list-decimal">{children}</ol>;
+          },
+          li({ children }) {
+            return (
+              <li className="mt-1 [&>ol]:pl-4 [&>ul]:pl-4">
+                {transformListItemChildren(children)}
+              </li>
+            );
+          },
+          pre({ children }) {
+            return <pre className="rounded p-2">{children}</pre>;
+          },
+          h1({ children }) {
+            return <h1 className="text-2xl font-bold">{children}</h1>;
+          },
+          h2({ children }) {
+            return <h2 className="text-xl font-bold">{children}</h2>;
+          },
+          h3({ children }) {
+            return <h3 className="text-lg font-bold">{children}</h3>;
+          },
+          h4({ children }) {
+            return <h4 className="text-base font-bold">{children}</h4>;
+          },
+          h5({ children }) {
+            return <h5 className="text-sm font-bold">{children}</h5>;
+          },
+          h6({ children }) {
+            return <h6 className="text-xs font-bold">{children}</h6>;
+          },
+          code({ children, className }) {
+            const languageMatch = /language-(\w+)/.exec(className || "");
+            const language = languageMatch ? languageMatch[1] : "";
+            const codeContent = String(children).replace(/\n$/, "");
+            const isMultiLine = codeContent.includes("\n");
 
-          return language || isMultiLine ? (
-            // code block
-            <CodeBlock
-              key={Math.random()}
-              language={language}
-              value={codeContent}
-              theme={theme}
-              className={customCodeHeaderClassName}
-            />
-          ) : (
-            // inline code
-            <code className="rounded border bg-secondary px-0.5">
-              {codeContent}
-            </code>
-          );
-        },
-        blockquote({ children }) {
-          return (
-            <blockquote className="border-l-4 pl-4 italic">
-              {children}
-            </blockquote>
-          );
-        },
-        img({ src, alt }) {
-          return src ? <ResizableImage src={src} alt={alt} /> : null;
-        },
-        hr() {
-          return <hr className="my-4" />;
-        },
-        table({ children }) {
-          return (
-            <div className="overflow-x-auto rounded border text-xs">
-              <table className="min-w-full divide-y">{children}</table>
-            </div>
-          );
-        },
-        thead({ children }) {
-          return <thead>{children}</thead>;
-        },
-        tbody({ children }) {
-          return <tbody className="divide-y divide-border">{children}</tbody>;
-        },
-        tr({ children }) {
-          return <tr>{children}</tr>;
-        },
-        th({ children }) {
-          return (
-            <th className="px-4 py-2 text-left text-xs font-medium uppercase tracking-wider">
-              {children}
-            </th>
-          );
-        },
-        td({ children }) {
-          return <td className="whitespace-nowrap px-4 py-2">{children}</td>;
-        },
-      }}
-    >
-      {markdown}
-    </MemoizedReactMarkdown>
-  );
+            return language || isMultiLine ? (
+              // code block
+              <CodeBlock
+                key={Math.random()}
+                language={language}
+                value={codeContent}
+                theme={theme}
+                className={customCodeHeaderClassName}
+              />
+            ) : (
+              // inline code
+              <code className="rounded border bg-secondary px-0.5">
+                {codeContent}
+              </code>
+            );
+          },
+          blockquote({ children }) {
+            return (
+              <blockquote className="border-l-4 pl-4 italic">
+                {children}
+              </blockquote>
+            );
+          },
+          img({ src, alt }) {
+            return src ? <ResizableImage src={src} alt={alt} /> : null;
+          },
+          hr() {
+            return <hr className="my-4" />;
+          },
+          table({ children }) {
+            return (
+              <div className="overflow-x-auto rounded border text-xs">
+                <table className="min-w-full divide-y">{children}</table>
+              </div>
+            );
+          },
+          thead({ children }) {
+            return <thead>{children}</thead>;
+          },
+          tbody({ children }) {
+            return <tbody className="divide-y divide-border">{children}</tbody>;
+          },
+          tr({ children }) {
+            return <tr>{children}</tr>;
+          },
+          th({ children }) {
+            return (
+              <th className="px-4 py-2 text-left text-xs font-medium uppercase tracking-wider">
+                {children}
+              </th>
+            );
+          },
+          td({ children }) {
+            return <td className="whitespace-nowrap px-4 py-2">{children}</td>;
+          },
+        }}
+      >
+        {markdown}
+      </MemoizedReactMarkdown>
+    );
+  } catch (error) {
+    // fallback to JSON view if markdown parsing fails
+
+    return (
+      <>
+        <div className="flex items-center gap-1 text-xs text-muted-foreground">
+          <Info className="h-3 w-3" />
+          Markdown parsing failed. Displaying raw JSON.
+        </div>
+        <JSONView json={markdown} className="min-w-0" />
+      </>
+    );
+  }
 }
 const parseOpenAIContentParts = (
   content: z.infer<typeof OpenAIContentParts> | null,
@@ -231,88 +261,60 @@ const parseOpenAIContentParts = (
 export function MarkdownView({
   markdown,
   title,
-  className,
   customCodeHeaderClassName,
   audio,
   media,
 }: {
   markdown: string | z.infer<typeof OpenAIContentSchema>;
   title?: string;
-  className?: string;
   customCodeHeaderClassName?: string;
   audio?: OpenAIOutputAudioType;
   media?: MediaReturnType[];
 }) {
-  const [isCopied, setIsCopied] = useState(false);
   const capture = usePostHogClientCapture();
   const { resolvedTheme: theme } = useTheme();
   const { setIsMarkdownEnabled } = useMarkdownContext();
 
-  const handleCopy = () => {
-    setIsCopied(true);
+  const handleOnCopy = () => {
     const rawText =
       typeof markdown === "string"
         ? markdown
         : parseOpenAIContentParts(markdown);
     void navigator.clipboard.writeText(rawText);
-    setTimeout(() => setIsCopied(false), 1000);
+  };
+
+  const handleOnValueChange = () => {
+    setIsMarkdownEnabled(false);
+    capture("trace_detail:io_pretty_format_toggle_group", {
+      renderMarkdown: false,
+    });
   };
 
   return (
-    <div
-      className={cn("overflow-hidden rounded-md border", className)}
-      key={theme}
-    >
+    <div className={cn("overflow-hidden")} key={theme}>
       {title ? (
-        <div
-          className={cn(
-            title === "assistant" || title === "Output"
-              ? "dark:border-accent-dark-green"
-              : "",
-            "flex flex-row items-center justify-between border-b px-3 py-1 text-xs font-medium",
-          )}
-        >
-          {title}
-          <div className="flex items-center gap-1">
-            <Button
-              title="Disable Markdown"
-              variant="ghost"
-              size="icon-xs"
-              type="button"
-              onClick={() => {
-                setIsMarkdownEnabled(false);
-                capture("trace_detail:io_pretty_format_toggle_group", {
-                  renderMarkdown: false,
-                });
-              }}
-              className="hover:bg-border"
-            >
-              <BsMarkdown className="h-4 w-4" />
-            </Button>
-            <Button
-              title="Copy to clipboard"
-              variant="ghost"
-              size="icon-xs"
-              type="button"
-              onClick={handleCopy}
-              className="-mr-2 hover:bg-border"
-            >
-              {isCopied ? (
-                <Check className="h-3 w-3" />
-              ) : (
-                <Copy className="h-3 w-3" />
-              )}
-            </Button>
-          </div>
-        </div>
+        <MarkdownJsonViewHeader
+          title={title}
+          handleOnValueChange={handleOnValueChange}
+          handleOnCopy={handleOnCopy}
+        />
       ) : null}
-      <div className="grid grid-flow-row gap-2 p-3">
+      <div
+        className={cn(
+          "grid grid-flow-row gap-2 rounded-sm border p-3",
+          title === "assistant" || title === "Output"
+            ? "bg-accent-light-green dark:border-accent-dark-green"
+            : "",
+          title === "system" || title === "Input"
+            ? "bg-primary-foreground"
+            : "",
+        )}
+      >
         {typeof markdown === "string" ? (
           // plain string
           <MarkdownRenderer
             markdown={markdown}
             theme={theme}
-            className={className}
             customCodeHeaderClassName={customCodeHeaderClassName}
           />
         ) : (
@@ -323,7 +325,6 @@ export function MarkdownView({
                 key={index}
                 markdown={content.text}
                 theme={theme}
-                className={className}
                 customCodeHeaderClassName={customCodeHeaderClassName}
               />
             ) : content.type === "image_url" ? (
@@ -358,7 +359,6 @@ export function MarkdownView({
             <MarkdownRenderer
               markdown={audio.transcript ? "[Audio] \n" + audio.transcript : ""}
               theme={theme}
-              className={className}
               customCodeHeaderClassName={customCodeHeaderClassName}
             />
             <LangfuseMediaView

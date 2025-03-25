@@ -1,45 +1,17 @@
+/* eslint-disable no-unused-vars */
 import { z } from "zod";
-import { eventTypes, ingestionBatchEvent } from ".";
-
-export const LegacyIngestionEventFull = z.object({
-  useS3EventStore: z.literal(false),
-  data: ingestionBatchEvent,
-  authCheck: z.object({
-    validKey: z.literal(true),
-    scope: z.object({
-      projectId: z.string(),
-      accessLevel: z.enum(["all", "scores"]),
-    }),
-  }),
-});
-
-export const LegacyIngestionEventMeta = z.object({
-  useS3EventStore: z.literal(true),
-  data: z.array(
-    z.object({
-      type: z.nativeEnum(eventTypes),
-      eventBodyId: z.string(),
-      eventId: z.string(),
-    }),
-  ),
-  authCheck: z.object({
-    validKey: z.literal(true),
-    scope: z.object({
-      projectId: z.string(),
-      accessLevel: z.enum(["all", "scores"]),
-    }),
-  }),
-});
-
-export const LegacyIngestionEvent = z.discriminatedUnion("useS3EventStore", [
-  LegacyIngestionEventFull,
-  LegacyIngestionEventMeta,
-]);
+import { eventTypes } from ".";
+import {
+  BatchActionQuerySchema,
+  BatchActionType,
+} from "../features/batchAction/types";
+import { BatchExportTableName } from "../features/batchExport/types";
 
 export const IngestionEvent = z.object({
   data: z.object({
     type: z.nativeEnum(eventTypes),
     eventBodyId: z.string(),
+    fileKey: z.string().optional(),
   }),
   authCheck: z.object({
     validKey: z.literal(true),
@@ -62,6 +34,10 @@ export const TracesQueueEventSchema = z.object({
   projectId: z.string(),
   traceIds: z.array(z.string()),
 });
+export const ScoresQueueEventSchema = z.object({
+  projectId: z.string(),
+  scoreIds: z.array(z.string()),
+});
 export const ProjectQueueEventSchema = z.object({
   projectId: z.string(),
   orgId: z.string(),
@@ -80,28 +56,101 @@ export const EvalExecutionEvent = z.object({
 export const PostHogIntegrationProcessingEventSchema = z.object({
   projectId: z.string(),
 });
+export const BlobStorageIntegrationProcessingEventSchema = z.object({
+  projectId: z.string(),
+});
 export const ExperimentCreateEventSchema = z.object({
   projectId: z.string(),
   datasetId: z.string(),
   runId: z.string(),
   description: z.string().optional(),
 });
+export const DataRetentionProcessingEventSchema = z.object({
+  projectId: z.string(),
+  retention: z.number(),
+});
+export const BatchActionProcessingEventSchema = z.discriminatedUnion(
+  "actionId",
+  [
+    z.object({
+      actionId: z.literal("score-delete"),
+      projectId: z.string(),
+      query: BatchActionQuerySchema,
+      tableName: z.nativeEnum(BatchExportTableName),
+      cutoffCreatedAt: z.date(),
+      targetId: z.string().optional(),
+      type: z.nativeEnum(BatchActionType),
+    }),
+    z.object({
+      actionId: z.literal("trace-delete"),
+      projectId: z.string(),
+      query: BatchActionQuerySchema,
+      tableName: z.nativeEnum(BatchExportTableName),
+      cutoffCreatedAt: z.date(),
+      targetId: z.string().optional(),
+      type: z.nativeEnum(BatchActionType),
+    }),
+    z.object({
+      actionId: z.literal("trace-add-to-annotation-queue"),
+      projectId: z.string(),
+      query: BatchActionQuerySchema,
+      tableName: z.nativeEnum(BatchExportTableName),
+      cutoffCreatedAt: z.date(),
+      targetId: z.string().optional(),
+      type: z.nativeEnum(BatchActionType),
+    }),
+    z.object({
+      actionId: z.literal("eval-create"),
+      targetObject: z.enum(["trace", "dataset"]),
+      configId: z.string(),
+      projectId: z.string(),
+      cutoffCreatedAt: z.date(),
+      query: BatchActionQuerySchema,
+    }),
+  ],
+);
 
+export const CreateEvalQueueEventSchema = DatasetRunItemUpsertEventSchema.and(
+  z.object({
+    configId: z.string(),
+    timestamp: z.date(),
+  }),
+).or(
+  TraceQueueEventSchema.and(
+    z.object({
+      timestamp: z.date(),
+      configId: z.string(),
+    }),
+  ),
+);
+
+export type CreateEvalQueueEventType = z.infer<
+  typeof CreateEvalQueueEventSchema
+>;
 export type BatchExportJobType = z.infer<typeof BatchExportJobSchema>;
 export type TraceQueueEventType = z.infer<typeof TraceQueueEventSchema>;
 export type TracesQueueEventType = z.infer<typeof TracesQueueEventSchema>;
+export type ScoresQueueEventType = z.infer<typeof ScoresQueueEventSchema>;
 export type ProjectQueueEventType = z.infer<typeof ProjectQueueEventSchema>;
 export type DatasetRunItemUpsertEventType = z.infer<
   typeof DatasetRunItemUpsertEventSchema
 >;
 export type EvalExecutionEventType = z.infer<typeof EvalExecutionEvent>;
-export type LegacyIngestionEventType = z.infer<typeof LegacyIngestionEvent>;
 export type IngestionEventQueueType = z.infer<typeof IngestionEvent>;
 export type ExperimentCreateEventType = z.infer<
   typeof ExperimentCreateEventSchema
 >;
 export type PostHogIntegrationProcessingEventType = z.infer<
   typeof PostHogIntegrationProcessingEventSchema
+>;
+export type DataRetentionProcessingEventType = z.infer<
+  typeof DataRetentionProcessingEventSchema
+>;
+export type BatchActionProcessingEventType = z.infer<
+  typeof BatchActionProcessingEventSchema
+>;
+export type BlobStorageIntegrationProcessingEventType = z.infer<
+  typeof BlobStorageIntegrationProcessingEventSchema
 >;
 
 export enum QueueName {
@@ -113,12 +162,19 @@ export enum QueueName {
   BatchExport = "batch-export-queue",
   IngestionQueue = "ingestion-queue", // Process single events with S3-merge
   IngestionSecondaryQueue = "secondary-ingestion-queue", // Separates high priority + high throughput projects from other projects.
-  LegacyIngestionQueue = "legacy-ingestion-queue", // Used for batch processing of Ingestion
   CloudUsageMeteringQueue = "cloud-usage-metering-queue",
   ExperimentCreate = "experiment-create-queue",
   PostHogIntegrationQueue = "posthog-integration-queue",
   PostHogIntegrationProcessingQueue = "posthog-integration-processing-queue",
+  BlobStorageIntegrationQueue = "blobstorage-integration-queue",
+  BlobStorageIntegrationProcessingQueue = "blobstorage-integration-processing-queue",
   CoreDataS3ExportQueue = "core-data-s3-export-queue",
+  MeteringDataPostgresExportQueue = "metering-data-postgres-export-queue",
+  DataRetentionQueue = "data-retention-queue",
+  DataRetentionProcessingQueue = "data-retention-processing-queue",
+  BatchActionQueue = "batch-action-queue",
+  CreateEvalQueue = "create-eval-queue",
+  ScoreDelete = "score-delete",
 }
 
 export enum QueueJobs {
@@ -128,14 +184,21 @@ export enum QueueJobs {
   DatasetRunItemUpsert = "dataset-run-item-upsert",
   EvaluationExecution = "evaluation-execution-job",
   BatchExportJob = "batch-export-job",
-  LegacyIngestionJob = "legacy-ingestion-job",
   CloudUsageMeteringJob = "cloud-usage-metering-job",
   IngestionJob = "ingestion-job",
   IngestionSecondaryJob = "secondary-ingestion-job",
   ExperimentCreateJob = "experiment-create-job",
   PostHogIntegrationJob = "posthog-integration-job",
   PostHogIntegrationProcessingJob = "posthog-integration-processing-job",
+  BlobStorageIntegrationJob = "blobstorage-integration-job",
+  BlobStorageIntegrationProcessingJob = "blobstorage-integration-processing-job",
   CoreDataS3ExportJob = "core-data-s3-export-job",
+  MeteringDataPostgresExportJob = "metering-data-postgres-export-job",
+  DataRetentionJob = "data-retention-job",
+  DataRetentionProcessingJob = "data-retention-processing-job",
+  BatchActionProcessingJob = "batch-action-processing-job",
+  CreateEvalJob = "create-eval-job",
+  ScoreDelete = "score-delete",
 }
 
 export type TQueueJobTypes = {
@@ -150,6 +213,12 @@ export type TQueueJobTypes = {
     id: string;
     payload: TracesQueueEventType | TraceQueueEventType;
     name: QueueJobs.TraceDelete;
+  };
+  [QueueName.ScoreDelete]: {
+    timestamp: Date;
+    id: string;
+    payload: ScoresQueueEventType;
+    name: QueueJobs.ScoreDelete;
   };
   [QueueName.ProjectDelete]: {
     timestamp: Date;
@@ -175,12 +244,6 @@ export type TQueueJobTypes = {
     payload: BatchExportJobType;
     name: QueueJobs.BatchExportJob;
   };
-  [QueueName.LegacyIngestionQueue]: {
-    timestamp: Date;
-    id: string;
-    payload: LegacyIngestionEventType;
-    name: QueueJobs.LegacyIngestionJob;
-  };
   [QueueName.IngestionQueue]: {
     timestamp: Date;
     id: string;
@@ -204,5 +267,29 @@ export type TQueueJobTypes = {
     id: string;
     payload: PostHogIntegrationProcessingEventType;
     name: QueueJobs.PostHogIntegrationProcessingJob;
+  };
+  [QueueName.DataRetentionProcessingQueue]: {
+    timestamp: Date;
+    id: string;
+    payload: DataRetentionProcessingEventType;
+    name: QueueJobs.DataRetentionProcessingJob;
+  };
+  [QueueName.BatchActionQueue]: {
+    timestamp: Date;
+    id: string;
+    payload: BatchActionProcessingEventType;
+    name: QueueJobs.BatchActionProcessingJob;
+  };
+  [QueueName.CreateEvalQueue]: {
+    timestamp: Date;
+    id: string;
+    payload: CreateEvalQueueEventType;
+    name: QueueJobs.CreateEvalJob;
+  };
+  [QueueName.BlobStorageIntegrationProcessingQueue]: {
+    timestamp: Date;
+    id: string;
+    payload: BlobStorageIntegrationProcessingEventType;
+    name: QueueJobs.BlobStorageIntegrationProcessingJob;
   };
 };

@@ -24,7 +24,6 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  Columns,
   Component,
   Menu,
 } from "lucide-react";
@@ -73,11 +72,12 @@ const calculateColumnCounts = <TData, TValue>(
         );
         acc.count += groupCounts.count;
         acc.total += groupCounts.total;
-      } else if (column.enableHiding) {
+      } else {
         acc.total++;
         if (
-          column.accessorKey in columnVisibility &&
-          columnVisibility[column.accessorKey]
+          (column.accessorKey in columnVisibility &&
+            columnVisibility[column.accessorKey]) ||
+          !column.enableHiding
         ) {
           acc.count++;
         }
@@ -160,8 +160,12 @@ function ColumnVisibilityDropdownItem<TData, TValue>({
 
 function GroupVisibilityDropdownHeader<TData, TValue>({
   column,
+  groupTotalCount,
+  groupVisibleCount,
 }: {
   column: LangfuseColumnDef<TData, TValue>;
+  groupTotalCount: number;
+  groupVisibleCount: number;
 }) {
   const { attributes, isDragging, listeners, setNodeRef, transform } =
     useSortable({
@@ -188,6 +192,9 @@ function GroupVisibilityDropdownHeader<TData, TValue>({
           {column.header && typeof column.header === "string"
             ? column.header
             : column.accessorKey}
+        </span>
+        <span className="ml-1.5 text-xs text-muted-foreground">
+          ({groupVisibleCount}/{groupTotalCount})
         </span>
       </div>
       <div className="flex items-center">
@@ -316,8 +323,8 @@ export function DataTableColumnVisibilityFilter<TData, TValue>({
           asChild
         >
           <Button variant="outline" title="Show/hide columns">
-            <Columns className="mr-2 h-4 w-4" />
-            <span className="text-xs text-muted-foreground">{`(${count}/${total})`}</span>
+            <span>Columns</span>
+            <div className="ml-1 rounded-sm bg-input px-1 text-xs">{`${count}/${total}`}</div>
             <ChevronDown className="ml-2 h-4 w-4" />
           </Button>
         </DropdownMenuTrigger>
@@ -352,7 +359,11 @@ export function DataTableColumnVisibilityFilter<TData, TValue>({
                   return (
                     <DropdownMenuSub key={index}>
                       {isColumnOrderingEnabled ? (
-                        <GroupVisibilityDropdownHeader column={column} />
+                        <GroupVisibilityDropdownHeader
+                          column={column}
+                          groupTotalCount={groupTotalCount}
+                          groupVisibleCount={groupVisibleCount}
+                        />
                       ) : (
                         <DropdownMenuSubTrigger hasCustomIcon>
                           <Component className="mr-2 h-4 w-4 opacity-50" />

@@ -1,8 +1,8 @@
-import { ObservationLevel } from "@prisma/client";
 import {
   type OptionsDefinition,
   type ColumnDefinition,
-} from "./tableDefinitions/types";
+} from "./tableDefinitions";
+import { ObservationLevelType } from "./server";
 
 // to be used server side
 export const observationsTableCols: ColumnDefinition[] = [
@@ -19,6 +19,13 @@ export const observationsTableCols: ColumnDefinition[] = [
     internal: 'o."name"',
     options: [], // to be added at runtime
     nullable: true,
+  },
+  {
+    name: "type",
+    id: "type",
+    type: "stringOptions",
+    options: [],
+    internal: 'o."type"',
   },
   { name: "Trace ID", id: "traceId", type: "string", internal: 't."id"' },
   {
@@ -95,7 +102,12 @@ export const observationsTableCols: ColumnDefinition[] = [
     id: "level",
     type: "stringOptions",
     internal: 'o."level"::text',
-    options: Object.values(ObservationLevel).map((value) => ({ value })),
+    options: [
+      { value: "DEBUG" },
+      { value: "DEFAULT" },
+      { value: "WARNING" },
+      { value: "ERROR" },
+    ] as { value: ObservationLevelType }[],
   },
   {
     name: "Status Message",
@@ -200,6 +212,7 @@ export type ObservationOptions = {
   scores_avg: Array<string>;
   promptName: Array<OptionsDefinition>;
   tags: Array<OptionsDefinition>;
+  type: Array<OptionsDefinition>;
 };
 
 export function observationsTableColsWithOptions(
@@ -226,6 +239,9 @@ export function observationsTableColsWithOptions(
     }
     if (col.id === "tags") {
       return { ...col, options: options?.tags ?? [] };
+    }
+    if (col.id === "type") {
+      return { ...col, options: options?.type ?? [] };
     }
     return col;
   });

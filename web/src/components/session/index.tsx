@@ -1,5 +1,4 @@
 import { GroupedScoreBadges } from "@/src/components/grouped-score-badge";
-import Header from "@/src/components/layouts/header";
 import { ErrorPage } from "@/src/components/error-page";
 import { PublishSessionSwitch } from "@/src/components/publish-object-switch";
 import { StarSessionToggle } from "@/src/components/star-toggle";
@@ -18,11 +17,108 @@ import { Button } from "@/src/components/ui/button";
 import useLocalStorage from "@/src/components/useLocalStorage";
 import { CommentDrawerButton } from "@/src/features/comments/CommentDrawerButton";
 import { useSession } from "next-auth/react";
-import { ScrollScreenPage } from "@/src/components/layouts/scroll-screen-page";
-import { useClickhouse } from "@/src/components/layouts/ClickhouseAdminToggle";
+import Page from "@/src/components/layouts/page";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/src/components/ui/popover";
+import { ScrollArea } from "@/src/components/ui/scroll-area";
+import { Label } from "@/src/components/ui/label";
 
 // some projects have thousands of traces in a sessions, paginate to avoid rendering all at once
 const PAGE_SIZE = 50;
+// some projects have thousands of users in a session, paginate to avoid rendering all at once
+const INITIAL_USERS_DISPLAY_COUNT = 10;
+const USERS_PER_PAGE_IN_POPOVER = 50;
+
+export function SessionUsers({
+  projectId,
+  users,
+}: {
+  projectId: string;
+  users?: string[];
+}) {
+  const [page, setPage] = useState(0);
+
+  if (!users) return null;
+
+  const initialUsers = users?.slice(0, INITIAL_USERS_DISPLAY_COUNT);
+  const remainingUsers = users?.slice(INITIAL_USERS_DISPLAY_COUNT);
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {initialUsers.map((userId: string) => (
+        <Link
+          key={userId}
+          href={`/project/${projectId}/users/${encodeURIComponent(userId ?? "")}`}
+        >
+          <Badge className="max-w-[300px] truncate">User ID: {userId}</Badge>
+        </Link>
+      ))}
+
+      {remainingUsers.length > 0 && (
+        <Popover modal>
+          <PopoverTrigger asChild>
+            <Button variant="outline" size="sm" className="mt-0.5">
+              +{remainingUsers.length} more users
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-[300px]">
+            <Label className="text-base capitalize">Session Users</Label>
+            <ScrollArea className="h-[300px]">
+              <div className="flex flex-col gap-2 p-2">
+                {remainingUsers
+                  .slice(
+                    page * USERS_PER_PAGE_IN_POPOVER,
+                    (page + 1) * USERS_PER_PAGE_IN_POPOVER,
+                  )
+                  .map((userId: string) => (
+                    <Link
+                      key={userId}
+                      href={`/project/${projectId}/users/${encodeURIComponent(userId ?? "")}`}
+                      className="block hover:bg-accent"
+                    >
+                      <Badge className="max-w-[260px] truncate">
+                        User ID: {userId}
+                      </Badge>
+                    </Link>
+                  ))}
+              </div>
+            </ScrollArea>
+            {remainingUsers.length > USERS_PER_PAGE_IN_POPOVER && (
+              <div className="flex items-center justify-between border-t p-2 pt-4">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage((p) => Math.max(0, p - 1))}
+                  disabled={page === 0}
+                >
+                  Previous
+                </Button>
+                <span className="text-sm text-muted-foreground">
+                  Page {page + 1} of{" "}
+                  {Math.ceil(remainingUsers.length / USERS_PER_PAGE_IN_POPOVER)}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage((p) => p + 1)}
+                  disabled={
+                    (page + 1) * USERS_PER_PAGE_IN_POPOVER >=
+                    remainingUsers.length
+                  }
+                >
+                  Next
+                </Button>
+              </div>
+            )}
+          </PopoverContent>
+        </Popover>
+      )}
+    </div>
+  );
+}
 
 export const SessionPage: React.FC<{
   sessionId: string;
@@ -35,7 +131,6 @@ export const SessionPage: React.FC<{
     {
       sessionId,
       projectId: projectId,
-      queryClickhouse: useClickhouse(),
     },
     {
       retry(failureCount, error) {
@@ -76,7 +171,6 @@ export const SessionPage: React.FC<{
       {
         projectId,
         sessionId,
-        queryClickhouse: useClickhouse(),
       },
       { enabled: session.isSuccess && userSession.status === "authenticated" },
     );
@@ -97,58 +191,60 @@ export const SessionPage: React.FC<{
     );
 
   return (
-    <ScrollScreenPage>
-      <Header
-        title="Session"
-        breadcrumb={[
+    <Page
+      withPadding
+      scrollable
+      headerProps={{
+        title: sessionId,
+        itemType: "SESSION",
+        breadcrumb: [
           {
             name: "Sessions",
             href: `/project/${projectId}/sessions`,
           },
-          { name: sessionId },
-        ]}
-        actionButtons={[
-          <StarSessionToggle
-            key="star"
-            projectId={projectId}
-            sessionId={sessionId}
-            value={session.data?.bookmarked ?? false}
-          />,
-          <PublishSessionSwitch
-            projectId={projectId}
-            sessionId={sessionId}
-            isPublic={session.data?.public ?? false}
-            key="publish"
-          />,
-          <DetailPageNav
-            key="nav"
-            currentId={encodeURIComponent(sessionId)}
-            path={(entry) =>
-              `/project/${projectId}/sessions/${encodeURIComponent(entry.id)}`
-            }
-            listKey="sessions"
-          />,
-          <CommentDrawerButton
-            key="comment"
-            variant="outline"
-            projectId={projectId}
-            objectId={sessionId}
-            objectType="SESSION"
-            count={sessionCommentCounts.data?.get(sessionId)}
-          />,
-        ]}
-      />
+        ],
+        actionButtonsLeft: (
+          <div className="flex items-center gap-0">
+            <StarSessionToggle
+              key="star"
+              projectId={projectId}
+              sessionId={sessionId}
+              value={session.data?.bookmarked ?? false}
+              size="icon-xs"
+            />
+            <PublishSessionSwitch
+              projectId={projectId}
+              sessionId={sessionId}
+              isPublic={session.data?.public ?? false}
+              key="publish"
+              size="icon-xs"
+            />
+          </div>
+        ),
+        actionButtonsRight: (
+          <>
+            <DetailPageNav
+              key="nav"
+              currentId={encodeURIComponent(sessionId)}
+              path={(entry) =>
+                `/project/${projectId}/sessions/${encodeURIComponent(entry.id)}`
+              }
+              listKey="sessions"
+            />
+            <CommentDrawerButton
+              key="comment"
+              variant="outline"
+              projectId={projectId}
+              objectId={sessionId}
+              objectType="SESSION"
+              count={sessionCommentCounts.data?.get(sessionId)}
+            />
+          </>
+        ),
+      }}
+    >
       <div className="flex flex-wrap gap-2">
-        {session.data?.users.filter(Boolean).map((userId) => (
-          <Link
-            key={userId}
-            href={`/project/${projectId}/users/${encodeURIComponent(
-              userId ?? "",
-            )}`}
-          >
-            <Badge className="max-w-[300px] truncate">User ID: {userId}</Badge>
-          </Link>
-        ))}
+        <SessionUsers projectId={projectId} users={session.data?.users} />
         <Badge variant="outline">Traces: {session.data?.traces.length}</Badge>
         {session.data && (
           <Badge variant="outline">
@@ -214,7 +310,7 @@ export const SessionPage: React.FC<{
           </Button>
         )}
       </div>
-    </ScrollScreenPage>
+    </Page>
   );
 };
 
@@ -226,7 +322,7 @@ const SessionIO = ({
   projectId: string;
 }) => {
   const trace = api.traces.byId.useQuery(
-    { traceId, projectId, queryClickhouse: useClickhouse() },
+    { traceId, projectId },
     {
       enabled: typeof traceId === "string",
       trpc: {

@@ -1,17 +1,15 @@
 import { StarTraceToggle } from "@/src/components/star-toggle";
 import { DataTable } from "@/src/components/table/data-table";
-import { TraceTableMultiSelectAction } from "@/src/components/table/data-table-multi-select-actions/trace-table-multi-select-action";
 import { DataTableToolbar } from "@/src/components/table/data-table-toolbar";
-import TableLink from "@/src/components/table/table-link";
+import { Badge } from "@/src/components/ui/badge";
 import { type LangfuseColumnDef } from "@/src/components/table/types";
 import { TagTracePopover } from "@/src/features/tag/components/TagTracePopver";
 import { TokenUsageBadge } from "@/src/components/token-usage-badge";
-import { Checkbox } from "@/src/components/ui/checkbox";
 import useColumnVisibility from "@/src/features/column-visibility/hooks/useColumnVisibility";
 import { useQueryFilterState } from "@/src/features/filters/hooks/useFilterState";
 import { api } from "@/src/utils/api";
 import { formatIntervalSeconds } from "@/src/utils/dates";
-import { type RouterOutput, type RouterInput } from "@/src/utils/types";
+import { type RouterOutput } from "@/src/utils/types";
 import { type RowSelectionState } from "@tanstack/react-table";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -24,7 +22,11 @@ import {
 import type Decimal from "decimal.js";
 import { numberFormatter, usdFormatter } from "@/src/utils/numbers";
 import { DeleteButton } from "@/src/components/deleteButton";
-import { LevelColors } from "@/src/components/level-colors";
+import {
+  formatAsLabel,
+  LevelColors,
+  LevelSymbols,
+} from "@/src/components/level-colors";
 import { cn } from "@/src/utils/tailwind";
 import { useDetailPageLists } from "@/src/features/navigate-detail-pages/context";
 import { useOrderByState } from "@/src/features/orderBy/hooks/useOrderByState";
@@ -32,8 +34,10 @@ import {
   type FilterState,
   type TraceOptions,
   tracesTableColsWithOptions,
-  type ObservationLevel,
+  type ObservationLevelType,
   BatchExportTableName,
+  AnnotationQueueObjectType,
+  BatchActionType,
 } from "@langfuse/shared";
 import { useRowHeightLocalStorage } from "@/src/components/table/data-table-row-height-switch";
 import { IOTableCell } from "@/src/components/ui/CodeJsonViewer";
@@ -49,9 +53,34 @@ import { joinTableCoreAndMetrics } from "@/src/components/table/utils/joinTableC
 import { Skeleton } from "@/src/components/ui/skeleton";
 import useColumnOrder from "@/src/features/column-visibility/hooks/useColumnOrder";
 import { BatchExportTableButton } from "@/src/components/BatchExportTableButton";
-import { useClickhouse } from "@/src/components/layouts/ClickhouseAdminToggle";
 import { BreakdownTooltip } from "@/src/components/trace/BreakdownToolTip";
-import { InfoIcon } from "lucide-react";
+import { InfoIcon, MoreVertical } from "lucide-react";
+import { useHasEntitlement } from "@/src/features/entitlements/hooks";
+import React from "react";
+import { TableActionMenu } from "@/src/features/table/components/TableActionMenu";
+import { useSelectAll } from "@/src/features/table/hooks/useSelectAll";
+import { LocalIsoDate } from "@/src/components/LocalIsoDate";
+import { TableSelectionManager } from "@/src/features/table/components/TableSelectionManager";
+import { showSuccessToast } from "@/src/features/notifications/showSuccessToast";
+import { type TableAction } from "@/src/features/table/types";
+import {
+  LevelCountsDisplay,
+  type LevelCount,
+} from "@/src/components/level-counts-display";
+import {
+  DropdownMenuContent,
+  DropdownMenu,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/src/components/ui/dropdown-menu";
+import { Button } from "@/src/components/ui/button";
+import { Trace } from "@/src/components/trace";
+import router from "next/router";
+import TableId from "@/src/components/table/table-id";
+import {
+  useEnvironmentFilter,
+  convertSelectedEnvironmentsToFilter,
+} from "@/src/hooks/use-environment-filter";
 
 export type TracesTableRow = {
   bookmarked: boolean;
@@ -59,14 +88,21 @@ export type TracesTableRow = {
   timestamp: Date;
   name: string;
   userId: string;
-  level?: ObservationLevel;
+  level?: ObservationLevelType;
   observationCount?: bigint;
+  levelCounts: {
+    errorCount?: bigint;
+    warningCount?: bigint;
+    debugCount?: bigint;
+    defaultCount?: bigint;
+  };
   // scores holds grouped column with individual scores
   scores?: ScoreAggregate;
   latency?: number;
   release?: string;
   version?: string;
   sessionId?: string;
+  environment?: string;
   // i/o and metadata not set explicitly, but fetched from the server from the cell
   input?: unknown;
   output?: unknown;
@@ -88,9 +124,8 @@ export type TracesTableProps = {
   projectId: string;
   userId?: string;
   omittedFilter?: string[];
+  pinFirstColumn?: boolean;
 };
-
-export type TraceFilterInput = Omit<RouterInput["traces"]["all"], "projectId">;
 
 export default function TracesTable({
   projectId,
@@ -98,13 +133,17 @@ export default function TracesTable({
   omittedFilter = [],
 }: TracesTableProps) {
   const utils = api.useUtils();
+  const [peekViewId] = useQueryParam("peek", withDefault(StringParam, null));
   const [selectedRows, setSelectedRows] = useState<RowSelectionState>({});
   const { setDetailPageList } = useDetailPageLists();
   const [searchQuery, setSearchQuery] = useQueryParam(
     "search",
     withDefault(StringParam, null),
   );
-
+  const [selectedTab, setSelectedTab] = useQueryParam(
+    "display",
+    withDefault(StringParam, "details"),
+  );
   const { selectedOption, dateRange, setDateRangeAndOption } =
     useTableDateRange(projectId);
   const [userFilterState, setUserFilterState] = useQueryFilterState(
@@ -138,11 +177,39 @@ export default function TracesTable({
       ]
     : [];
 
-  const filterState = userFilterState.concat(userIdFilter, dateRangeFilter);
+  const environmentFilterOptions =
+    api.projects.environmentFilterOptions.useQuery(
+      { projectId },
+      {
+        trpc: { context: { skipBatch: true } },
+        refetchOnMount: false,
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
+        staleTime: Infinity,
+      },
+    );
+
+  const environmentOptions =
+    environmentFilterOptions.data?.map((value) => value.environment) || [];
+
+  const { selectedEnvironments, setSelectedEnvironments } =
+    useEnvironmentFilter(environmentOptions, projectId);
+
+  const environmentFilter = convertSelectedEnvironmentsToFilter(
+    ["environment"],
+    selectedEnvironments,
+  );
+
+  const filterState = userFilterState.concat(
+    userIdFilter,
+    dateRangeFilter,
+    environmentFilter,
+  );
   const [paginationState, setPaginationState] = useQueryParams({
     pageIndex: withDefault(NumberParam, 0),
     pageSize: withDefault(NumberParam, 50),
   });
+  const { selectAll, setSelectAll } = useSelectAll(projectId, "traces");
 
   const tracesAllCountFilter = {
     projectId,
@@ -152,7 +219,6 @@ export default function TracesTable({
     page: 0,
     limit: 0,
     orderBy: null,
-    queryClickhouse: useClickhouse(),
   };
 
   const tracesAllQueryFilter = {
@@ -160,16 +226,18 @@ export default function TracesTable({
     page: paginationState.pageIndex,
     limit: paginationState.pageSize,
     orderBy: orderByState,
-    queryClickhouse: useClickhouse(),
   };
-  const traces = api.traces.all.useQuery(tracesAllQueryFilter);
-  const totalCountQuery = api.traces.countAll.useQuery(tracesAllCountFilter);
+  const traces = api.traces.all.useQuery(tracesAllQueryFilter, {
+    enabled: environmentFilterOptions.data !== undefined,
+  });
+  const totalCountQuery = api.traces.countAll.useQuery(tracesAllCountFilter, {
+    enabled: environmentFilterOptions.data !== undefined,
+  });
   const traceMetrics = api.traces.metrics.useQuery(
     {
       projectId,
       filter: filterState,
       traceIds: traces.data?.traces.map((t) => t.id) ?? [],
-      queryClickhouse: useClickhouse(),
     },
     {
       enabled: traces.data !== undefined,
@@ -209,7 +277,6 @@ export default function TracesTable({
         dateRangeFilter[0]?.type === "datetime"
           ? dateRangeFilter[0]
           : undefined,
-      queryClickhouse: useClickhouse(),
     },
     {
       trpc: {
@@ -241,42 +308,115 @@ export default function TracesTable({
       cellsLoading: !traceMetrics.data,
     });
 
-  const columns: LangfuseColumnDef<TracesTableRow>[] = [
-    {
-      id: "select",
-      accessorKey: "select",
-      size: 30,
-      isPinned: true,
-      header: ({ table }) => (
-        <div className="flex h-full items-center">
-          <Checkbox
-            checked={
-              table.getIsAllPageRowsSelected()
-                ? true
-                : table.getIsSomePageRowsSelected()
-                  ? "indeterminate"
-                  : false
-            }
-            onCheckedChange={(value) => {
-              table.toggleAllPageRowsSelected(!!value);
-              if (!value) {
-                setSelectedRows({});
-              }
-            }}
-            aria-label="Select all"
-            className="opacity-60"
-          />
-        </div>
-      ),
-      cell: ({ row }) => (
-        <Checkbox
-          checked={row.getIsSelected()}
-          onCheckedChange={(value) => row.toggleSelected(!!value)}
-          aria-label="Select row"
-          className="opacity-60"
-        />
-      ),
+  const hasTraceDeletionEntitlement = useHasEntitlement("trace-deletion");
+
+  const { selectActionColumn } = TableSelectionManager<TracesTableRow>({
+    projectId,
+    tableName: "traces",
+    setSelectedRows,
+  });
+
+  const traceDeleteMutation = api.traces.deleteMany.useMutation({
+    onSuccess: () => {
+      showSuccessToast({
+        title: "Traces deleted",
+        description:
+          "Selected traces will be deleted. Traces are removed asynchronously and may continue to be visible for up to 15 minutes.",
+      });
     },
+    onSettled: () => {
+      void utils.traces.all.invalidate();
+    },
+  });
+
+  const addToQueueMutation = api.annotationQueueItems.createMany.useMutation({
+    onSuccess: (data) => {
+      showSuccessToast({
+        title: "Traces added to queue",
+        description: `Selected traces will be added to queue "${data.queueName}". This may take a minute.`,
+        link: {
+          href: `/project/${projectId}/annotation-queues/${data.queueId}`,
+          text: `View queue "${data.queueName}"`,
+        },
+      });
+    },
+  });
+
+  const handleDeleteTraces = async ({ projectId }: { projectId: string }) => {
+    const selectedTraceIds = Object.keys(selectedRows).filter((traceId) =>
+      traces.data?.traces.map((t) => t.id).includes(traceId),
+    );
+
+    await traceDeleteMutation.mutateAsync({
+      projectId,
+      traceIds: selectedTraceIds,
+      query: {
+        filter: filterState,
+        orderBy: orderByState,
+      },
+      isBatchAction: selectAll,
+    });
+    setSelectedRows({});
+  };
+
+  const handleAddToAnnotationQueue = async ({
+    projectId,
+    targetId,
+  }: {
+    projectId: string;
+    targetId: string;
+  }) => {
+    const selectedTraceIds = Object.keys(selectedRows).filter((traceId) =>
+      traces.data?.traces.map((t) => t.id).includes(traceId),
+    );
+
+    await addToQueueMutation.mutateAsync({
+      projectId,
+      objectIds: selectedTraceIds,
+      objectType: AnnotationQueueObjectType.TRACE,
+      queueId: targetId,
+      isBatchAction: selectAll,
+      query: {
+        filter: filterState,
+        orderBy: orderByState,
+      },
+    });
+    setSelectedRows({});
+  };
+
+  const tableActions: TableAction[] = [
+    ...(hasTraceDeletionEntitlement
+      ? [
+          {
+            id: "trace-delete",
+            type: BatchActionType.Delete,
+            label: "Delete Traces",
+            description:
+              "This action permanently deletes traces and cannot be undone. Trace deletion happens asynchronously and may take up to 15 minutes.",
+            accessCheck: {
+              scope: "traces:delete",
+              entitlement: "trace-deletion",
+            },
+            execute: handleDeleteTraces,
+          } as TableAction,
+        ]
+      : []),
+    {
+      id: "trace-add-to-annotation-queue",
+      type: BatchActionType.Create,
+      label: "Add to Annotation Queue",
+      description: "Add selected traces to an annotation queue.",
+      targetLabel: "Annotation Queue",
+      execute: handleAddToAnnotationQueue,
+      accessCheck: {
+        scope: "annotationQueues:CUD",
+        entitlement: "annotation-queues",
+      },
+    },
+  ];
+
+  const columns: LangfuseColumnDef<TracesTableRow>[] = [
+    selectActionColumn,
     {
       accessorKey: "bookmarked",
       header: undefined,
@@ -308,14 +448,9 @@ export default function TracesTable({
       isPinned: true,
       cell: ({ row }) => {
         const value: TracesTableRow["id"] = row.getValue("id");
-        const timestamp: TracesTableRow["timestamp"] =
-          row.getValue("timestamp");
 
         return value && typeof value === "string" ? (
-          <TableLink
-            path={`/project/${projectId}/traces/${encodeURIComponent(value)}?timestamp=${encodeURIComponent(timestamp.toISOString())}`}
-            value={value}
-          />
+          <TableId value={value} />
         ) : undefined;
       },
       enableSorting: true,
@@ -329,7 +464,7 @@ export default function TracesTable({
       enableSorting: true,
       cell: ({ row }) => {
         const value: TracesTableRow["timestamp"] = row.getValue("timestamp");
-        return value ? new Date(value).toLocaleString() : undefined;
+        return value ? <LocalIsoDate date={value} /> : undefined;
       },
     },
     {
@@ -339,6 +474,25 @@ export default function TracesTable({
       size: 150,
       enableHiding: true,
       enableSorting: true,
+    },
+    {
+      accessorKey: "environment",
+      header: "Environment",
+      id: "environment",
+      size: 150,
+      enableHiding: true,
+      cell: ({ row }) => {
+        const value: TracesTableRow["environment"] =
+          row.getValue("environment");
+        return value ? (
+          <Badge
+            variant="secondary"
+            className="max-w-fit truncate rounded-sm px-1 font-normal"
+          >
+            {value}
+          </Badge>
+        ) : null;
+      },
     },
     {
       accessorKey: "userId",
@@ -352,10 +506,7 @@ export default function TracesTable({
       cell: ({ row }) => {
         const value: TracesTableRow["userId"] = row.getValue("userId");
         return value && typeof value === "string" ? (
-          <TableLink
-            path={`/project/${projectId}/users/${encodeURIComponent(value)}`}
-            value={value}
-          />
+          <TableId value={value} />
         ) : undefined;
       },
       enableHiding: true,
@@ -374,10 +525,7 @@ export default function TracesTable({
       cell: ({ row }) => {
         const value: TracesTableRow["sessionId"] = row.getValue("sessionId");
         return value && typeof value === "string" ? (
-          <TableLink
-            path={`/project/${projectId}/sessions/${encodeURIComponent(value)}`}
-            value={value}
-          />
+          <TableId value={value} />
         ) : undefined;
       },
       enableHiding: true,
@@ -392,7 +540,9 @@ export default function TracesTable({
       cell: ({ row }) => {
         const value: TracesTableRow["latency"] = row.getValue("latency");
         if (!traceMetrics.data) return <Skeleton className="h-3 w-1/2" />;
-        return value !== undefined ? formatIntervalSeconds(value) : undefined;
+        return value !== undefined ? (
+          <span>{formatIntervalSeconds(value)}</span>
+        ) : undefined;
       },
       enableHiding: true,
       enableSorting: true,
@@ -632,6 +782,28 @@ export default function TracesTable({
       enableSorting: true,
     },
     {
+      accessorKey: "levelCounts",
+      id: "levelCounts",
+      header: "Observation Levels",
+      size: 75,
+      cell: ({ row }) => {
+        const value: TracesTableRow["levelCounts"] =
+          row.getValue("levelCounts");
+        if (!traceMetrics.data) return <Skeleton className="h-3 w-1/2" />;
+
+        const counts: LevelCount[] = Object.entries(value).map(
+          ([level, count]) => ({
+            level: formatAsLabel(level),
+            count,
+            symbol: LevelSymbols[formatAsLabel(level)],
+          }),
+        );
+
+        return <LevelCountsDisplay counts={counts} />;
+      },
+      enableHiding: true,
+    },
+    {
       accessorKey: "observationCount",
       id: "observationCount",
       header: "Observations",
@@ -708,15 +880,28 @@ export default function TracesTable({
       isPinned: true,
       cell: ({ row }) => {
         const traceId: TracesTableRow["id"] = row.getValue("id");
-        return traceId && typeof traceId === "string" ? (
-          <DeleteButton
-            itemId={traceId}
-            projectId={projectId}
-            scope="traces:delete"
-            invalidateFunc={() => void utils.traces.all.invalidate()}
-            type="trace"
-            isTableAction={true}
-          />
+        return traceId &&
+          typeof traceId === "string" &&
+          hasTraceDeletionEntitlement ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost">
+                <MoreVertical className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent>
+              <DropdownMenuItem asChild>
+                <DeleteButton
+                  itemId={traceId}
+                  projectId={projectId}
+                  scope="traces:delete"
+                  invalidateFunc={() => void utils.traces.all.invalidate()}
+                  type="trace"
+                  isTableAction={true}
+                />
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         ) : undefined;
       },
     },
@@ -747,12 +932,19 @@ export default function TracesTable({
             version: trace.version ?? undefined,
             userId: trace.userId ?? "",
             sessionId: trace.sessionId ?? undefined,
+            environment: trace.environment ?? undefined,
             latency: trace.latency === null ? undefined : trace.latency,
             tags: trace.tags,
             usage: {
               promptTokens: trace.promptTokens,
               completionTokens: trace.completionTokens,
               totalTokens: trace.totalTokens,
+            },
+            levelCounts: {
+              errorCount: trace.errorCount,
+              warningCount: trace.warningCount,
+              defaultCount: trace.defaultCount,
+              debugCount: trace.debugCount,
             },
             usageDetails: trace.usageDetails,
             costDetails: trace.costDetails,
@@ -775,7 +967,7 @@ export default function TracesTable({
         columns={columns}
         filterColumnDefinition={transformFilterOptions(traceFilterOptions.data)}
         searchConfig={{
-          placeholder: "Search by id, name, user id",
+          placeholder: "Search (by id, name, trace name, user id)",
           updateQuery: setSearchQuery,
           currentQuery: searchQuery ?? undefined,
         }}
@@ -786,15 +978,11 @@ export default function TracesTable({
           Object.keys(selectedRows).filter((traceId) =>
             traces.data?.traces.map((t) => t.id).includes(traceId),
           ).length > 0 ? (
-            <TraceTableMultiSelectAction
-              // Exclude traces that are not in the current page
-              selectedTraceIds={Object.keys(selectedRows).filter((traceId) =>
-                traces.data?.traces.map((t) => t.id).includes(traceId),
-              )}
+            <TableActionMenu
+              key="traces-multi-select-actions"
               projectId={projectId}
-              onDeleteSuccess={() => {
-                setSelectedRows({});
-              }}
+              actions={tableActions}
+              tableName={BatchExportTableName.Traces}
             />
           ) : null,
           <BatchExportTableButton
@@ -811,6 +999,21 @@ export default function TracesTable({
         setRowHeight={setRowHeight}
         selectedOption={selectedOption}
         setDateRangeAndOption={setDateRangeAndOption}
+        multiSelect={{
+          selectAll,
+          setSelectAll,
+          selectedRowIds: Object.keys(selectedRows).filter((traceId) =>
+            traces.data?.traces.map((t) => t.id).includes(traceId),
+          ),
+          setRowSelection: setSelectedRows,
+          totalCount,
+          ...paginationState,
+        }}
+        environmentFilter={{
+          values: selectedEnvironments,
+          onValueChange: setSelectedEnvironments,
+          options: environmentOptions.map((env) => ({ value: env })),
+        }}
       />
       <DataTable
         columns={columns}
@@ -843,6 +1046,96 @@ export default function TracesTable({
         columnOrder={columnOrder}
         onColumnOrderChange={setColumnOrder}
         rowHeight={rowHeight}
+        pinFirstColumn
+        peekView={{
+          itemType: "TRACE",
+          onOpenChange: (open: boolean, row?: TracesTableRow) => {
+            const url = new URL(window.location.href);
+            const params = new URLSearchParams(url.search);
+
+            if (!open || !row) {
+              // Remove peek and timestamp params while keeping others
+              params.delete("peek");
+              params.delete("timestamp");
+              params.delete("observation");
+              params.delete("display");
+            } else if (open && row.id && peekViewId !== row.id) {
+              // Update or add peek and timestamp params
+              params.set("peek", row.id);
+              params.set("timestamp", row.timestamp.toISOString());
+              params.delete("observation");
+            } else {
+              return;
+            }
+
+            router.replace(
+              {
+                pathname: `/project/${projectId}/traces`,
+                query: params.toString(),
+              },
+              undefined,
+              { shallow: true },
+            );
+          },
+          onExpand: (openInNewTab: boolean) => {
+            if (peekViewId) {
+              const url = new URL(window.location.href);
+              const params = new URLSearchParams(url.search);
+              const timestamp = params.get("timestamp");
+              const display = params.get("display") ?? "details";
+
+              if (openInNewTab) {
+                window.open(
+                  `/project/${projectId}/traces/${encodeURIComponent(peekViewId)}?timestamp=${timestamp}&display=${display}`,
+                  "_blank",
+                );
+              } else {
+                router.replace(
+                  `/project/${projectId}/traces/${encodeURIComponent(peekViewId)}?timestamp=${timestamp}&display=${display}`,
+                );
+              }
+            }
+          },
+          render: () => {
+            const { peek, timestamp } = router.query;
+
+            const trace = api.traces.byIdWithObservationsAndScores.useQuery(
+              {
+                traceId: peek as string,
+                timestamp:
+                  typeof timestamp === "string"
+                    ? new Date(timestamp)
+                    : undefined,
+                projectId,
+              },
+              {
+                enabled: !!peek && !!timestamp,
+                retry(failureCount, error) {
+                  if (
+                    error.data?.code === "UNAUTHORIZED" ||
+                    error.data?.code === "NOT_FOUND"
+                  )
+                    return false;
+                  return failureCount < 3;
+                },
+              },
+            );
+
+            return !trace.data ? (
+              <Skeleton className="h-full w-full" />
+            ) : (
+              <Trace
+                key={trace.data.id}
+                trace={trace.data}
+                scores={trace.data.scores}
+                projectId={trace.data.projectId}
+                observations={trace.data.observations}
+                selectedTab={selectedTab}
+                setSelectedTab={setSelectedTab}
+              />
+            );
+          },
+        }}
       />
     </>
   );
@@ -862,7 +1155,7 @@ const TracesDynamicCell = ({
   singleLine?: boolean;
 }) => {
   const trace = api.traces.byId.useQuery(
-    { traceId, projectId, queryClickhouse: useClickhouse(), timestamp },
+    { traceId, projectId, timestamp },
     {
       enabled: typeof traceId === "string",
       trpc: {

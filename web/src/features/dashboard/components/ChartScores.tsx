@@ -8,7 +8,6 @@ import {
   fillMissingValuesAndTransform,
   isEmptyTimeSeries,
 } from "@/src/features/dashboard/components/hooks";
-import { useClickhouse } from "@/src/components/layouts/ClickhouseAdminToggle";
 import { createTracesTimeFilter } from "@/src/features/dashboard/lib/dashboard-utils";
 import {
   dashboardDateRangeAggregationSettings,
@@ -22,6 +21,7 @@ export function ChartScores(props: {
   agg: DashboardDateRangeAggregationOption;
   globalFilterState: FilterState;
   projectId: string;
+  isLoading?: boolean;
 }) {
   const scores = api.dashboard.chart.useQuery(
     {
@@ -56,7 +56,6 @@ export function ChartScores(props: {
         { type: "string", column: "scoreDataType" },
         { type: "string", column: "scoreSource" },
       ],
-      queryClickhouse: useClickhouse(),
       queryName: "scores-aggregate-timeseries",
     },
     {
@@ -65,6 +64,7 @@ export function ChartScores(props: {
           skipBatch: true,
         },
       },
+      enabled: !props.isLoading,
     },
   );
 
@@ -95,7 +95,7 @@ export function ChartScores(props: {
       className={props.className}
       title="Scores"
       description="Moving average per score"
-      isLoading={scores.isLoading}
+      isLoading={props.isLoading || scores.isLoading}
     >
       {!isEmptyTimeSeries({ data: extractedScores }) ? (
         <BaseTimeSeriesChart
@@ -105,7 +105,7 @@ export function ChartScores(props: {
         />
       ) : (
         <NoDataOrLoading
-          isLoading={scores.isLoading}
+          isLoading={props.isLoading || scores.isLoading}
           description="Scores evaluate LLM quality and can be created manually or using the SDK."
           href="https://langfuse.com/docs/scores"
           className="h-full"

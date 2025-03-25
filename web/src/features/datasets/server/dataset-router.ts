@@ -1,26 +1,14 @@
 import { z } from "zod";
-
 import {
   createTRPCRouter,
   protectedProjectProcedure,
 } from "@/src/server/api/trpc";
-import {
-  type DatasetRuns,
-  Prisma,
-  type Dataset,
-} from "@langfuse/shared/src/db";
+import { Prisma, type Dataset } from "@langfuse/shared/src/db";
 import { throwIfNoProjectAccess } from "@/src/features/rbac/utils/checkProjectAccess";
 import { auditLog } from "@/src/features/audit-logs/auditLog";
 import { DB } from "@/src/server/db";
-import {
-  type PrismaClient,
-  type ScoreAggregate,
-  type ScoreSimplified,
-  filterAndValidateDbScoreList,
-  paginationZod,
-} from "@langfuse/shared";
-import { aggregateScores } from "@/src/features/scores/lib/aggregateScores";
-import { measureAndReturnApi } from "@/src/server/utils/checkClickhouseAccess";
+import { paginationZod, DatasetStatus, singleFilter } from "@langfuse/shared";
+import { TRPCError } from "@trpc/server";
 import {
   createDatasetRunsTable,
   createDatasetRunsTableWithoutMetrics,
@@ -28,9 +16,40 @@ import {
   fetchDatasetItems,
   getRunItemsByRunIdOrItemId,
 } from "@/src/features/datasets/server/service";
-import { traceException } from "@langfuse/shared/src/server";
+import { getDatasetItemsTableCount, logger } from "@langfuse/shared/src/server";
+import { createId as createCuid } from "@paralleldrive/cuid2";
+
+const formatDatasetItemData = (data: string | null | undefined) => {
+  if (data === "") return Prisma.DbNull;
+  try {
+    return !!data ? (JSON.parse(data) as Prisma.InputJsonObject) : undefined;
+  } catch (e) {
+    logger.info(
+      "[trpc.datasets.formatDatasetItemData] failed to parse dataset item data",
+      e,
+    );
+    return undefined;
+  }
+};
 
 export const datasetRouter = createTRPCRouter({
+  hasAny: protectedProjectProcedure
+    .input(
+      z.object({
+        projectId: z.string(),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      const dataset = await ctx.prisma.dataset.findFirst({
+        where: {
+          projectId: input.projectId,
+        },
+        select: { id: true },
+        take: 1,
+      });
+
+      return dataset !== null;
+    }),
   allDatasetMeta: protectedProjectProcedure
     .input(z.object({ projectId: z.string() }))
     .query(async ({ input, ctx }) => {
@@ -110,6 +129,21 @@ export const datasetRouter = createTRPCRouter({
         datasets,
       };
     }),
+  countAllDatasetItems: protectedProjectProcedure
+    .input(
+      z.object({
+        projectId: z.string(), // Required for protectedProjectProcedure
+        filter: z.array(singleFilter).nullable(),
+      }),
+    )
+    .query(async ({ input }) => {
+      const count = await getDatasetItemsTableCount({
+        projectId: input.projectId,
+        filter: input.filter ?? [],
+      });
+
+      return count;
+    }),
   byId: protectedProjectProcedure
     .input(
       z.object({
@@ -163,64 +197,42 @@ export const datasetRouter = createTRPCRouter({
   runsByDatasetId: protectedProjectProcedure
     .input(datasetRunsTableSchema)
     .query(async ({ input, ctx }) => {
-      return await measureAndReturnApi({
-        input,
-        operation: "datasets.runsByDatasetId",
-        user: ctx.session.user,
-        pgExecution: async () => {
-          return await runsByDatasetIdPg(ctx.prisma, input);
-        },
-        clickhouseExecution: async () => {
-          // we cannot easily join all the tracing data with the dataset run items
-          // hence, we pull the trace_ids and observation_ids separately for all run items
-          // afterwards, we aggregate them per run
+      // we cannot easily join all the tracing data with the dataset run items
+      // hence, we pull the trace_ids and observation_ids separately for all run items
+      // afterwards, we aggregate them per run
+      const runs = await createDatasetRunsTableWithoutMetrics(input);
 
-          const runs = await createDatasetRunsTableWithoutMetrics(input);
-
-          const totalRuns = await ctx.prisma.datasetRuns.count({
-            where: {
-              datasetId: input.datasetId,
-              projectId: input.projectId,
-            },
-          });
-
-          return {
-            totalRuns,
-            runs,
-          };
+      const totalRuns = await ctx.prisma.datasetRuns.count({
+        where: {
+          datasetId: input.datasetId,
+          projectId: input.projectId,
         },
       });
+
+      return {
+        totalRuns,
+        runs,
+      };
     }),
   runsByDatasetIdMetrics: protectedProjectProcedure
     .input(datasetRunsTableSchema)
     .query(async ({ input, ctx }) => {
-      return await measureAndReturnApi({
-        input,
-        operation: "datasets.runsByDatasetId",
-        user: ctx.session.user,
-        pgExecution: async () => {
-          return await runsByDatasetIdPg(ctx.prisma, input);
-        },
-        clickhouseExecution: async () => {
-          // we cannot easily join all the tracing data with the dataset run items
-          // hence, we pull the trace_ids and observation_ids separately for all run items
-          // afterwards, we aggregate them per run
+      // we cannot easily join all the tracing data with the dataset run items
+      // hence, we pull the trace_ids and observation_ids separately for all run items
+      // afterwards, we aggregate them per run
+      const runs = await createDatasetRunsTable(input);
 
-          const runs = await createDatasetRunsTable(input);
-
-          const totalRuns = await ctx.prisma.datasetRuns.count({
-            where: {
-              datasetId: input.datasetId,
-              projectId: input.projectId,
-            },
-          });
-
-          return {
-            totalRuns,
-            runs,
-          };
+      const totalRuns = await ctx.prisma.datasetRuns.count({
+        where: {
+          datasetId: input.datasetId,
+          projectId: input.projectId,
         },
       });
+
+      return {
+        totalRuns,
+        runs,
+      };
     }),
   itemById: protectedProjectProcedure
     .input(
@@ -458,6 +470,60 @@ export const datasetRouter = createTRPCRouter({
       });
       return deletedDataset;
     }),
+  deleteDatasetItem: protectedProjectProcedure
+    .input(
+      z.object({
+        projectId: z.string(),
+        datasetId: z.string(),
+        datasetItemId: z.string(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      throwIfNoProjectAccess({
+        session: ctx.session,
+        projectId: input.projectId,
+        scope: "datasets:CUD",
+      });
+
+      // First get the item to use in audit log
+      const item = await ctx.prisma.datasetItem.findUnique({
+        where: {
+          id_projectId: {
+            id: input.datasetItemId,
+            projectId: input.projectId,
+          },
+          datasetId: input.datasetId,
+        },
+      });
+
+      if (!item) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Dataset item not found",
+        });
+      }
+
+      // Delete the dataset item
+      const deletedItem = await ctx.prisma.datasetItem.delete({
+        where: {
+          id_projectId: {
+            id: input.datasetItemId,
+            projectId: input.projectId,
+          },
+          datasetId: input.datasetId,
+        },
+      });
+
+      await auditLog({
+        session: ctx.session,
+        resourceType: "datasetItem",
+        resourceId: deletedItem.id,
+        action: "delete",
+        before: item,
+      });
+
+      return deletedItem;
+    }),
   duplicateDataset: protectedProjectProcedure
     .input(
       z.object({
@@ -487,7 +553,10 @@ export const datasetRouter = createTRPCRouter({
         },
       });
       if (!dataset) {
-        throw new Error("Dataset not found");
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Dataset not found",
+        });
       }
 
       // find a unique name for the new dataset
@@ -550,6 +619,7 @@ export const datasetRouter = createTRPCRouter({
 
       return { id: newDataset.id };
     }),
+
   createDatasetItem: protectedProjectProcedure
     .input(
       z.object({
@@ -577,29 +647,17 @@ export const datasetRouter = createTRPCRouter({
         },
       });
       if (!dataset) {
-        throw new Error("Dataset not found");
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Dataset not found",
+        });
       }
 
       const datasetItem = await ctx.prisma.datasetItem.create({
         data: {
-          input:
-            input.input === ""
-              ? Prisma.DbNull
-              : !!input.input
-                ? (JSON.parse(input.input) as Prisma.InputJsonObject)
-                : undefined,
-          expectedOutput:
-            input.expectedOutput === ""
-              ? Prisma.DbNull
-              : !!input.expectedOutput
-                ? (JSON.parse(input.expectedOutput) as Prisma.InputJsonObject)
-                : undefined,
-          metadata:
-            input.metadata === ""
-              ? Prisma.DbNull
-              : !!input.metadata
-                ? (JSON.parse(input.metadata) as Prisma.InputJsonObject)
-                : undefined,
+          input: formatDatasetItemData(input.input),
+          expectedOutput: formatDatasetItemData(input.expectedOutput),
+          metadata: formatDatasetItemData(input.metadata),
           datasetId: input.datasetId,
           sourceTraceId: input.sourceTraceId,
           sourceObservationId: input.sourceObservationId,
@@ -615,6 +673,79 @@ export const datasetRouter = createTRPCRouter({
       });
       return datasetItem;
     }),
+
+  createManyDatasetItems: protectedProjectProcedure
+    .input(
+      z.object({
+        projectId: z.string(),
+        items: z.array(
+          z.object({
+            datasetId: z.string(),
+            input: z.string().nullish(),
+            expectedOutput: z.string().nullish(),
+            metadata: z.string().nullish(),
+            sourceTraceId: z.string().optional(),
+            sourceObservationId: z.string().optional(),
+          }),
+        ),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      throwIfNoProjectAccess({
+        session: ctx.session,
+        projectId: input.projectId,
+        scope: "datasets:CUD",
+      });
+
+      // Verify all datasets exist and belong to the project
+      const datasetIds = [
+        ...new Set(input.items.map((item) => item.datasetId)),
+      ];
+      const datasets = await ctx.prisma.dataset.findMany({
+        where: {
+          id: { in: datasetIds },
+          projectId: input.projectId,
+        },
+      });
+
+      if (datasets.length !== datasetIds.length) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "One or more datasets not found",
+        });
+      }
+
+      const itemsWithIds = input.items.map((item) => ({
+        id: createCuid(),
+        input: formatDatasetItemData(item.input),
+        expectedOutput: formatDatasetItemData(item.expectedOutput),
+        metadata: formatDatasetItemData(item.metadata),
+        datasetId: item.datasetId,
+        sourceTraceId: item.sourceTraceId,
+        sourceObservationId: item.sourceObservationId,
+        projectId: input.projectId,
+        status: DatasetStatus.ACTIVE,
+      }));
+
+      await ctx.prisma.datasetItem.createMany({
+        data: itemsWithIds,
+      });
+
+      await Promise.all(
+        itemsWithIds.map(async (item) =>
+          auditLog({
+            session: ctx.session,
+            resourceType: "datasetItem",
+            resourceId: item.id,
+            action: "create",
+            after: item,
+          }),
+        ),
+      );
+
+      return;
+    }),
+
   runitemsByRunIdOrItemId: protectedProjectProcedure
     .input(
       z
@@ -622,7 +753,6 @@ export const datasetRouter = createTRPCRouter({
           projectId: z.string(),
           datasetRunId: z.string().optional(),
           datasetItemId: z.string().optional(),
-          queryClickhouse: z.boolean().optional().default(false),
           ...paginationZod,
         })
         .refine(
@@ -651,6 +781,7 @@ export const datasetRouter = createTRPCRouter({
           datasetItemId: string;
           projectId: string;
           datasetRunId: string;
+          datasetRunName: string;
         }>
       >`
         SELECT 
@@ -662,11 +793,15 @@ export const datasetRouter = createTRPCRouter({
           dri.created_at AS "createdAt",
           dri.updated_at AS "updatedAt",
           dri.project_id AS "projectId",
-          dri.dataset_run_id AS "datasetRunId"
+          dri.dataset_run_id AS "datasetRunId",
+          dr.name AS "datasetRunName"
         FROM dataset_run_items dri
         INNER JOIN dataset_items di
           ON dri.dataset_item_id = di.id 
           AND dri.project_id = di.project_id
+        INNER JOIN dataset_runs dr
+          ON dri.dataset_run_id = dr.id
+          AND dri.project_id = dr.project_id
         WHERE 
           dri.project_id = ${input.projectId}
           ${filterQuery}
@@ -686,107 +821,26 @@ export const datasetRouter = createTRPCRouter({
         },
       });
 
-      return await measureAndReturnApi({
-        input,
-        operation: "datasets.runitemsByRunIdOrItemId",
-        user: ctx.session.user,
-        pgExecution: async () => {
-          const traceScores = await ctx.prisma.score.findMany({
-            where: {
-              projectId: ctx.session.projectId,
-              traceId: {
-                in: runItems.map((ri) => ri.traceId),
-              },
-            },
-          });
-
-          const observations = await ctx.prisma.observationView.findMany({
-            where: {
-              id: {
-                in: runItems
-                  .map((ri) => ri.observationId)
-                  .filter(Boolean) as string[],
-              },
-              projectId: ctx.session.projectId,
-            },
-            select: {
-              id: true,
-              latency: true,
-              calculatedTotalCost: true,
-            },
-          });
-
-          // Directly access 'traces' table and calculate duration via lateral join
-          // Previously used 'traces_view' was not performant enough
-          const traceIdsSQL = Prisma.sql`ARRAY[${Prisma.join(runItems.map((ri) => ri.traceId))}]`;
-          const traces = await ctx.prisma.$queryRaw<
-            {
-              id: string;
-              duration: number;
-              totalCost: number;
-            }[]
-          >(
-            Prisma.sql`
-            SELECT
-              t.id,
-              o.duration,
-              o.total_cost as "totalCost"
-            FROM
-              traces t
-              LEFT JOIN LATERAL (
-                SELECT
-                  EXTRACT(epoch FROM COALESCE(max(o1.end_time), max(o1.start_time)))::double precision - EXTRACT(epoch FROM min(o1.start_time))::double precision AS duration,
-                  SUM(COALESCE(o1.calculated_total_cost, 0))::double precision AS total_cost
-                FROM
-                  -- Use observations_view as cost are not backfilled for self-hosters. Once V3 is migration is done, we can use observations instead
-                  observations_view o1
-                WHERE
-                  o1.project_id = ${input.projectId}
-                  AND o1.trace_id = t.id
-                GROUP BY
-                  o1.project_id,
-                  o1.trace_id) o ON TRUE
-            WHERE
-              t.project_id = ${input.projectId}
-              AND t.id = ANY(${traceIdsSQL})        
-        `,
-          );
-
-          const validatedTraceScores = filterAndValidateDbScoreList(
-            traceScores,
-            traceException,
-          );
-
-          const items = runItems.map((ri) => {
-            return {
-              id: ri.id,
-              createdAt: ri.createdAt,
-              datasetItemId: ri.datasetItemId,
-              observation: observations.find((o) => o.id === ri.observationId),
-              trace: traces.find((t) => t.id === ri.traceId),
-              scores: aggregateScores(
-                validatedTraceScores.filter((s) => s.traceId === ri.traceId),
-              ),
-            };
-          });
-
-          // Note: We early return in case of no run items, when adding parameters here, make sure to update the early return above
-          return {
-            totalRunItems,
-            runItems: items,
-          };
+      // Add scores to the run items while also keeping the datasetRunName
+      const runItemNameMap = runItems.reduce(
+        (map, item) => {
+          map[item.id] = item.datasetRunName;
+          return map;
         },
-        clickhouseExecution: async () => {
-          // Note: We early return in case of no run items, when adding parameters here, make sure to update the early return above
-          return {
-            totalRunItems,
-            runItems: await getRunItemsByRunIdOrItemId(
-              input.projectId,
-              runItems,
-            ),
-          };
-        },
-      });
+        {} as Record<string, string>,
+      );
+      const parsedRunItems = (
+        await getRunItemsByRunIdOrItemId(input.projectId, runItems)
+      ).map((ri) => ({
+        ...ri,
+        datasetRunName: runItemNameMap[ri.id],
+      }));
+
+      // Note: We early return in case of no run items, when adding parameters here, make sure to update the early return above
+      return {
+        totalRunItems,
+        runItems: parsedRunItems,
+      };
     }),
   datasetItemsBasedOnTraceOrObservation: protectedProjectProcedure
     .input(
@@ -819,11 +873,11 @@ export const datasetRouter = createTRPCRouter({
         },
       });
     }),
-  deleteDatasetRun: protectedProjectProcedure
+  deleteDatasetRuns: protectedProjectProcedure
     .input(
       z.object({
         projectId: z.string(),
-        datasetRunId: z.string(),
+        datasetRunIds: z.array(z.string()),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -833,179 +887,33 @@ export const datasetRouter = createTRPCRouter({
         scope: "datasets:CUD",
       });
 
-      const deletedDatasetRun = await ctx.prisma.datasetRuns.delete({
+      // Get all dataset runs first for audit logging
+      const datasetRuns = await ctx.prisma.datasetRuns.findMany({
         where: {
-          id_projectId: {
-            id: input.datasetRunId,
-            projectId: input.projectId,
-          },
+          id: { in: input.datasetRunIds },
+          projectId: input.projectId,
         },
       });
-      await auditLog({
-        session: ctx.session,
-        resourceType: "datasetRun",
-        resourceId: deletedDatasetRun.id,
-        action: "delete",
-        before: deletedDatasetRun,
+
+      // Delete all dataset runs
+      await ctx.prisma.datasetRuns.deleteMany({
+        where: {
+          id: { in: input.datasetRunIds },
+          projectId: input.projectId,
+        },
       });
-      return deletedDatasetRun;
+
+      // Log audit entries for each deleted run
+      await Promise.all(
+        datasetRuns.map((run) =>
+          auditLog({
+            session: ctx.session,
+            resourceType: "datasetRun",
+            resourceId: run.id,
+            action: "delete",
+            before: run,
+          }),
+        ),
+      );
     }),
 });
-
-async function runsByDatasetIdPg(
-  prisma: PrismaClient,
-  input: {
-    projectId: string;
-    datasetId: string;
-    queryClickhouse: boolean;
-    page?: number;
-    limit?: number;
-    runIds?: string[];
-  },
-) {
-  const scoresByRunId = await prisma.$queryRaw<
-    Array<{ scores: Array<ScoreSimplified>; runId: string }>
-  >(Prisma.sql`
-        SELECT
-          runs.id "runId",
-          array_agg(s.score) AS "scores"
-        FROM
-          dataset_runs runs
-          JOIN datasets ON datasets.id = runs.dataset_id AND datasets.project_id = ${input.projectId}
-          LEFT JOIN LATERAL (
-              SELECT
-              jsonb_build_object ('name', s.name, 'stringValue', s.string_value, 'value', s.value, 'source', s."source", 'dataType', s.data_type, 'comment', s.comment) AS "score"
-              FROM
-                dataset_run_items ri
-                JOIN scores s 
-                  ON s.trace_id = ri.trace_id 
-                  AND (ri.observation_id IS NULL OR s.observation_id = ri.observation_id)
-                  AND s.project_id = ${input.projectId}
-                JOIN traces t ON t.id = s.trace_id AND t.project_id = ${input.projectId}
-              WHERE 
-                ri.project_id = ${input.projectId}
-                AND ri.dataset_run_id = runs.id
-          ) s ON true
-        WHERE 
-          runs.dataset_id = ${input.datasetId}
-          AND runs.project_id = ${input.projectId}
-          AND s.score IS NOT NULL
-          ${input.runIds ? Prisma.sql`AND runs.id IN (${Prisma.join(input.runIds)})` : Prisma.empty}  
-        GROUP BY
-          runs.id
-        ${input.limit ? Prisma.sql`LIMIT ${input.limit}` : Prisma.empty}
-        ${input.page && input.limit ? Prisma.sql`OFFSET ${input.page * input.limit}` : Prisma.empty}
-      `);
-
-  const runs = await prisma.$queryRaw<
-    Array<
-      DatasetRuns & {
-        avgLatency: number | undefined;
-        avgTotalCost: Prisma.Decimal | undefined;
-        countRunItems: number;
-      }
-    >
-  >(Prisma.sql`
-        SELECT
-          runs.id,
-          runs.name,
-          runs.description,
-          runs.metadata,
-          runs.created_at "createdAt",
-          runs.updated_at "updatedAt",
-          COALESCE(o_latency_and_total_cost. "o_avgLatency", t_latency_and_total_cost."t_avgLatency", 0) "avgLatency",
-          COALESCE(o_latency_and_total_cost. "o_avgTotalCost", t_latency_and_total_cost."t_avgTotalCost", 0) "avgTotalCost",
-          COALESCE(run_items_count.count, 0)::int "countRunItems"
-        FROM
-          dataset_runs runs
-          JOIN datasets ON datasets.id = runs.dataset_id
-            AND datasets.project_id = ${input.projectId}
-            
-          -- Add average latency and cost if a run's items are linked to observations 
-          -- LIMITATION: this will only work if all items for a given run are linked to either observations or traces
-          -- If a run has items linked to both observations and traces, the average latency and cost will be incorrect as only those from the observations will be used
-          LEFT JOIN LATERAL (
-            SELECT
-              AVG(o.latency) AS "o_avgLatency",
-              AVG(COALESCE(o.calculated_total_cost, 0)) AS "o_avgTotalCost"
-            FROM
-              dataset_run_items ri
-              JOIN observations_view o ON o.id = ri.observation_id
-                AND o.project_id = ${input.projectId}
-            WHERE
-              ri.project_id = ${input.projectId}
-              AND ri.dataset_run_id = runs.id) o_latency_and_total_cost ON TRUE
-              
-          -- Add average latency and cost if run's items are linked to traces
-          LEFT JOIN LATERAL (
-            -- Average across run items. One run has many items
-            SELECT
-              AVG(trace_latency_cost.duration) AS "t_avgLatency", 
-              AVG(trace_latency_cost.total_cost) AS "t_avgTotalCost"
-            FROM
-              dataset_run_items ri
-              LEFT JOIN LATERAL (
-                -- Latency and cost for a run item's trace
-                SELECT
-                  t.id,
-                  o.duration,
-                  o.total_cost 
-                FROM
-                  traces t
-                  LEFT JOIN LATERAL (
-                    -- Latency and cost across a trace's observations
-                    SELECT
-                      EXTRACT(epoch FROM COALESCE(max(o1.end_time), max(o1.start_time)))::double precision - EXTRACT(epoch FROM min(o1.start_time))::double precision AS duration,
-                      SUM(COALESCE(o1.calculated_total_cost, 0)) AS total_cost
-                    FROM
-                      -- Use observations_view as cost are not backfilled for self-hosters. Once V3 is migration is done, we can use observations instead
-                      observations_view o1
-                    WHERE
-                      o1.project_id = ${input.projectId}
-                      AND o1.trace_id = t.id
-                    GROUP BY
-                      o1.project_id,
-                      o1.trace_id) o ON TRUE
-                  WHERE
-                    t.project_id = ${input.projectId}
-                    AND t.id = ri.trace_id) trace_latency_cost ON TRUE
-                WHERE
-                  ri.project_id = ${input.projectId}
-                  AND ri.dataset_run_id = runs.id) t_latency_and_total_cost ON TRUE
-                  
-          -- Add run item counts
-          LEFT JOIN LATERAL (
-            SELECT
-              count(*) AS count
-            FROM
-              dataset_run_items ri
-            WHERE
-              ri.dataset_run_id = runs.id
-              AND ri.project_id = ${input.projectId}) run_items_count ON TRUE
-        WHERE
-          runs.dataset_id = ${input.datasetId}
-          AND runs.project_id = ${input.projectId}
-          ${input.runIds ? Prisma.sql`AND runs.id IN (${Prisma.join(input.runIds)})` : Prisma.empty}
-        ORDER BY
-          runs.created_at DESC
-        ${input.limit ? Prisma.sql`LIMIT ${input.limit}` : Prisma.empty}
-        ${input.page && input.limit ? Prisma.sql`OFFSET ${input.page * input.limit}` : Prisma.empty}
-      `);
-
-  const totalRuns = await prisma.datasetRuns.count({
-    where: {
-      datasetId: input.datasetId,
-      projectId: input.projectId,
-    },
-  });
-
-  return {
-    totalRuns,
-    runs: runs.map((run) => ({
-      ...run,
-      scores: aggregateScores(
-        scoresByRunId.flatMap((s) => (s.runId === run.id ? s.scores : [])),
-      ) as ScoreAggregate | undefined,
-    })),
-  };
-}

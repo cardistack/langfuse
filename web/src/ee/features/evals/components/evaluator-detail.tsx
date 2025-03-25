@@ -1,5 +1,4 @@
 import * as React from "react";
-import Header from "@/src/components/layouts/header";
 import { type RouterOutputs, api } from "@/src/utils/api";
 import { useRouter } from "next/router";
 import { EvaluatorForm } from "@/src/ee/features/evals/components/evaluator-form";
@@ -14,8 +13,6 @@ import { useState } from "react";
 import TableLink from "@/src/components/table/table-link";
 import EvalLogTable from "@/src/ee/features/evals/components/eval-log";
 import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePostHogClientCapture";
-import { FullScreenPage } from "@/src/components/layouts/full-screen-page";
-import { TableWithMetadataWrapper } from "@/src/components/table/TableWithMetadataWrapper";
 import { StatusBadge } from "@/src/components/layouts/status-badge";
 import { DetailPageNav } from "@/src/features/navigate-detail-pages/DetailPageNav";
 import { CardDescription } from "@/src/components/ui/card";
@@ -28,6 +25,31 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/src/components/ui/dialog";
+import Page from "@/src/components/layouts/page";
+import {
+  SidePanel,
+  SidePanelHeader,
+  SidePanelTitle,
+} from "@/src/components/ui/side-panel";
+import { SidePanelContent } from "@/src/components/ui/side-panel";
+import { LevelCountsDisplay } from "@/src/components/level-counts-display";
+import {
+  type JobExecutionState,
+  generateJobExecutionCounts,
+} from "@/src/ee/features/evals/utils/job-execution-utils";
+
+const JobExecutionCounts = ({
+  jobExecutionsByState,
+}: {
+  jobExecutionsByState?: JobExecutionState[];
+}) => {
+  if (!jobExecutionsByState || jobExecutionsByState.length === 0) {
+    return null;
+  }
+
+  const counts = generateJobExecutionCounts(jobExecutionsByState);
+  return <LevelCountsDisplay counts={counts} />;
+};
 
 export const EvaluatorDetail = () => {
   const router = useRouter();
@@ -59,7 +81,7 @@ export const EvaluatorDetail = () => {
     allTemplates.isLoading ||
     !allTemplates.data
   ) {
-    return <div>Loading...</div>;
+    return <div className="p-3">Loading...</div>;
   }
 
   if (evaluator.data && evaluator.data.evalTemplate === null) {
@@ -68,27 +90,41 @@ export const EvaluatorDetail = () => {
 
   const existingEvaluator =
     evaluator.data && evaluator.data.evalTemplate
-      ? { ...evaluator.data, evalTemplate: evaluator.data.evalTemplate }
+      ? {
+          ...evaluator.data,
+          evalTemplate: evaluator.data.evalTemplate,
+        }
       : undefined;
 
   return (
-    <FullScreenPage>
-      <Header
-        title={evaluator.data ? `Evaluator ${evaluator.data.id}` : "Loading..."}
-        breadcrumb={[
+    <Page
+      headerProps={{
+        title: evaluator.data
+          ? `${evaluator.data.scoreName}: ${evaluator.data.id}`
+          : "Loading...",
+        itemType: "EVALUATOR",
+        breadcrumb: [
           {
             name: "Evaluators",
             href: `/project/${router.query.projectId as string}/evals`,
           },
-          { name: evaluator.data?.id },
-        ]}
-        actionButtons={
+        ],
+
+        actionButtonsRight: (
           <>
+            {evaluator.data?.jobExecutionsByState && (
+              <div className="flex flex-col items-center justify-center rounded-md bg-muted-gray px-2">
+                <JobExecutionCounts
+                  jobExecutionsByState={evaluator.data.jobExecutionsByState}
+                />
+              </div>
+            )}
             <StatusBadge
-              type={evaluator.data?.status.toLowerCase()}
+              type={evaluator.data?.finalStatus.toLowerCase()}
               isLive
               className="max-h-8"
             />
+
             <DeactivateEvaluator
               projectId={projectId}
               evaluator={evaluator.data ?? undefined}
@@ -105,22 +141,26 @@ export const EvaluatorDetail = () => {
               />
             )}
           </>
-        }
-      />
+        ),
+      }}
+    >
       {existingEvaluator && (
-        <TableWithMetadataWrapper
-          tableComponent={
+        <div className="grid flex-1 grid-cols-[1fr,auto] overflow-hidden">
+          <div className="flex h-full flex-col overflow-hidden">
             <EvalLogTable
               projectId={projectId}
               jobConfigurationId={existingEvaluator.id}
             />
-          }
-          cardTitleChildren={
-            <div className="flex w-full flex-row items-center justify-between">
-              <span>Evaluator configuration</span>
+          </div>
+          <SidePanel
+            mobileTitle="Evaluator configuration"
+            id="evaluator-configuration"
+          >
+            <SidePanelHeader>
+              <SidePanelTitle>Evaluator configuration</SidePanelTitle>
               <Dialog open={isEditOpen} onOpenChange={setIsEditOpen}>
                 <DialogTrigger asChild>
-                  <Button variant="outline" className="flex items-center gap-2">
+                  <Button variant="outline" size="icon">
                     <Edit className="h-4 w-4" />
                   </Button>
                 </DialogTrigger>
@@ -143,33 +183,35 @@ export const EvaluatorDetail = () => {
                   </div>
                 </DialogContent>
               </Dialog>
-            </div>
-          }
-          cardContentChildren={
-            <>
-              <CardDescription className="flex items-center justify-between text-sm">
-                <span className="text-sm font-medium">Eval Template</span>
-                <TableLink
-                  path={`/project/${projectId}/evals/templates/${existingEvaluator.evalTemplateId}`}
-                  value={`${existingEvaluator.evalTemplate.name} (v${existingEvaluator.evalTemplate.version})`}
-                  className="flex min-h-6 items-center"
-                />
-              </CardDescription>
-              <div className="flex w-full flex-col items-start justify-between space-y-2 pb-4">
-                <EvaluatorForm
-                  key={existingEvaluator.id}
-                  projectId={projectId}
-                  evalTemplates={allTemplates.data?.templates}
-                  existingEvaluator={existingEvaluator}
-                  disabled={true}
-                  shouldWrapVariables={true}
-                />
-              </div>
-            </>
-          }
-        />
+            </SidePanelHeader>
+            <SidePanelContent>
+              <>
+                <CardDescription className="flex items-center justify-between text-sm">
+                  <span className="mr-2 text-sm font-medium">
+                    Eval Template
+                  </span>
+                  <TableLink
+                    path={`/project/${projectId}/evals/templates/${existingEvaluator.evalTemplateId}`}
+                    value={`${existingEvaluator.evalTemplate.name} (v${existingEvaluator.evalTemplate.version})`}
+                    className="flex min-h-6 items-center"
+                  />
+                </CardDescription>
+                <div className="flex max-h-[80dvh] w-full flex-col items-start justify-between space-y-2 overflow-y-auto pb-4">
+                  <EvaluatorForm
+                    key={existingEvaluator.id}
+                    projectId={projectId}
+                    evalTemplates={allTemplates.data?.templates}
+                    existingEvaluator={existingEvaluator}
+                    disabled={true}
+                    shouldWrapVariables={true}
+                  />
+                </div>
+              </>
+            </SidePanelContent>
+          </SidePanel>
+        </div>
       )}
-    </FullScreenPage>
+    </Page>
   );
 };
 
@@ -221,7 +263,11 @@ export function DeactivateEvaluator({
       <PopoverTrigger asChild>
         <div className="flex items-center">
           <Switch
-            disabled={!hasAccess}
+            disabled={
+              !hasAccess ||
+              (evaluator?.timeScope?.length === 1 &&
+                evaluator.timeScope[0] === "EXISTING")
+            }
             checked={isActive}
             className={isActive ? "data-[state=checked]:bg-dark-green" : ""}
           />

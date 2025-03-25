@@ -1,7 +1,6 @@
 import { api } from "@/src/utils/api";
 import { type FilterState } from "@langfuse/shared";
 import {
-  getAllModels,
   extractTimeSeriesData,
   fillMissingValuesAndTransform,
   isEmptyTimeSeries,
@@ -15,19 +14,33 @@ import {
   type DashboardDateRangeAggregationOption,
 } from "@/src/utils/date-range-utils";
 import { NoDataOrLoading } from "@/src/components/NoDataOrLoading";
-import { useClickhouse } from "@/src/components/layouts/ClickhouseAdminToggle";
+import {
+  ModelSelectorPopover,
+  useModelSelection,
+} from "@/src/features/dashboard/components/ModelSelector";
 
 export const GenerationLatencyChart = ({
   className,
   projectId,
   globalFilterState,
   agg,
+  isLoading = false,
 }: {
   className?: string;
   projectId: string;
   globalFilterState: FilterState;
   agg: DashboardDateRangeAggregationOption;
+  isLoading?: boolean;
 }) => {
+  const {
+    allModels,
+    selectedModels,
+    setSelectedModels,
+    isAllSelected,
+    buttonText,
+    handleSelectAll,
+  } = useModelSelection(projectId, globalFilterState);
+
   const latencies = api.dashboard.chart.useQuery(
     {
       projectId,
@@ -48,6 +61,12 @@ export const GenerationLatencyChart = ({
           operator: "=",
           value: "GENERATION",
         },
+        {
+          type: "stringOptions",
+          column: "model",
+          operator: "any of",
+          value: selectedModels,
+        } as const,
       ],
       groupBy: [
         {
@@ -57,10 +76,10 @@ export const GenerationLatencyChart = ({
         },
         { type: "string", column: "model" },
       ],
-      queryClickhouse: useClickhouse(),
       queryName: "model-latencies-over-time",
     },
     {
+      enabled: !isLoading && selectedModels.length > 0 && allModels.length > 0,
       trpc: {
         context: {
           skipBatch: true,
@@ -69,10 +88,8 @@ export const GenerationLatencyChart = ({
     },
   );
 
-  const allModels = getAllModels(projectId, globalFilterState, useClickhouse());
-
   const getData = (valueColumn: string) => {
-    return latencies.data && allModels.length > 0
+    return latencies.data && selectedModels.length > 0
       ? fillMissingValuesAndTransform(
           extractTimeSeriesData(latencies.data, "startTime", [
             {
@@ -80,7 +97,7 @@ export const GenerationLatencyChart = ({
               valueColumn: valueColumn,
             },
           ]),
-          allModels,
+          selectedModels,
         )
       : [];
   };
@@ -113,7 +130,19 @@ export const GenerationLatencyChart = ({
       className={className}
       title="Model latencies"
       description="Latencies (seconds) per LLM generation"
-      isLoading={latencies.isLoading}
+      isLoading={isLoading || (latencies.isLoading && selectedModels.length > 0)}
+      headerRight={
+        <div className="flex items-center justify-end">
+          <ModelSelectorPopover
+            allModels={allModels}
+            selectedModels={selectedModels}
+            setSelectedModels={setSelectedModels}
+            buttonText={buttonText}
+            isAllSelected={isAllSelected}
+            handleSelectAll={handleSelectAll}
+          />
+        </div>
+      }
     >
       <TabComponent
         tabs={data.map((item) => {
@@ -129,7 +158,7 @@ export const GenerationLatencyChart = ({
                     valueFormatter={latencyFormatter}
                   />
                 ) : (
-                  <NoDataOrLoading isLoading={latencies.isLoading} />
+                  <NoDataOrLoading isLoading={isLoading || latencies.isLoading} />
                 )}
               </>
             ),

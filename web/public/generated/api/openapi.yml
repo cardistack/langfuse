@@ -24,6 +24,391 @@ info:
     - Postman collection:
     https://cloud.langfuse.com/generated/postman/collection.json
 paths:
+  /api/public/annotation-queues:
+    get:
+      description: Get all annotation queues
+      operationId: annotationQueues_listQueues
+      tags:
+        - AnnotationQueues
+      parameters:
+        - name: page
+          in: query
+          description: page number, starts at 1
+          required: false
+          schema:
+            type: integer
+            nullable: true
+        - name: limit
+          in: query
+          description: limit of items per page
+          required: false
+          schema:
+            type: integer
+            nullable: true
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedAnnotationQueues'
+        '400':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '403':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '404':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '405':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+      security:
+        - BasicAuth: []
+  /api/public/annotation-queues/{queueId}:
+    get:
+      description: Get an annotation queue by ID
+      operationId: annotationQueues_getQueue
+      tags:
+        - AnnotationQueues
+      parameters:
+        - name: queueId
+          in: path
+          description: The unique identifier of the annotation queue
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnnotationQueue'
+        '400':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '403':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '404':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '405':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+      security:
+        - BasicAuth: []
+  /api/public/annotation-queues/{queueId}/items:
+    get:
+      description: Get items for a specific annotation queue
+      operationId: annotationQueues_listQueueItems
+      tags:
+        - AnnotationQueues
+      parameters:
+        - name: queueId
+          in: path
+          description: The unique identifier of the annotation queue
+          required: true
+          schema:
+            type: string
+        - name: status
+          in: query
+          description: Filter by status
+          required: false
+          schema:
+            $ref: '#/components/schemas/AnnotationQueueStatus'
+            nullable: true
+        - name: page
+          in: query
+          description: page number, starts at 1
+          required: false
+          schema:
+            type: integer
+            nullable: true
+        - name: limit
+          in: query
+          description: limit of items per page
+          required: false
+          schema:
+            type: integer
+            nullable: true
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedAnnotationQueueItems'
+        '400':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '403':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '404':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '405':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+      security:
+        - BasicAuth: []
+    post:
+      description: Add an item to an annotation queue
+      operationId: annotationQueues_createQueueItem
+      tags:
+        - AnnotationQueues
+      parameters:
+        - name: queueId
+          in: path
+          description: The unique identifier of the annotation queue
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnnotationQueueItem'
+        '400':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '403':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '404':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '405':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+      security:
+        - BasicAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAnnotationQueueItemRequest'
+  /api/public/annotation-queues/{queueId}/items/{itemId}:
+    get:
+      description: Get a specific item from an annotation queue
+      operationId: annotationQueues_getQueueItem
+      tags:
+        - AnnotationQueues
+      parameters:
+        - name: queueId
+          in: path
+          description: The unique identifier of the annotation queue
+          required: true
+          schema:
+            type: string
+        - name: itemId
+          in: path
+          description: The unique identifier of the annotation queue item
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnnotationQueueItem'
+        '400':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '403':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '404':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '405':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+      security:
+        - BasicAuth: []
+    patch:
+      description: Update an annotation queue item
+      operationId: annotationQueues_updateQueueItem
+      tags:
+        - AnnotationQueues
+      parameters:
+        - name: queueId
+          in: path
+          description: The unique identifier of the annotation queue
+          required: true
+          schema:
+            type: string
+        - name: itemId
+          in: path
+          description: The unique identifier of the annotation queue item
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnnotationQueueItem'
+        '400':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '403':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '404':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '405':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+      security:
+        - BasicAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAnnotationQueueItemRequest'
+    delete:
+      description: Remove an item from an annotation queue
+      operationId: annotationQueues_deleteQueueItem
+      tags:
+        - AnnotationQueues
+      parameters:
+        - name: queueId
+          in: path
+          description: The unique identifier of the annotation queue
+          required: true
+          schema:
+            type: string
+        - name: itemId
+          in: path
+          description: The unique identifier of the annotation queue item
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteAnnotationQueueItemResponse'
+        '400':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '403':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '404':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '405':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+      security:
+        - BasicAuth: []
   /api/public/comments:
     post:
       description: >-
@@ -366,6 +751,53 @@ paths:
               schema: {}
       security:
         - BasicAuth: []
+    delete:
+      description: >-
+        Delete a dataset item and all its run items. This action is
+        irreversible.
+      operationId: datasetItems_delete
+      tags:
+        - DatasetItems
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteDatasetItemResponse'
+        '400':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '403':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '404':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '405':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+      security:
+        - BasicAuth: []
   /api/public/dataset-run-items:
     post:
       description: Create a dataset run item
@@ -611,6 +1043,56 @@ paths:
               schema: {}
       security:
         - BasicAuth: []
+    delete:
+      description: Delete a dataset run and all its run items. This action is irreversible.
+      operationId: datasets_deleteRun
+      tags:
+        - Datasets
+      parameters:
+        - name: datasetName
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: runName
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteDatasetRunResponse'
+        '400':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '403':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '404':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '405':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+      security:
+        - BasicAuth: []
   /api/public/datasets/{datasetName}/runs:
     get:
       description: Get dataset runs
@@ -715,13 +1197,35 @@ paths:
   /api/public/ingestion:
     post:
       description: >-
-        Batched ingestion for Langfuse Tracing. If you want to use tracing via
-        the API, such as to build your own Langfuse client implementation, this
-        is the only API route you need to implement.
+        Batched ingestion for Langfuse Tracing.
+
+        If you want to use tracing via the API, such as to build your own
+        Langfuse client implementation, this is the only API route you need to
+        implement.
+
+
+        Within each batch, there can be multiple events.
+
+        Each event has a type, an id, a timestamp, metadata and a body.
+
+        Internally, we refer to this as the "event envelope" as it tells us
+        something about the event but not the trace.
+
+        We use the event id within this envelope to deduplicate messages to
+        avoid processing the same event twice, i.e. the event id should be
+        unique per request.
+
+        The event.body.id is the ID of the actual trace and will be used for
+        updates and will be visible within the Langfuse App.
+
+        I.e. if you want to update a trace, you'd use the same body id, but
+        separate event IDs.
 
 
         Notes:
 
+        - Introduction to data model:
+        https://langfuse.com/docs/tracing-data-model
 
         - Batch sizes are limited to 3.5 MB in total. You need to adjust the
         number of events per batch accordingly.
@@ -734,12 +1238,31 @@ paths:
         - Ingestion
       parameters: []
       responses:
-        '200':
+        '207':
           description: ''
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/IngestionResponse'
+              examples:
+                Example1:
+                  value:
+                    successes:
+                      - id: abcdef-1234-5678-90ab
+                        status: 201
+                    errors: []
+                Example2:
+                  value:
+                    successes:
+                      - id: abcdef-1234-5678-90ab
+                        status: 201
+                    errors: []
+                Example3:
+                  value:
+                    successes:
+                      - id: abcdef-1234-5678-90ab
+                        status: 201
+                    errors: []
         '400':
           description: ''
           content:
@@ -788,6 +1311,52 @@ paths:
                     debugging.
               required:
                 - batch
+            examples:
+              Example1:
+                value:
+                  batch:
+                    - id: abcdef-1234-5678-90ab
+                      timestamp: '2022-01-01T00:00:00.000Z'
+                      type: trace-create
+                      body:
+                        id: abcdef-1234-5678-90ab
+                        timestamp: '2022-01-01T00:00:00.000Z'
+                        environment: production
+                        name: My Trace
+                        userId: 1234-5678-90ab-cdef
+                        input: My input
+                        output: My output
+                        sessionId: 1234-5678-90ab-cdef
+                        release: 1.0.0
+                        version: 1.0.0
+                        metadata: My metadata
+                        tags:
+                          - tag1
+                          - tag2
+                        public: true
+              Example2:
+                value:
+                  batch:
+                    - id: abcdef-1234-5678-90ab
+                      timestamp: '2022-01-01T00:00:00.000Z'
+                      type: span-create
+                      body:
+                        id: abcdef-1234-5678-90ab
+                        traceId: 1234-5678-90ab-cdef
+                        startTime: '2022-01-01T00:00:00.000Z'
+                        environment: test
+              Example3:
+                value:
+                  batch:
+                    - id: abcdef-1234-5678-90ab
+                      timestamp: '2022-01-01T00:00:00.000Z'
+                      type: score-create
+                      body:
+                        id: abcdef-1234-5678-90ab
+                        traceId: 1234-5678-90ab-cdef
+                        name: My Score
+                        value: 0.9
+                        environment: default
   /api/public/media/{mediaId}:
     get:
       description: Get a media record
@@ -968,6 +1537,17 @@ paths:
         - name: tags
           in: query
           description: Optional filter for metrics where traces include all of these tags
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+              nullable: true
+        - name: environment
+          in: query
+          description: >-
+            Optional filter for metrics where events include any of these
+            environments
           required: false
           schema:
             type: array
@@ -1321,6 +1901,17 @@ paths:
           schema:
             type: string
             nullable: true
+        - name: environment
+          in: query
+          description: >-
+            Optional filter for observations where the environment is one of the
+            provided values.
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+              nullable: true
         - name: fromStartTime
           in: query
           description: >-
@@ -1423,6 +2014,76 @@ paths:
               schema: {}
       security:
         - BasicAuth: []
+  /api/public/v2/prompts/{name}/versions/{version}:
+    patch:
+      description: Update labels for a specific prompt version
+      operationId: promptVersion_update
+      tags:
+        - PromptVersion
+      parameters:
+        - name: name
+          in: path
+          description: The name of the prompt
+          required: true
+          schema:
+            type: string
+        - name: version
+          in: path
+          description: Version of the prompt to update
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Prompt'
+        '400':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '403':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '404':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '405':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+      security:
+        - BasicAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                newLabels:
+                  type: array
+                  items:
+                    type: string
+                  description: >-
+                    New labels for the prompt version. Labels are unique across
+                    versions. The "latest" label is reserved and managed by
+                    Langfuse.
+              required:
+                - newLabels
   /api/public/v2/prompts/{promptName}:
     get:
       description: Get a prompt
@@ -1880,6 +2541,17 @@ paths:
             type: string
             format: date-time
             nullable: true
+        - name: environment
+          in: query
+          description: >-
+            Optional filter for scores where the environment is one of the
+            provided values.
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+              nullable: true
         - name: source
           in: query
           description: Retrieve only scores from a specific source.
@@ -2107,6 +2779,17 @@ paths:
             type: string
             format: date-time
             nullable: true
+        - name: environment
+          in: query
+          description: >-
+            Optional filter for sessions where the environment is one of the
+            provided values.
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+              nullable: true
       responses:
         '200':
           description: ''
@@ -2238,6 +2921,52 @@ paths:
               schema: {}
       security:
         - BasicAuth: []
+    delete:
+      description: Delete a specific trace
+      operationId: trace_delete
+      tags:
+        - Trace
+      parameters:
+        - name: traceId
+          in: path
+          description: The unique langfuse identifier of the trace to delete
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteTraceResponse'
+        '400':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '403':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '404':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '405':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+      security:
+        - BasicAuth: []
   /api/public/traces:
     get:
       description: Get list of traces
@@ -2332,6 +3061,17 @@ paths:
           schema:
             type: string
             nullable: true
+        - name: environment
+          in: query
+          description: >-
+            Optional filter for traces where the environment is one of the
+            provided values.
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+              nullable: true
       responses:
         '200':
           description: ''
@@ -2366,8 +3106,192 @@ paths:
               schema: {}
       security:
         - BasicAuth: []
+    delete:
+      description: Delete multiple traces
+      operationId: trace_deleteMultiple
+      tags:
+        - Trace
+      parameters: []
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteTraceResponse'
+        '400':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '403':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '404':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+        '405':
+          description: ''
+          content:
+            application/json:
+              schema: {}
+      security:
+        - BasicAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                traceIds:
+                  type: array
+                  items:
+                    type: string
+                  description: List of trace IDs to delete
+              required:
+                - traceIds
 components:
   schemas:
+    AnnotationQueueStatus:
+      title: AnnotationQueueStatus
+      type: string
+      enum:
+        - PENDING
+        - COMPLETED
+    AnnotationQueueObjectType:
+      title: AnnotationQueueObjectType
+      type: string
+      enum:
+        - TRACE
+        - OBSERVATION
+    AnnotationQueue:
+      title: AnnotationQueue
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        scoreConfigIds:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - name
+        - scoreConfigIds
+        - createdAt
+        - updatedAt
+    AnnotationQueueItem:
+      title: AnnotationQueueItem
+      type: object
+      properties:
+        id:
+          type: string
+        queueId:
+          type: string
+        objectId:
+          type: string
+        objectType:
+          $ref: '#/components/schemas/AnnotationQueueObjectType'
+        status:
+          $ref: '#/components/schemas/AnnotationQueueStatus'
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - queueId
+        - objectId
+        - objectType
+        - status
+        - createdAt
+        - updatedAt
+    PaginatedAnnotationQueues:
+      title: PaginatedAnnotationQueues
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AnnotationQueue'
+        meta:
+          $ref: '#/components/schemas/utilsMetaResponse'
+      required:
+        - data
+        - meta
+    PaginatedAnnotationQueueItems:
+      title: PaginatedAnnotationQueueItems
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AnnotationQueueItem'
+        meta:
+          $ref: '#/components/schemas/utilsMetaResponse'
+      required:
+        - data
+        - meta
+    CreateAnnotationQueueItemRequest:
+      title: CreateAnnotationQueueItemRequest
+      type: object
+      properties:
+        objectId:
+          type: string
+        objectType:
+          $ref: '#/components/schemas/AnnotationQueueObjectType'
+        status:
+          $ref: '#/components/schemas/AnnotationQueueStatus'
+          nullable: true
+          description: Defaults to PENDING for new queue items
+      required:
+        - objectId
+        - objectType
+    UpdateAnnotationQueueItemRequest:
+      title: UpdateAnnotationQueueItemRequest
+      type: object
+      properties:
+        status:
+          $ref: '#/components/schemas/AnnotationQueueStatus'
+          nullable: true
+    DeleteAnnotationQueueItemResponse:
+      title: DeleteAnnotationQueueItemResponse
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+      required:
+        - success
+        - message
     CreateCommentRequest:
       title: CreateCommentRequest
       type: object
@@ -2473,6 +3397,13 @@ components:
           type: boolean
           nullable: true
           description: Public traces are accessible via url without login
+        environment:
+          type: string
+          nullable: true
+          description: >-
+            The environment from which this trace originated. Can be any
+            lowercase alphanumeric string with hyphens and underscores that does
+            not start with 'langfuse'.
       required:
         - id
         - timestamp
@@ -2553,6 +3484,10 @@ components:
           format: date-time
         projectId:
           type: string
+        environment:
+          type: string
+          nullable: true
+          description: The environment from which this session originated.
       required:
         - id
         - createdAt
@@ -2664,6 +3599,13 @@ components:
             The cost details of the observation. Key is the name of the cost
             metric, value is the cost in USD. The total key is the sum of all
             (non-total) cost metrics or the total value ingested.
+        environment:
+          type: string
+          nullable: true
+          description: >-
+            The environment from which this observation originated. Can be any
+            lowercase alphanumeric string with hyphens and underscores that does
+            not start with 'langfuse'.
       required:
         - id
         - type
@@ -2878,6 +3820,13 @@ components:
           description: >-
             Reference an annotation queue on a score. Populated if the score was
             initially created in an annotation queue.
+        environment:
+          type: string
+          nullable: true
+          description: >-
+            The environment from which this score originated. Can be any
+            lowercase alphanumeric string with hyphens and underscores that does
+            not start with 'langfuse'.
       required:
         - id
         - traceId
@@ -3183,11 +4132,12 @@ components:
             to exact match, use `(?i)^modelname$`
         startDate:
           type: string
-          format: date
+          format: date-time
           nullable: true
           description: Apply only to generations which are newer than this ISO date.
         unit:
           $ref: '#/components/schemas/ModelUsageUnit'
+          nullable: true
           description: Unit used by this model.
         inputPrice:
           type: number
@@ -3223,7 +4173,6 @@ components:
         - id
         - modelName
         - matchPattern
-        - unit
         - isLangfuseManaged
     ModelUsageUnit:
       title: ModelUsageUnit
@@ -3285,6 +4234,15 @@ components:
         - NUMERIC
         - BOOLEAN
         - CATEGORICAL
+    DeleteDatasetItemResponse:
+      title: DeleteDatasetItemResponse
+      type: object
+      properties:
+        message:
+          type: string
+          description: Success message after deletion
+      required:
+        - message
     CreateDatasetItemRequest:
       title: CreateDatasetItemRequest
       type: object
@@ -3394,6 +4352,14 @@ components:
       required:
         - data
         - meta
+    DeleteDatasetRunResponse:
+      title: DeleteDatasetRunResponse
+      type: object
+      properties:
+        message:
+          type: string
+      required:
+        - message
     HealthResponse:
       title: HealthResponse
       type: object
@@ -3579,6 +4545,9 @@ components:
         version:
           type: string
           nullable: true
+        environment:
+          type: string
+          nullable: true
     CreateEventBody:
       title: CreateEventBody
       type: object
@@ -3746,6 +4715,9 @@ components:
         parentObservationId:
           type: string
           nullable: true
+        environment:
+          type: string
+          nullable: true
       required:
         - type
     TraceBody:
@@ -3785,6 +4757,9 @@ components:
           items:
             type: string
           nullable: true
+        environment:
+          type: string
+          nullable: true
         public:
           type: boolean
           nullable: true
@@ -3809,6 +4784,9 @@ components:
         name:
           type: string
           example: novelty
+        environment:
+          type: string
+          nullable: true
         value:
           $ref: '#/components/schemas/CreateScoreValue'
           description: >-
@@ -4002,9 +4980,10 @@ components:
       required:
         - successes
         - errors
-    OpenAIUsageSchema:
-      title: OpenAIUsageSchema
+    OpenAICompletionUsageSchema:
+      title: OpenAICompletionUsageSchema
       type: object
+      description: OpenAI Usage schema from (Chat-)Completion APIs
       properties:
         prompt_tokens:
           type: integer
@@ -4016,15 +4995,44 @@ components:
           type: object
           additionalProperties:
             type: integer
+            nullable: true
           nullable: true
         completion_tokens_details:
           type: object
           additionalProperties:
             type: integer
+            nullable: true
           nullable: true
       required:
         - prompt_tokens
         - completion_tokens
+        - total_tokens
+    OpenAIResponseUsageSchema:
+      title: OpenAIResponseUsageSchema
+      type: object
+      description: OpenAI Usage schema from Response API
+      properties:
+        input_tokens:
+          type: integer
+        output_tokens:
+          type: integer
+        total_tokens:
+          type: integer
+        input_tokens_details:
+          type: object
+          additionalProperties:
+            type: integer
+            nullable: true
+          nullable: true
+        output_tokens_details:
+          type: object
+          additionalProperties:
+            type: integer
+            nullable: true
+          nullable: true
+      required:
+        - input_tokens
+        - output_tokens
         - total_tokens
     UsageDetails:
       title: UsageDetails
@@ -4032,7 +5040,8 @@ components:
         - type: object
           additionalProperties:
             type: integer
-        - $ref: '#/components/schemas/OpenAIUsageSchema'
+        - $ref: '#/components/schemas/OpenAICompletionUsageSchema'
+        - $ref: '#/components/schemas/OpenAIResponseUsageSchema'
     GetMediaResponse:
       title: GetMediaResponse
       type: object
@@ -4276,6 +5285,7 @@ components:
           description: Apply only to generations which are newer than this ISO date.
         unit:
           $ref: '#/components/schemas/ModelUsageUnit'
+          nullable: true
           description: Unit used by this model.
         inputPrice:
           type: number
@@ -4308,7 +5318,6 @@ components:
       required:
         - modelName
         - matchPattern
-        - unit
     Observations:
       title: Observations
       type: object
@@ -4450,6 +5459,10 @@ components:
             type: string
           nullable: true
           description: List of tags to apply to all versions of this prompt.
+        commitMessage:
+          type: string
+          nullable: true
+          description: Commit message for this prompt version.
       required:
         - name
         - prompt
@@ -4475,6 +5488,10 @@ components:
             type: string
           nullable: true
           description: List of tags to apply to all versions of this prompt.
+        commitMessage:
+          type: string
+          nullable: true
+          description: Commit message for this prompt version.
       required:
         - name
         - prompt
@@ -4524,6 +5541,17 @@ components:
           description: >-
             List of tags. Used to filter via UI and API. The same across
             versions of a prompt.
+        commitMessage:
+          type: string
+          nullable: true
+          description: Commit message for this prompt version.
+        resolutionGraph:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: >-
+            The dependency resolution graph for the current prompt. Null if
+            prompt has no dependencies.
       required:
         - name
         - version
@@ -4642,6 +5670,13 @@ components:
         comment:
           type: string
           nullable: true
+        environment:
+          type: string
+          nullable: true
+          description: >-
+            The environment of the score. Can be any lowercase alphanumeric
+            string with hyphens and underscores that does not start with
+            'langfuse'.
         dataType:
           $ref: '#/components/schemas/ScoreDataType'
           nullable: true
@@ -4683,6 +5718,10 @@ components:
             type: string
           nullable: true
           description: A list of tags associated with the trace referenced by score
+        environment:
+          type: string
+          nullable: true
+          description: The environment of the trace referenced by score
     GetScoresResponseDataNumeric:
       title: GetScoresResponseDataNumeric
       type: object
@@ -4788,6 +5827,14 @@ components:
       required:
         - data
         - meta
+    DeleteTraceResponse:
+      title: DeleteTraceResponse
+      type: object
+      properties:
+        message:
+          type: string
+      required:
+        - message
     Sort:
       title: Sort
       type: object

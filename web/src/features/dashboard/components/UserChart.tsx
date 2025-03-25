@@ -12,9 +12,7 @@ import {
   totalCostDashboardFormatted,
 } from "@/src/features/dashboard/lib/dashboard-utils";
 import { env } from "@/src/env.mjs";
-import { type DashboardDateRangeAggregationOption } from "@/src/utils/date-range-utils";
 import { NoDataOrLoading } from "@/src/components/NoDataOrLoading";
-import { useClickhouse } from "@/src/components/layouts/ClickhouseAdminToggle";
 
 type BarChartDataPoint = {
   name: string;
@@ -25,11 +23,12 @@ export const UserChart = ({
   className,
   projectId,
   globalFilterState,
+  isLoading = false,
 }: {
   className?: string;
   projectId: string;
   globalFilterState: FilterState;
-  agg: DashboardDateRangeAggregationOption;
+  isLoading?: boolean;
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const user = api.dashboard.chart.useQuery(
@@ -61,7 +60,6 @@ export const UserChart = ({
       orderBy: [
         { column: "calculatedTotalCost", direction: "DESC", agg: "SUM" },
       ],
-      queryClickhouse: useClickhouse(),
       queryName: "observations-usage-by-users",
     },
     {
@@ -70,6 +68,7 @@ export const UserChart = ({
           skipBatch: true,
         },
       },
+      enabled: !isLoading,
     },
   );
 
@@ -86,7 +85,6 @@ export const UserChart = ({
         },
       ],
       orderBy: [{ column: "traceId", agg: "COUNT", direction: "DESC" }],
-      queryClickhouse: useClickhouse(),
       queryName: "traces-grouped-by-user",
     },
     {
@@ -95,6 +93,7 @@ export const UserChart = ({
           skipBatch: true,
         },
       },
+      enabled: !isLoading,
     },
   );
 
@@ -163,7 +162,7 @@ export const UserChart = ({
     <DashboardCard
       className={className}
       title="User consumption"
-      isLoading={user.isLoading}
+      isLoading={isLoading || user.isLoading}
     >
       <TabComponent
         tabs={data.map((item) => {
@@ -187,7 +186,7 @@ export const UserChart = ({
                   </>
                 ) : (
                   <NoDataOrLoading
-                    isLoading={user.isLoading}
+                    isLoading={isLoading || user.isLoading}
                     description="Consumption per user is tracked by passing their ids on traces."
                     href="https://langfuse.com/docs/tracing-features/users"
                   />

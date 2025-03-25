@@ -10,16 +10,17 @@ import { TotalMetric } from "./TotalMetric";
 import { totalCostDashboardFormatted } from "@/src/features/dashboard/lib/dashboard-utils";
 import { env } from "@/src/env.mjs";
 import { truncate } from "@/src/utils/string";
-import { useClickhouse } from "@/src/components/layouts/ClickhouseAdminToggle";
 
 export const ModelCostTable = ({
   className,
   projectId,
   globalFilterState,
+  isLoading = false,
 }: {
   className: string;
   projectId: string;
   globalFilterState: FilterState;
+  isLoading?: boolean;
 }) => {
   const metrics = api.dashboard.chart.useQuery(
     {
@@ -45,7 +46,6 @@ export const ModelCostTable = ({
       orderBy: [
         { column: "calculatedTotalCost", direction: "DESC", agg: "SUM" },
       ],
-      queryClickhouse: useClickhouse(),
       queryName: "observations-model-cost",
     },
     {
@@ -54,6 +54,7 @@ export const ModelCostTable = ({
           skipBatch: true,
         },
       },
+      enabled: !isLoading,
     },
   );
 
@@ -92,7 +93,7 @@ export const ModelCostTable = ({
     <DashboardCard
       className={className}
       title="Model costs"
-      isLoading={metrics.isLoading}
+      isLoading={isLoading || metrics.isLoading}
     >
       <DashboardTable
         headers={[
@@ -101,7 +102,7 @@ export const ModelCostTable = ({
           <RightAlignedCell key="cost">USD</RightAlignedCell>,
         ]}
         rows={metricsData}
-        isLoading={metrics.isLoading}
+        isLoading={isLoading || metrics.isLoading}
         collapse={{ collapsed: 5, expanded: 20 }}
       >
         <TotalMetric

@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import * as z from "zod";
 
-import { JsonEditor } from "@/src/components/json-editor";
+import { CodeMirrorEditor } from "@/src/components/editor";
 import { Button } from "@/src/components/ui/button";
 import {
   Drawer,
@@ -135,7 +135,9 @@ export const UpsertModelFormDrawer = ({
         title: `Model ${props.action === "edit" ? "updated" : "created"}`,
         description: `The model '${upsertedModel.modelName}' has been successfully ${props.action === "edit" ? "updated" : "created"}. New generations will use these model prices.`,
       });
-      router.push(`/project/${props.projectId}/models/${upsertedModel.id}`);
+      router.push(
+        `/project/${props.projectId}/settings/models/${upsertedModel.id}`,
+      );
     },
     onError: (error) => setFormError(error.message),
   });
@@ -435,9 +437,11 @@ export const UpsertModelFormDrawer = ({
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Tokenizer Config</FormLabel>
-                    <JsonEditor
-                      defaultValue={field.value ?? "{}"}
+                    <CodeMirrorEditor
+                      mode="json"
+                      value={field.value ?? "{}"}
                       onChange={field.onChange}
+                      minHeight="none"
                     />
                     <FormDescription>
                       The config for the tokenizer. Required for openai. See the{" "}

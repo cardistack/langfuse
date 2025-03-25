@@ -1,4 +1,3 @@
-import Header from "@/src/components/layouts/header";
 import { useRouter } from "next/router";
 import { GenerationLatencyChart } from "@/src/features/dashboard/components/LatencyChart";
 import { ChartScores } from "@/src/features/dashboard/components/ChartScores";
@@ -26,9 +25,13 @@ import { useDebounce } from "@/src/hooks/useDebounce";
 import { ScoreAnalytics } from "@/src/features/dashboard/components/score-analytics/ScoreAnalytics";
 import SetupTracingButton from "@/src/features/setup/components/SetupTracingButton";
 import { useUiCustomization } from "@/src/ee/features/ui-customization/useUiCustomization";
-import { ScrollScreenPage } from "@/src/components/layouts/scroll-screen-page";
-import { useClickhouse } from "@/src/components/layouts/ClickhouseAdminToggle";
 import { useEntitlementLimit } from "@/src/features/entitlements/hooks";
+import Page from "@/src/components/layouts/page";
+import { MultiSelect } from "@/src/features/filters/components/multi-select";
+import {
+  convertSelectedEnvironmentsToFilter,
+  useEnvironmentFilter,
+} from "@/src/hooks/use-environment-filter";
 
 export default function Dashboard() {
   const router = useRouter();
@@ -44,10 +47,15 @@ export default function Dashboard() {
   const disableExpensiveDashboardComponents =
     session.data?.environment.disableExpensivePostgresQueries ?? true;
 
+  const [userFilterState, setUserFilterState] = useQueryFilterState(
+    [],
+    "dashboard",
+    projectId,
+  );
+
   const traceFilterOptions = api.traces.filterOptions.useQuery(
     {
       projectId,
-      queryClickhouse: useClickhouse(),
     },
     {
       trpc: {
@@ -61,6 +69,29 @@ export default function Dashboard() {
       staleTime: Infinity,
     },
   );
+
+  const environmentFilterOptions =
+    api.projects.environmentFilterOptions.useQuery(
+      { projectId },
+      {
+        trpc: {
+          context: {
+            skipBatch: true,
+          },
+        },
+        refetchOnMount: false,
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
+        staleTime: Infinity,
+      },
+    );
+  const environmentOptions: string[] =
+    environmentFilterOptions.data?.map((value) => value.environment) || [];
+
+  // Add effect to update filter state when environments change
+  const { selectedEnvironments, setSelectedEnvironments } =
+    useEnvironmentFilter(environmentOptions, projectId);
+
   const nameOptions = traceFilterOptions.data?.name || [];
   const tagsOptions = traceFilterOptions.data?.tags || [];
 
@@ -98,12 +129,6 @@ export default function Dashboard() {
       internal: "internalValue",
     },
   ];
-
-  const [userFilterState, setUserFilterState] = useQueryFilterState(
-    [],
-    "dashboard",
-    projectId,
-  );
 
   const agg = useMemo(
     () =>
@@ -143,13 +168,28 @@ export default function Dashboard() {
         },
       ];
 
-  const mergedFilterState: FilterState = [...userFilterState, ...timeFilter];
+  const environmentFilter = convertSelectedEnvironmentsToFilter(
+    ["environment"],
+    selectedEnvironments,
+  );
+
+  const mergedFilterState: FilterState = [
+    ...userFilterState,
+    ...timeFilter,
+    ...environmentFilter,
+  ];
 
   return (
-    <ScrollScreenPage>
-      <Header title="Dashboard" actionButtons={<SetupTracingButton />} />
+    <Page
+      withPadding
+      scrollable
+      headerProps={{
+        title: "Dashboard",
+        actionButtonsRight: <SetupTracingButton />,
+      }}
+    >
       <div className="my-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-col gap-2 lg:flex-row">
+        <div className="flex flex-col gap-2 lg:flex-row lg:gap-3">
           <DatePickerWithRange
             dateRange={dateRange}
             setDateRangeAndOption={useDebounce(setDateRangeAndOption)}
@@ -165,6 +205,16 @@ export default function Dashboard() {
                   }
                 : undefined
             }
+          />
+          <MultiSelect
+            title="Environment"
+            label="Env"
+            values={selectedEnvironments}
+            onValueChange={useDebounce(setSelectedEnvironments)}
+            options={environmentOptions.map((env) => ({
+              value: env,
+            }))}
+            className="my-0 w-auto overflow-hidden"
           />
           <PopoverFilterBuilder
             columns={filterColumns}
@@ -199,24 +249,28 @@ export default function Dashboard() {
           className="col-span-1 xl:col-span-2"
           projectId={projectId}
           globalFilterState={mergedFilterState}
+          isLoading={environmentFilterOptions.isLoading}
         />
         {!disableExpensiveDashboardComponents && (
           <ModelCostTable
             className="col-span-1 xl:col-span-2"
             projectId={projectId}
             globalFilterState={mergedFilterState}
+            isLoading={environmentFilterOptions.isLoading}
           />
         )}
         <ScoresTable
           className="col-span-1 xl:col-span-2"
           projectId={projectId}
           globalFilterState={mergedFilterState}
+          isLoading={environmentFilterOptions.isLoading}
         />
         <TracesAndObservationsTimeSeriesChart
           className="col-span-1 xl:col-span-3"
           projectId={projectId}
           globalFilterState={mergedFilterState}
           agg={agg}
+          isLoading={environmentFilterOptions.isLoading}
         />
         {!disableExpensiveDashboardComponents && (
           <ModelUsageChart
@@ -224,6 +278,7 @@ export default function Dashboard() {
             projectId={projectId}
             globalFilterState={mergedFilterState}
             agg={agg}
+            isLoading={environmentFilterOptions.isLoading}
           />
         )}
         {!disableExpensiveDashboardComponents && (
@@ -231,7 +286,7 @@ export default function Dashboard() {
             className="col-span-1 xl:col-span-3"
             projectId={projectId}
             globalFilterState={mergedFilterState}
-            agg={agg}
+            isLoading={environmentFilterOptions.isLoading}
           />
         )}
         <ChartScores
@@ -239,11 +294,13 @@ export default function Dashboard() {
           agg={agg}
           projectId={projectId}
           globalFilterState={mergedFilterState}
+          isLoading={environmentFilterOptions.isLoading}
         />
         {!disableExpensiveDashboardComponents && (
           <LatencyTables
             projectId={projectId}
             globalFilterState={mergedFilterState}
+            isLoading={environmentFilterOptions.isLoading}
           />
         )}
         {!disableExpensiveDashboardComponents && (
@@ -252,6 +309,7 @@ export default function Dashboard() {
             projectId={projectId}
             agg={agg}
             globalFilterState={mergedFilterState}
+            isLoading={environmentFilterOptions.isLoading}
           />
         )}
         {!disableExpensiveDashboardComponents && (
@@ -260,9 +318,10 @@ export default function Dashboard() {
             agg={agg}
             projectId={projectId}
             globalFilterState={mergedFilterState}
+            isLoading={environmentFilterOptions.isLoading}
           />
         )}
       </div>
-    </ScrollScreenPage>
+    </Page>
   );
 }

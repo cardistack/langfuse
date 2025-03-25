@@ -21,12 +21,19 @@ import { Alert, AlertDescription, AlertTitle } from "@/src/components/ui/alert";
 import { MAX_EVENTS_FREE_PLAN } from "@/src/ee/features/billing/constants";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
+  DialogFooter,
+  DialogDescription,
   DialogHeader,
+  DialogTitle,
   DialogTrigger,
 } from "@/src/components/ui/dialog";
 import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePostHogClientCapture";
 import { stripeProducts } from "@/src/ee/features/billing/utils/stripeProducts";
+import { toast } from "sonner";
+import { ActionButton } from "@/src/components/ActionButton";
+import { useState } from "react";
 
 export const BillingSettings = () => {
   const router = useRouter();
@@ -51,7 +58,7 @@ export const BillingSettings = () => {
     );
   return (
     <div>
-      <Header title="Usage & Billing" level="h3" />
+      <Header title="Usage & Billing" />
       <OrganizationUsageChart />
     </div>
   );
@@ -157,24 +164,35 @@ const BillingPortalOrPricingPageButton = () => {
     },
   );
 
+  const [processingPlanId, setProcessingPlanId] = useState<string | null>(null);
+
   const mutCreateCheckoutSession =
     api.cloudBilling.createStripeCheckoutSession.useMutation({
       onSuccess: (url) => {
         router.push(url);
+        setProcessingPlanId(null);
+      },
+      onError: () => {
+        setProcessingPlanId(null);
+      },
+    });
+  const mutChangePlan =
+    api.cloudBilling.changeStripeSubscriptionProduct.useMutation({
+      onSuccess: () => {
+        toast.success("Plan changed successfully");
+        setProcessingPlanId(null);
+        // wait 1 second before reloading
+        setTimeout(() => {
+          window.location.reload();
+        }, 500);
+      },
+      onError: () => {
+        setProcessingPlanId(null);
       },
     });
 
-  if (!organization) return null;
-  if (billingPortalUrl.isLoading) return null;
-  if (billingPortalUrl.data)
-    return (
-      <Button asChild>
-        <Link href={billingPortalUrl.data}>Billing portal</Link>
-      </Button>
-    );
-
   // Do not show checkout or customer portal if manual plan is set in cloud config
-  if (organization.cloudConfig?.plan) {
+  if (organization?.cloudConfig?.plan) {
     if (chatAvailable)
       return (
         <Button
@@ -191,8 +209,7 @@ const BillingPortalOrPricingPageButton = () => {
     else return null;
   }
 
-  // Show pricing page button
-  return (
+  const switchPlan = (
     <Dialog
       onOpenChange={(open) => {
         if (open) {
@@ -203,11 +220,10 @@ const BillingPortalOrPricingPageButton = () => {
       <DialogTrigger asChild>
         <Button>Change plan</Button>
       </DialogTrigger>
-      <DialogContent className="max-w-3xl">
+      <DialogContent className="max-w-5xl">
         <DialogHeader>
           <Header
             title="Plans"
-            level="h3"
             actionButtons={
               <Button variant="secondary" asChild>
                 <Link href="https://langfuse.com/pricing" target="_blank">
@@ -217,35 +233,135 @@ const BillingPortalOrPricingPageButton = () => {
             }
           />
         </DialogHeader>
-        <div className="mb-3 flex flex-col justify-center gap-10 md:flex-row">
+        <div className="mb-3 grid grid-cols-1 gap-3 md:grid-cols-3">
           {stripeProducts
             .filter((product) => Boolean(product.checkout))
             .map((product) => (
               <div
                 key={product.stripeProductId}
-                className="flex flex-1 flex-col"
+                className="relative flex flex-col rounded-xl border bg-card p-4 shadow-sm transition-all hover:shadow-md"
               >
-                <div className="mb-2 text-lg font-semibold">
-                  {product.checkout?.title}
+                <div className="mb-4">
+                  <h3 className="text-2xl font-bold">
+                    {product.checkout?.title}
+                  </h3>
+                  <div className="mt-4 space-y-1">
+                    <div className="text-2xl font-bold text-primary">
+                      {product.checkout?.price}
+                    </div>
+                    <div className="text-sm text-muted-foreground">
+                      + {product.checkout?.usagePrice}
+                    </div>
+                  </div>
                 </div>
-                <div>{product.checkout?.description}</div>
-                <div className="mb-6 mt-2">{product.checkout?.price}</div>
-                <Button
-                  onClick={() => {
-                    if (organization)
-                      mutCreateCheckoutSession.mutate({
-                        orgId: organization.id,
-                        stripeProductId: product.stripeProductId,
-                      });
-                  }}
-                  className="mt-auto"
+                <div className="mb-4 text-sm text-muted-foreground">
+                  {product.checkout?.description}
+                </div>
+                <div className="space-y-2">
+                  <div className="text-sm font-medium">Main features:</div>
+                  <ul className="list-inside list-disc space-y-1 text-sm text-muted-foreground">
+                    {product.checkout?.mainFeatures.map((feature, index) => (
+                      <li key={index}>{feature}</li>
+                    ))}
+                  </ul>
+                </div>
+                <Link
+                  href="https://langfuse.com/pricing"
+                  target="_blank"
+                  className="mt-auto block py-4 text-sm text-muted-foreground hover:text-foreground"
                 >
-                  Select plan
-                </Button>
+                  Learn more about plan →
+                </Link>
+                {organization?.cloudConfig?.stripe?.activeProductId ? (
+                  // Change plan
+                  <Dialog>
+                    <DialogTrigger asChild>
+                      <Button
+                        disabled={
+                          organization?.cloudConfig?.stripe?.activeProductId ===
+                          product.stripeProductId
+                        }
+                        className="w-full"
+                      >
+                        {organization?.cloudConfig?.stripe?.activeProductId ===
+                        product.stripeProductId
+                          ? "Current plan"
+                          : "Change plan"}
+                      </Button>
+                    </DialogTrigger>
+                    <DialogContent>
+                      <DialogHeader>
+                        <DialogTitle>
+                          Confirm Change:{" "}
+                          {planLabels[organization?.plan ?? "cloud:hobby"]} →{" "}
+                          {product.checkout?.title}
+                        </DialogTitle>
+                        <DialogDescription className="pt-2">
+                          This will immediately generate an invoice for any
+                          usage on your current plan. Your new plan and billing
+                          period will start today. Are you sure you want to
+                          continue?
+                        </DialogDescription>
+                      </DialogHeader>
+                      <DialogFooter>
+                        <DialogClose asChild>
+                          <Button variant="secondary">Cancel</Button>
+                        </DialogClose>
+                        <ActionButton
+                          onClick={() => {
+                            if (organization) {
+                              setProcessingPlanId(product.stripeProductId);
+                              mutChangePlan.mutate({
+                                orgId: organization.id,
+                                stripeProductId: product.stripeProductId,
+                              });
+                            }
+                          }}
+                          loading={processingPlanId === product.stripeProductId}
+                        >
+                          Confirm
+                        </ActionButton>
+                      </DialogFooter>
+                    </DialogContent>
+                  </Dialog>
+                ) : (
+                  // Upgrade, no plan yet
+                  <ActionButton
+                    onClick={() => {
+                      if (organization) {
+                        setProcessingPlanId(product.stripeProductId);
+                        mutCreateCheckoutSession.mutate({
+                          orgId: organization.id,
+                          stripeProductId: product.stripeProductId,
+                        });
+                      }
+                    }}
+                    disabled={
+                      organization?.cloudConfig?.stripe?.activeProductId ===
+                      product.stripeProductId
+                    }
+                    className="w-full"
+                    loading={processingPlanId === product.stripeProductId}
+                  >
+                    Select plan
+                  </ActionButton>
+                )}
               </div>
             ))}
         </div>
       </DialogContent>
     </Dialog>
+  );
+
+  // Show pricing page button
+  return (
+    <>
+      {switchPlan}
+      {billingPortalUrl.data && (
+        <Button asChild>
+          <Link href={billingPortalUrl.data}>Billing portal</Link>
+        </Button>
+      )}
+    </>
   );
 };

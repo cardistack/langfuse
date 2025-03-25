@@ -8,8 +8,6 @@ import {
   withDefault,
 } from "use-query-params";
 import { DataTableToolbar } from "@/src/components/table/data-table-toolbar";
-import { FullScreenPage } from "@/src/components/layouts/full-screen-page";
-import Header from "@/src/components/layouts/header";
 import { DataTable } from "@/src/components/table/data-table";
 import TableLink from "@/src/components/table/table-link";
 import { type LangfuseColumnDef } from "@/src/components/table/types";
@@ -24,10 +22,17 @@ import { usersTableCols } from "@/src/server/api/definitions/usersTable";
 import { joinTableCoreAndMetrics } from "@/src/components/table/utils/joinTableCoreAndMetrics";
 import { useTableDateRange } from "@/src/hooks/useTableDateRange";
 import { useDebounce } from "@/src/hooks/useDebounce";
-import { useClickhouse } from "@/src/components/layouts/ClickhouseAdminToggle";
+import Page from "@/src/components/layouts/page";
+import { UsersOnboarding } from "@/src/components/onboarding/UsersOnboarding";
+import {
+  useEnvironmentFilter,
+  convertSelectedEnvironmentsToFilter,
+} from "@/src/hooks/use-environment-filter";
+import { Badge } from "@/src/components/ui/badge";
 
 type RowData = {
   userId: string;
+  environment?: string;
   firstEvent: string;
   lastEvent: string;
   totalEvents: string;
@@ -36,6 +41,44 @@ type RowData = {
 };
 
 export default function UsersPage() {
+  const router = useRouter();
+  const projectId = router.query.projectId as string;
+
+  // Check if the user has any users
+  const { data: hasAnyUser, isLoading } = api.users.hasAny.useQuery(
+    { projectId },
+    {
+      enabled: !!projectId,
+      trpc: {
+        context: {
+          skipBatch: true,
+        },
+      },
+      refetchInterval: 10_000,
+    },
+  );
+
+  const showOnboarding = !isLoading && !hasAnyUser;
+
+  return (
+    <Page
+      headerProps={{
+        title: "Users",
+        help: {
+          description:
+            "Attribute data in Langfuse to a user by adding a userId to your traces. See docs to learn more.",
+          href: "https://langfuse.com/docs/user-explorer",
+        },
+      }}
+      scrollable={showOnboarding}
+    >
+      {/* Show onboarding screen if user has no users */}
+      {showOnboarding ? <UsersOnboarding /> : <UsersTable />}
+    </Page>
+  );
+}
+
+const UsersTable = () => {
   const router = useRouter();
   const projectId = router.query.projectId as string;
 
@@ -66,7 +109,33 @@ export default function UsersPage() {
       ]
     : [];
 
-  const filterState = userFilterState.concat(dateRangeFilter);
+  const environmentFilterOptions =
+    api.projects.environmentFilterOptions.useQuery(
+      { projectId },
+      {
+        trpc: { context: { skipBatch: true } },
+        refetchOnMount: false,
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
+        staleTime: Infinity,
+      },
+    );
+
+  const environmentOptions =
+    environmentFilterOptions.data?.map((value) => value.environment) || [];
+
+  const { selectedEnvironments, setSelectedEnvironments } =
+    useEnvironmentFilter(environmentOptions, projectId);
+
+  const environmentFilter = convertSelectedEnvironmentsToFilter(
+    ["environment"],
+    selectedEnvironments,
+  );
+
+  const filterState = userFilterState.concat(
+    dateRangeFilter,
+    environmentFilter,
+  );
 
   const [searchQuery, setSearchQuery] = useQueryParam(
     "search",
@@ -79,7 +148,6 @@ export default function UsersPage() {
     limit: paginationState.pageSize,
     projectId,
     searchQuery: searchQuery ?? undefined,
-    queryClickhouse: useClickhouse(),
   });
 
   // this API call will return an empty array if there are no users.
@@ -88,7 +156,6 @@ export default function UsersPage() {
     {
       projectId,
       userIds: users.data?.users.map((u) => u.userId) ?? [],
-      queryClickhouse: useClickhouse(),
       filter: filterState,
     },
     {
@@ -137,6 +204,11 @@ export default function UsersPage() {
       accessorKey: "userId",
       enableColumnFilter: true,
       header: "User ID",
+      headerTooltip: {
+        description:
+          "The unique identifier for the user that was logged in Langfuse. See docs for more details on how to set this up.",
+        href: "https://langfuse.com/docs/tracing-features/users",
+      },
       size: 150,
       cell: ({ row }) => {
         const value: RowData["userId"] = row.getValue("userId");
@@ -151,8 +223,29 @@ export default function UsersPage() {
       },
     },
     {
+      accessorKey: "environment",
+      header: "Environment",
+      id: "environment",
+      size: 150,
+      enableHiding: true,
+      cell: ({ row }) => {
+        const value: RowData["environment"] = row.getValue("environment");
+        return value ? (
+          <Badge
+            variant="secondary"
+            className="max-w-fit truncate rounded-sm px-1 font-normal"
+          >
+            {value}
+          </Badge>
+        ) : null;
+      },
+    },
+    {
       accessorKey: "firstEvent",
       header: "First Event",
+      headerTooltip: {
+        description: "The earliest trace recorded for this user.",
+      },
       size: 150,
       cell: ({ row }) => {
         const value: RowData["firstEvent"] = row.getValue("firstEvent");
@@ -167,6 +260,9 @@ export default function UsersPage() {
     {
       accessorKey: "lastEvent",
       header: "Last Event",
+      headerTooltip: {
+        description: "The latest trace recorded for this user.",
+      },
       size: 150,
       cell: ({ row }) => {
         const value: RowData["lastEvent"] = row.getValue("lastEvent");
@@ -181,6 +277,11 @@ export default function UsersPage() {
     {
       accessorKey: "totalEvents",
       header: "Total Events",
+      headerTooltip: {
+        description:
+          "Total number of events for the user, includes traces and observations. See data model for more details.",
+        href: "https://langfuse.com/docs/tracing-data-model",
+      },
       size: 120,
       cell: ({ row }) => {
         const value: RowData["totalEvents"] = row.getValue("totalEvents");
@@ -195,6 +296,11 @@ export default function UsersPage() {
     {
       accessorKey: "totalTokens",
       header: "Total Tokens",
+      headerTooltip: {
+        description:
+          "Total number of tokens used for the user across all generations.",
+        href: "https://langfuse.com/docs/model-usage-and-cost",
+      },
       size: 120,
       cell: ({ row }) => {
         const value: RowData["totalTokens"] = row.getValue("totalTokens");
@@ -209,6 +315,10 @@ export default function UsersPage() {
     {
       accessorKey: "totalCost",
       header: "Total Cost",
+      headerTooltip: {
+        description: "Total cost for the user across all generations.",
+        href: "https://langfuse.com/docs/model-usage-and-cost",
+      },
       size: 120,
       cell: ({ row }) => {
         const value: RowData["totalCost"] = row.getValue("totalCost");
@@ -223,15 +333,7 @@ export default function UsersPage() {
   ];
 
   return (
-    <FullScreenPage>
-      <Header
-        title="Users"
-        help={{
-          description:
-            "Attribute data in Langfuse to a user by adding a userId to your traces. See docs to learn more.",
-          href: "https://langfuse.com/docs/user-explorer",
-        }}
-      />
+    <>
       <DataTableToolbar
         filterColumnDefinition={usersTableCols}
         filterState={userFilterState}
@@ -240,9 +342,14 @@ export default function UsersPage() {
         selectedOption={selectedOption}
         setDateRangeAndOption={setDateRangeAndOption}
         searchConfig={{
-          placeholder: "Search by id",
+          placeholder: "Search by user id",
           updateQuery: setSearchQuery,
           currentQuery: searchQuery ?? undefined,
+        }}
+        environmentFilter={{
+          values: selectedEnvironments,
+          onValueChange: setSelectedEnvironments,
+          options: environmentOptions.map((env) => ({ value: env })),
         }}
       />
       <DataTable
@@ -262,6 +369,7 @@ export default function UsersPage() {
                   data: userRowData.rows?.map((t) => {
                     return {
                       userId: t.id,
+                      environment: t.environment ?? undefined,
                       firstEvent:
                         t.firstTrace?.toLocaleString() ?? "No event yet",
                       lastEvent:
@@ -286,6 +394,6 @@ export default function UsersPage() {
           state: paginationState,
         }}
       />
-    </FullScreenPage>
+    </>
   );
-}
+};

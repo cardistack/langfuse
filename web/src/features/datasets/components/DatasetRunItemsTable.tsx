@@ -4,7 +4,6 @@ import { type LangfuseColumnDef } from "@/src/components/table/types";
 import { api } from "@/src/utils/api";
 import { formatIntervalSeconds } from "@/src/utils/dates";
 import { useQueryParams, withDefault, NumberParam } from "use-query-params";
-
 import { usdFormatter } from "../../../utils/numbers";
 import useColumnVisibility from "@/src/features/column-visibility/hooks/useColumnVisibility";
 import { DataTableToolbar } from "@/src/components/table/data-table-toolbar";
@@ -21,12 +20,13 @@ import {
 import { type ScoreAggregate } from "@langfuse/shared";
 import { useIndividualScoreColumns } from "@/src/features/scores/hooks/useIndividualScoreColumns";
 import useColumnOrder from "@/src/features/column-visibility/hooks/useColumnOrder";
-import { useClickhouse } from "@/src/components/layouts/ClickhouseAdminToggle";
+import { LocalIsoDate } from "@/src/components/LocalIsoDate";
 
 export type DatasetRunItemRowData = {
   id: string;
-  runAt: string;
+  runAt: Date;
   datasetItemId: string;
+  datasetRunName?: string;
   trace?: {
     traceId: string;
     observationId?: string;
@@ -64,7 +64,6 @@ export function DatasetRunItemsTable(
     ...props,
     page: paginationState.pageIndex,
     limit: paginationState.pageSize,
-    queryClickhouse: useClickhouse(),
   });
   const [rowHeight, setRowHeight] = useRowHeightLocalStorage("traces", "m");
 
@@ -98,6 +97,21 @@ export function DatasetRunItemsTable(
       header: "Run At",
       id: "runAt",
       size: 150,
+      cell: ({ row }) => {
+        const value: DatasetRunItemRowData["runAt"] = row.getValue("runAt");
+        return <LocalIsoDate date={value} />;
+      },
+    },
+    {
+      accessorKey: "datasetRunName",
+      header: "Run Name",
+      id: "datasetRunName",
+      size: 150,
+      cell: ({ row }) => {
+        const datasetRunName: string | undefined =
+          row.getValue("datasetRunName");
+        return datasetRunName || "-";
+      },
     },
     {
       accessorKey: "datasetItemId",
@@ -237,8 +251,9 @@ export function DatasetRunItemsTable(
       ? runItems.data.runItems.map((item) => {
           return {
             id: item.id,
-            runAt: item.createdAt.toLocaleString(),
+            runAt: item.createdAt,
             datasetItemId: item.datasetItemId,
+            datasetRunName: item.datasetRunName,
             trace: !!item.trace?.id
               ? {
                   traceId: item.trace.id,

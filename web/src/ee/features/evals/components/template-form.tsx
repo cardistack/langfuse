@@ -12,7 +12,6 @@ import {
   FormLabel,
   FormMessage,
 } from "@/src/components/ui/form";
-import { Textarea } from "@/src/components/ui/textarea";
 import { api } from "@/src/utils/api";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { extractVariables, getIsCharOrUnderscore } from "@langfuse/shared";
@@ -25,7 +24,7 @@ import {
   type ModelParams,
   ZodModelConfig,
 } from "@langfuse/shared";
-import { PromptDescription } from "@/src/features/prompts/components/prompt-description";
+import { PromptVariableListPreview } from "@/src/features/prompts/components/PromptVariableListPreview";
 import {
   Select,
   SelectContent,
@@ -40,6 +39,7 @@ import { useModelParams } from "@/src/ee/features/playground/page/hooks/useModel
 import { showSuccessToast } from "@/src/features/notifications/showSuccessToast";
 import { RadioGroup, RadioGroupItem } from "@/src/components/ui/radio-group";
 import { EvalReferencedEvaluators } from "@/src/ee/features/evals/types";
+import { CodeMirrorEditor } from "@/src/components/editor";
 
 export const EvalTemplateForm = (props: {
   projectId: string;
@@ -70,7 +70,7 @@ export const EvalTemplateForm = (props: {
             <SelectTrigger className="text-primary ring-transparent focus:ring-0 focus:ring-offset-0">
               <SelectValue
                 className="text-sm font-semibold text-primary"
-                placeholder={"Select a Langfuse managed template"}
+                placeholder={"Select a Langfuse managed template (optional)"}
               />
             </SelectTrigger>
             <SelectContent className="max-h-60 max-w-80">
@@ -411,37 +411,26 @@ export const InnerEvalTemplateForm = (props: {
               <>
                 <FormItem>
                   <FormLabel>Prompt</FormLabel>
+                  <FormDescription>
+                    Define your llm-as-a-judge evaluation template. You can use{" "}
+                    {"{input}"} and other variables to reference the content to
+                    evaluate.
+                  </FormDescription>
                   <FormControl>
-                    <Textarea
-                      {...field}
-                      placeholder="{{input}} Please evaluate the input on toxicity."
-                      className="min-h-[350px] flex-1 font-mono text-xs"
+                    <CodeMirrorEditor
+                      value={field.value}
+                      onChange={field.onChange}
+                      editable={props.isEditing}
+                      mode="prompt"
+                      minHeight={200}
                     />
                   </FormControl>
                   <FormMessage />
-                  <PromptDescription
-                    currentExtractedVariables={extractedVariables ?? []}
+                  <PromptVariableListPreview
+                    variables={extractedVariables ?? []}
                   />
                 </FormItem>
               </>
-            )}
-          />
-
-          <FormField
-            control={form.control}
-            name="outputScore"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Score</FormLabel>
-                <FormControl>
-                  <Input {...field} placeholder="Score between 0 and 1" />
-                </FormControl>
-                <FormDescription>
-                  We use function calls to extract data from the LLM. Specify
-                  what the LLM should return for the score.
-                </FormDescription>
-                <FormMessage />
-              </FormItem>
             )}
           />
 
@@ -451,16 +440,35 @@ export const InnerEvalTemplateForm = (props: {
             render={({ field }) => (
               <FormItem>
                 <FormLabel>Reasoning</FormLabel>
+                <FormDescription>
+                  Define how the LLM should explain its evaluation. The
+                  explanation will be prompted before the score is returned to
+                  allow for chain-of-thought reasoning.
+                </FormDescription>
                 <FormControl>
                   <Input
                     placeholder="One sentence reasoning for the score"
                     {...field}
                   />
                 </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name="outputScore"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Score</FormLabel>
                 <FormDescription>
-                  We use function calls to extract data from the LLM. Specify
-                  what the LLM should return for the reasoning.
+                  Define how the LLM should return the evaluation score in
+                  natural language. Needs to yield a numeric value.
                 </FormDescription>
+                <FormControl>
+                  <Input {...field} placeholder="Score between 0 and 1" />
+                </FormControl>
                 <FormMessage />
               </FormItem>
             )}
@@ -473,6 +481,15 @@ export const InnerEvalTemplateForm = (props: {
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Referenced evaluators</FormLabel>
+                  <FormDescription>
+                    {evaluatorsByTemplateNameQuery.data?.evaluators.length ?? 0}{" "}
+                    evaluator(s) are currently using this template.
+                    {Boolean(
+                      evaluatorsByTemplateNameQuery.data?.evaluators.length,
+                    )
+                      ? " Choose how to handle existing evaluators with this update."
+                      : " No evaluators to update."}
+                  </FormDescription>
                   <FormControl>
                     <RadioGroup
                       {...field}
@@ -509,15 +526,6 @@ export const InnerEvalTemplateForm = (props: {
                       </FormItem>
                     </RadioGroup>
                   </FormControl>
-                  <FormDescription>
-                    {evaluatorsByTemplateNameQuery.data?.evaluators.length ?? 0}{" "}
-                    evaluator(s) are currently using this template.{" "}
-                    {Boolean(
-                      evaluatorsByTemplateNameQuery.data?.evaluators.length,
-                    )
-                      ? "Would you like to update them to use this version?"
-                      : "No evaluators to update."}
-                  </FormDescription>
                   <FormMessage />
                 </FormItem>
               )}
@@ -545,7 +553,6 @@ export const InnerEvalTemplateForm = (props: {
                 modelParamsDescription:
                   "Select a model which supports function calling.",
               }}
-              evalModelsOnly
               formDisabled={!props.isEditing}
             />
           </div>

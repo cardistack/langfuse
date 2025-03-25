@@ -28,6 +28,7 @@ import Auth0Provider from "next-auth/providers/auth0";
 import CognitoProvider from "next-auth/providers/cognito";
 import AzureADProvider from "next-auth/providers/azure-ad";
 import KeycloakProvider from "next-auth/providers/keycloak";
+import WorkOSProvider from "next-auth/providers/workos";
 import { type Provider } from "next-auth/providers/index";
 import { getCookieName, getCookieOptions } from "./utils/cookies";
 import {
@@ -50,6 +51,7 @@ import {
 } from "@/src/features/entitlements/server/getPlan";
 import { projectRoleAccessRights } from "@/src/features/rbac/constants/projectAccessRights";
 import { hasEntitlementBasedOnPlan } from "@/src/features/entitlements/server/hasEntitlement";
+import { getSSOBlockedDomains } from "@/src/features/auth-credentials/server/signupApiHandler";
 
 function canCreateOrganizations(userEmail: string | null): boolean {
   const instancePlan = getSelfHostedInstancePlanServerSide();
@@ -111,8 +113,7 @@ const staticProviders: Provider[] = [
         }
       }
 
-      const blockedDomains =
-        env.AUTH_DOMAINS_WITH_SSO_ENFORCEMENT?.split(",") ?? [];
+      const blockedDomains = getSSOBlockedDomains();
       const domain = credentials.email.split("@")[1]?.toLowerCase();
       if (domain && blockedDomains.includes(domain)) {
         throw new Error(
@@ -184,15 +185,16 @@ if (
       clientId: env.AUTH_CUSTOM_CLIENT_ID,
       clientSecret: env.AUTH_CUSTOM_CLIENT_SECRET,
       issuer: env.AUTH_CUSTOM_ISSUER,
+      idToken: env.AUTH_CUSTOM_ID_TOKEN !== "false", // defaults to true
       allowDangerousEmailAccountLinking:
         env.AUTH_CUSTOM_ALLOW_ACCOUNT_LINKING === "true",
       authorization: {
         params: { scope: env.AUTH_CUSTOM_SCOPE ?? "openid email profile" },
       },
       client: {
-        token_endpoint_auth_method:
-          env.AUTH_CUSTOM_CLIENT_AUTH_METHOD ?? "client_secret_basic",
+        token_endpoint_auth_method: env.AUTH_CUSTOM_CLIENT_AUTH_METHOD,
       },
+      checks: env.AUTH_CUSTOM_CHECKS,
     }),
   );
 
@@ -203,6 +205,10 @@ if (env.AUTH_GOOGLE_CLIENT_ID && env.AUTH_GOOGLE_CLIENT_SECRET)
       clientSecret: env.AUTH_GOOGLE_CLIENT_SECRET,
       allowDangerousEmailAccountLinking:
         env.AUTH_GOOGLE_ALLOW_ACCOUNT_LINKING === "true",
+      client: {
+        token_endpoint_auth_method: env.AUTH_GOOGLE_CLIENT_AUTH_METHOD,
+      },
+      checks: env.AUTH_GOOGLE_CHECKS,
     }),
   );
 
@@ -218,6 +224,10 @@ if (
       issuer: env.AUTH_OKTA_ISSUER,
       allowDangerousEmailAccountLinking:
         env.AUTH_OKTA_ALLOW_ACCOUNT_LINKING === "true",
+      client: {
+        token_endpoint_auth_method: env.AUTH_OKTA_CLIENT_AUTH_METHOD,
+      },
+      checks: env.AUTH_OKTA_CHECKS,
     }),
   );
 
@@ -233,6 +243,10 @@ if (
       issuer: env.AUTH_AUTH0_ISSUER,
       allowDangerousEmailAccountLinking:
         env.AUTH_AUTH0_ALLOW_ACCOUNT_LINKING === "true",
+      client: {
+        token_endpoint_auth_method: env.AUTH_AUTH0_CLIENT_AUTH_METHOD,
+      },
+      checks: env.AUTH_AUTH0_CHECKS,
     }),
   );
 
@@ -243,6 +257,10 @@ if (env.AUTH_GITHUB_CLIENT_ID && env.AUTH_GITHUB_CLIENT_SECRET)
       clientSecret: env.AUTH_GITHUB_CLIENT_SECRET,
       allowDangerousEmailAccountLinking:
         env.AUTH_GITHUB_ALLOW_ACCOUNT_LINKING === "true",
+      client: {
+        token_endpoint_auth_method: env.AUTH_GITHUB_CLIENT_AUTH_METHOD,
+      },
+      checks: env.AUTH_GITHUB_CHECKS,
     }),
   );
 
@@ -258,6 +276,11 @@ if (
       enterprise: { baseUrl: env.AUTH_GITHUB_ENTERPRISE_BASE_URL },
       allowDangerousEmailAccountLinking:
         env.AUTH_GITHUB_ENTERPRISE_ALLOW_ACCOUNT_LINKING === "true",
+      client: {
+        token_endpoint_auth_method:
+          env.AUTH_GITHUB_ENTERPRISE_CLIENT_AUTH_METHOD,
+      },
+      checks: env.AUTH_GITHUB_ENTERPRISE_CHECKS,
     }),
   );
 }
@@ -270,6 +293,16 @@ if (env.AUTH_GITLAB_CLIENT_ID && env.AUTH_GITLAB_CLIENT_SECRET)
       allowDangerousEmailAccountLinking:
         env.AUTH_GITLAB_ALLOW_ACCOUNT_LINKING === "true",
       issuer: env.AUTH_GITLAB_ISSUER,
+      client: {
+        token_endpoint_auth_method: env.AUTH_GITLAB_CLIENT_AUTH_METHOD,
+      },
+      authorization: {
+        url: `${env.AUTH_GITLAB_URL}/oauth/authorize`,
+        params: { scope: "read_user" },
+      },
+      token: `${env.AUTH_GITLAB_URL}/oauth/token`,
+      userinfo: `${env.AUTH_GITLAB_URL}/api/v4/user`,
+      checks: env.AUTH_GITLAB_CHECKS,
     }),
   );
 
@@ -284,7 +317,11 @@ if (
       clientSecret: env.AUTH_AZURE_AD_CLIENT_SECRET,
       tenantId: env.AUTH_AZURE_AD_TENANT_ID,
       allowDangerousEmailAccountLinking:
-        env.AUTH_AZURE_ALLOW_ACCOUNT_LINKING === "true",
+        env.AUTH_AZURE_AD_ALLOW_ACCOUNT_LINKING === "true",
+      client: {
+        token_endpoint_auth_method: env.AUTH_AZURE_AD_CLIENT_AUTH_METHOD,
+      },
+      checks: env.AUTH_AZURE_AD_CHECKS,
     }),
   );
 
@@ -298,9 +335,12 @@ if (
       clientId: env.AUTH_COGNITO_CLIENT_ID,
       clientSecret: env.AUTH_COGNITO_CLIENT_SECRET,
       issuer: env.AUTH_COGNITO_ISSUER,
-      checks: "nonce",
+      checks: env.AUTH_COGNITO_CHECKS ?? "nonce",
       allowDangerousEmailAccountLinking:
         env.AUTH_COGNITO_ALLOW_ACCOUNT_LINKING === "true",
+      client: {
+        token_endpoint_auth_method: env.AUTH_COGNITO_CLIENT_AUTH_METHOD,
+      },
     }),
   );
 
@@ -316,6 +356,23 @@ if (
       issuer: env.AUTH_KEYCLOAK_ISSUER,
       allowDangerousEmailAccountLinking:
         env.AUTH_KEYCLOAK_ALLOW_ACCOUNT_LINKING === "true",
+      client: {
+        token_endpoint_auth_method: env.AUTH_KEYCLOAK_CLIENT_AUTH_METHOD,
+      },
+      checks: env.AUTH_KEYCLOAK_CHECKS,
+    }),
+  );
+
+if (env.AUTH_WORKOS_CLIENT_ID && env.AUTH_WORKOS_CLIENT_SECRET)
+  staticProviders.push(
+    WorkOSProvider({
+      clientId: env.AUTH_WORKOS_CLIENT_ID,
+      clientSecret: env.AUTH_WORKOS_CLIENT_SECRET,
+      allowDangerousEmailAccountLinking:
+        env.AUTH_WORKOS_ALLOW_ACCOUNT_LINKING === "true",
+      client: {
+        token_endpoint_auth_method: "client_secret_post",
+      },
     }),
   );
 
@@ -358,6 +415,11 @@ const extendedPrismaAdapter: Adapter = {
     if (data.provider === "keycloak") {
       delete data["refresh_expires_in"];
       delete data["not-before-policy"];
+    }
+
+    // WorkOS returns profile data that doesn't match the schema
+    if (data.provider === "workos") {
+      delete data["profile"];
     }
 
     // Optionally, remove fields returned by the provider that cause issues with the adapter
@@ -469,6 +531,7 @@ export async function getAuthOptions(): Promise<NextAuthOptions> {
                                 id: project.id,
                                 name: project.name,
                                 role: projectRole,
+                                retentionDays: project.retentionDays,
                                 deletedAt: project.deletedAt,
                               };
                             })

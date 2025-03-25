@@ -7,16 +7,17 @@ import { TotalMetric } from "@/src/features/dashboard/components/TotalMetric";
 import { BarList } from "@tremor/react";
 import { compactNumberFormatter } from "@/src/utils/numbers";
 import { NoDataOrLoading } from "@/src/components/NoDataOrLoading";
-import { useClickhouse } from "@/src/components/layouts/ClickhouseAdminToggle";
 
 export const TracesBarListChart = ({
   className,
   projectId,
   globalFilterState,
+  isLoading = false,
 }: {
   className?: string;
   projectId: string;
   globalFilterState: FilterState;
+  isLoading?: boolean;
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const timeFilter = globalFilterState.map((f) =>
@@ -29,7 +30,6 @@ export const TracesBarListChart = ({
       from: "traces",
       select: [{ column: "traceId", agg: "COUNT" }],
       filter: timeFilter,
-      queryClickhouse: useClickhouse(),
       queryName: "traces-total",
     },
     {
@@ -38,6 +38,7 @@ export const TracesBarListChart = ({
           skipBatch: true,
         },
       },
+      enabled: !isLoading,
     },
   );
 
@@ -49,7 +50,6 @@ export const TracesBarListChart = ({
       filter: timeFilter,
       groupBy: [{ column: "traceName", type: "string" }],
       orderBy: [{ column: "traceId", direction: "DESC", agg: "COUNT" }],
-      queryClickhouse: useClickhouse(),
       queryName: "traces-grouped-by-name",
     },
     {
@@ -58,6 +58,7 @@ export const TracesBarListChart = ({
           skipBatch: true,
         },
       },
+      enabled: !isLoading,
     },
   );
 
@@ -81,7 +82,7 @@ export const TracesBarListChart = ({
       className={className}
       title={"Traces"}
       description={null}
-      isLoading={traces.isLoading || totalTraces.isLoading}
+      isLoading={isLoading || traces.isLoading || totalTraces.isLoading}
     >
       <>
         <TotalMetric
@@ -104,7 +105,7 @@ export const TracesBarListChart = ({
           </>
         ) : (
           <NoDataOrLoading
-            isLoading={traces.isLoading || totalTraces.isLoading}
+            isLoading={isLoading || traces.isLoading || totalTraces.isLoading}
             description="Traces contain details about LLM applications and can be created using the SDK."
             href="https://langfuse.com/docs/get-started"
           />

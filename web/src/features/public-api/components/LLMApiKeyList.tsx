@@ -49,12 +49,16 @@ export function LlmApiKeyList(props: { projectId: string }) {
     },
   );
 
+  const hasExtraHeaderKeys = apiKeys.data?.data.some(
+    (key) => key.extraHeaderKeys.length > 0,
+  );
+
   if (!isAvailable) return null;
 
   if (!hasAccess) {
     return (
       <div>
-        <Header title="LLM API Keys" level="h3" />
+        <Header title="LLM API Keys" />
         <Alert>
           <AlertTitle>Access Denied</AlertTitle>
           <AlertDescription>
@@ -67,7 +71,7 @@ export function LlmApiKeyList(props: { projectId: string }) {
 
   return (
     <div id="llm-api-keys">
-      <Header title="LLM API keys" level="h3" />
+      <Header title="LLM API keys" />
       <p className="mb-4 text-sm">
         These keys are used to power the Langfuse playground and evaluations
         feature and will incur costs based on usage with your key provider.
@@ -89,6 +93,9 @@ export function LlmApiKeyList(props: { projectId: string }) {
                 Base URL
               </TableHead>
               <TableHead className="text-primary">Secret Key</TableHead>
+              {hasExtraHeaderKeys ? (
+                <TableHead className="text-primary">Extra headers</TableHead>
+              ) : null}
               <TableHead />
             </TableRow>
           </TableHeader>
@@ -116,6 +123,9 @@ export function LlmApiKeyList(props: { projectId: string }) {
                   <TableCell className="font-mono">
                     {apiKey.displaySecretKey}
                   </TableCell>
+                  {hasExtraHeaderKeys ? (
+                    <TableCell> {apiKey.extraHeaderKeys.join(", ")} </TableCell>
+                  ) : null}
                   <TableCell>
                     <DeleteApiKeyButton
                       projectId={props.projectId}

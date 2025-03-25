@@ -19,6 +19,8 @@ import {
   PostDatasetRunItemsV1Response,
   PostDatasetsV1Response,
   PostDatasetsV2Response,
+  DeleteDatasetItemV1Response,
+  DeleteDatasetRunV1Response,
 } from "@/src/features/public-api/types/datasets";
 import { v4 as uuidv4 } from "uuid";
 import {
@@ -213,6 +215,102 @@ describe("/api/public/datasets and /api/public/dataset-items API Endpoints", () 
     expect(getDataset.status).toBe(200);
     expect(getDataset.body.items).toHaveLength(1);
     expect(getDataset.body.items[0].id).toEqual("active-item-id");
+  });
+
+  it("should correctly update dataset items", async () => {
+    const datasetItemId = v4();
+    const datasetName = v4();
+
+    await prisma.dataset.create({
+      data: {
+        name: datasetName,
+        projectId: projectId,
+      },
+    });
+
+    await makeZodVerifiedAPICall(
+      PostDatasetItemsV1Response,
+      "POST",
+      "/api/public/dataset-items",
+      {
+        datasetName: datasetName,
+        id: datasetItemId,
+        input: { key: "value" },
+        expectedOutput: { key: "value" },
+        metadata: null,
+        sourceTraceId: null,
+        sourceObservationId: null,
+        status: null,
+      },
+      auth,
+    );
+
+    await makeZodVerifiedAPICall(
+      PostDatasetItemsV1Response,
+      "POST",
+      "/api/public/dataset-items",
+      {
+        datasetName: datasetName,
+        id: datasetItemId,
+        input: { john: "doe" },
+        expectedOutput: { john: "doe" },
+        metadata: null,
+        sourceTraceId: null,
+        sourceObservationId: null,
+        status: null,
+      },
+      auth,
+    );
+
+    const databaseDatasetItem = await prisma.datasetItem.findFirst({
+      where: {
+        id: datasetItemId,
+      },
+    });
+    expect(databaseDatasetItem).toMatchObject({
+      input: { john: "doe" },
+      expectedOutput: { john: "doe" },
+    });
+  });
+
+  it("should return 404 when trying to update dataset item that exists in different dataset of the same project", async () => {
+    const datasetItemId = v4();
+
+    const dataset = await prisma.dataset.create({
+      data: {
+        name: "dataset-name-1",
+        projectId: projectId,
+      },
+    });
+
+    await prisma.dataset.create({
+      data: {
+        name: "dataset-name-2",
+        projectId: projectId,
+      },
+    });
+
+    await prisma.datasetItem.create({
+      data: {
+        id: datasetItemId,
+        datasetId: dataset.id,
+        projectId: projectId,
+      },
+    });
+
+    const response = await makeAPICall(
+      "POST",
+      "/api/public/dataset-items",
+      {
+        datasetName: "dataset-name-2",
+        id: datasetItemId,
+        input: { key: "new-value" },
+        expectedOutput: { key: "new-value" },
+      },
+      auth,
+    );
+
+    expect(response.status).toBe(404);
   });
 
   it("GET datasets (v1 & v2)", async () => {
@@ -928,6 +1026,124 @@ describe("/api/public/datasets and /api/public/dataset-items API Endpoints", () 
     });
   });
 
+  it("should delete a dataset run and its run items", async () => {
+    const datasetName = `dataset-${uuidv4()}`;
+    const runName = `run-${uuidv4()}`;
+    const nonExistentRunName = `non-existent-${uuidv4()}`;
+
+    // Create a dataset
+    const dataset = await makeZodVerifiedAPICall(
+      PostDatasetsV1Response,
+      "POST",
+      "/api/public/datasets",
+      {
+        name: datasetName,
+      },
+      auth,
+    );
+    expect(dataset.status).toBe(200);
+
+    // Create a dataset item
+    const datasetItem = await makeZodVerifiedAPICall(
+      PostDatasetItemsV1Response,
+      "POST",
+      "/api/public/dataset-items",
+      {
+        datasetName,
+        id: uuidv4(),
+        input: { key: "value" },
+      },
+      auth,
+    );
+    expect(datasetItem.status).toBe(200);
+
+    // Create a dataset run with run items
+    const runItem = await makeZodVerifiedAPICall(
+      PostDatasetRunItemsV1Response,
+      "POST",
+      "/api/public/dataset-run-items",
+      {
+        datasetItemId: datasetItem.body.id,
+        traceId: traceId,
+        runName: runName,
+        metadata: { key: "value" },
+      },
+      auth,
+    );
+    expect(runItem.status).toBe(200);
+
+    // Create another project and auth to test cross-project access
+    const { auth: otherAuth } = await createOrgProjectAndApiKey();
+
+    // Attempt to delete run with different project's auth should fail
+    const deleteWithWrongAuth = await makeAPICall(
+      "DELETE",
+      `/api/public/datasets/${encodeURIComponent(datasetName)}/runs/${encodeURIComponent(runName)}`,
+      undefined,
+      otherAuth,
+    );
+    expect(deleteWithWrongAuth.status).toBe(404);
+
+    // Attempt to delete non-existent run should fail
+    const deleteNonExistent = await makeAPICall(
+      "DELETE",
+      `/api/public/datasets/${encodeURIComponent(datasetName)}/runs/${encodeURIComponent(nonExistentRunName)}`,
+      undefined,
+      auth,
+    );
+    expect(deleteNonExistent.status).toBe(404);
+
+    // Verify run exists in database before deletion
+    const dbRunBeforeDelete = await prisma.datasetRuns.findFirst({
+      where: {
+        name: runName,
+        projectId: dataset.body.projectId,
+        dataset: {
+          name: datasetName,
+        },
+      },
+      include: {
+        datasetRunItems: true,
+      },
+    });
+    expect(dbRunBeforeDelete).not.toBeNull();
+    expect(dbRunBeforeDelete?.datasetRunItems.length).toBe(1);
+
+    // Delete the run and verify response matches DeleteDatasetRunV1Response
+    const deleteResponse = await makeZodVerifiedAPICall(
+      DeleteDatasetRunV1Response,
+      "DELETE",
+      `/api/public/datasets/${encodeURIComponent(datasetName)}/runs/${encodeURIComponent(runName)}`,
+      undefined,
+      auth,
+    );
+    expect(deleteResponse.status).toBe(200);
+    expect(deleteResponse.body).toEqual({
+      message: "Dataset run successfully deleted",
+    });
+
+    // Verify run no longer exists in database
+    const dbRunAfterDelete = await prisma.datasetRuns.findFirst({
+      where: {
+        name: runName,
+        projectId: dataset.body.projectId,
+        dataset: {
+          name: datasetName,
+        },
+      },
+    });
+    expect(dbRunAfterDelete).toBeNull();
+
+    // Verify run items are also deleted
+    const dbRunItems = await prisma.datasetRunItems.findMany({
+      where: {
+        datasetRunId: dbRunBeforeDelete?.id,
+        projectId: dataset.body.projectId,
+      },
+    });
+    expect(dbRunItems).toHaveLength(0);
+  });
+
   it("dataset-run-items should fail when neither trace nor observation provided", async () => {
     const response = await makeAPICall(
       "POST",
@@ -1029,5 +1245,127 @@ describe("/api/public/datasets and /api/public/dataset-items API Endpoints", () 
         }),
       ]),
     );
+  });
+
+  it("should delete a dataset item and its run items", async () => {
+    const datasetName = `dataset-${uuidv4()}`;
+    const itemId = `item-${uuidv4()}`;
+    const nonExistentItemId = `non-existent-${uuidv4()}`;
+
+    // Create a dataset
+    const dataset = await makeZodVerifiedAPICall(
+      PostDatasetsV1Response,
+      "POST",
+      "/api/public/datasets",
+      {
+        name: datasetName,
+      },
+      auth,
+    );
+    expect(dataset.status).toBe(200);
+
+    // Create a dataset item
+    const datasetItem = await makeZodVerifiedAPICall(
+      PostDatasetItemsV1Response,
+      "POST",
+      "/api/public/dataset-items",
+      {
+        datasetName,
+        id: itemId,
+        input: { key: "value" },
+        expectedOutput: { key: "value" },
+        metadata: { key: "value" },
+      },
+      auth,
+    );
+    expect(datasetItem.status).toBe(200);
+    expect(datasetItem.body.id).toBe(itemId);
+
+    // Create another project and auth to test cross-project access
+    const { auth: otherAuth } = await createOrgProjectAndApiKey();
+
+    // Attempt to delete item with different project's auth should fail
+    const deleteWithWrongAuth = await makeAPICall(
+      "DELETE",
+      `/api/public/dataset-items/${itemId}`,
+      undefined,
+      otherAuth,
+    );
+    expect(deleteWithWrongAuth.status).toBe(404);
+
+    // Attempt to delete non-existent item should fail
+    const deleteNonExistent = await makeAPICall(
+      "DELETE",
+      `/api/public/dataset-items/${nonExistentItemId}`,
+      undefined,
+      auth,
+    );
+    expect(deleteNonExistent.status).toBe(404);
+
+    // Create a run item associated with the dataset item
+    const runItem = await makeZodVerifiedAPICall(
+      PostDatasetRunItemsV1Response,
+      "POST",
+      "/api/public/dataset-run-items",
+      {
+        datasetItemId: itemId,
+        traceId: traceId,
+        runName: `run-${uuidv4()}`,
+        metadata: { key: "value" },
+      },
+      auth,
+    );
+    expect(runItem.status).toBe(200);
+
+    // Verify run item exists in database
+    const dbRunItem = await prisma.datasetRunItems.findFirst({
+      where: {
+        datasetItemId: itemId,
+        projectId: dataset.body.projectId,
+      },
+    });
+    expect(dbRunItem).not.toBeNull();
+
+    // Delete the item and verify response matches DeleteDatasetItemV1Response
+    const deleteResponse = await makeZodVerifiedAPICall(
+      DeleteDatasetItemV1Response,
+      "DELETE",
+      `/api/public/dataset-items/${itemId}`,
+      undefined,
+      auth,
+    );
+    expect(deleteResponse.status).toBe(200);
+    expect(deleteResponse.body).toEqual({
+      message: "Dataset item successfully deleted",
+    });
+
+    // Verify item no longer exists
+    const getDeletedItem = await makeAPICall(
+      "GET",
+      `/api/public/dataset-items/${itemId}`,
+      undefined,
+      auth,
+    );
+    expect(getDeletedItem.status).toBe(404);
+
+    // Verify item is removed from database
+    const dbItem = await prisma.datasetItem.findUnique({
+      where: {
+        id_projectId: {
+          id: itemId,
+          projectId: dataset.body.projectId,
+        },
+      },
+    });
+    expect(dbItem).toBeNull();
+
+    // Verify run items are also deleted
+    const dbRunItemAfterDelete = await prisma.datasetRunItems.findFirst({
+      where: {
+        datasetItemId: itemId,
+        projectId: dataset.body.projectId,
+      },
+    });
+    expect(dbRunItemAfterDelete).toBeNull();
   });
 });

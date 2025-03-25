@@ -7,6 +7,16 @@ import { env } from "@/src/env.mjs";
 This API route is used by Langfuse Cloud to retry failed bullmq jobs.
 */
 
+const BullStatus = z.enum([
+  "completed",
+  "failed",
+  "active",
+  "delayed",
+  "prioritized",
+  "paused",
+  "wait",
+]);
+
 const ManageBullBody = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("retry"),
@@ -15,15 +25,7 @@ const ManageBullBody = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("remove"),
     queueNames: z.array(z.string()),
-    bullStatus: z.enum([
-      "completed",
-      "failed",
-      "active",
-      "delayed",
-      "prioritized",
-      "paused",
-      "wait",
-    ]),
+    bullStatus: BullStatus,
   }),
 ]);
 

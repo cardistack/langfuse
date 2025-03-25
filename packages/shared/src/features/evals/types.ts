@@ -17,6 +17,7 @@ export const variableMapping = z
     objectName: z.string().nullish(),
     langfuseObject: z.enum(langfuseObjects),
     selectedColumnId: z.string(),
+    jsonSelector: z.string().nullish(),
   })
   .refine(
     (value) => value.langfuseObject === "trace" || value.objectName !== null,
@@ -32,6 +33,7 @@ export const wipVariableMapping = z.object({
   objectName: z.string().nullish(),
   langfuseObject: z.enum(langfuseObjects),
   selectedColumnId: z.string().nullish(),
+  jsonSelector: z.string().nullish(),
 });
 
 const observationCols = [
@@ -104,9 +106,9 @@ export const OutputSchema = z.object({
   score: z.string(),
 });
 
-export enum EvalTargetObject {
-  Trace = "trace",
-  Dataset = "dataset",
-}
-
 export const DEFAULT_TRACE_JOB_DELAY = 10_000;
+
+export const JobTimeScopeZod = z.enum(["NEW", "EXISTING"]);
+export type JobTimeScope = z.infer<typeof JobTimeScopeZod>;
+
+export const TimeScopeSchema = z.array(JobTimeScopeZod).default(["NEW"]);

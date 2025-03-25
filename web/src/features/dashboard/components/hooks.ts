@@ -1,12 +1,11 @@
 import { type TimeSeriesChartDataPoint } from "@/src/features/dashboard/components/BaseTimeSeriesChart";
 import { type FilterState } from "@langfuse/shared";
-import { type DatabaseRow } from "@/src/server/api/services/queryBuilder";
+import { type DatabaseRow } from "@/src/server/api/services/sqlInterface";
 import { api } from "@/src/utils/api";
 
 export const getAllModels = (
   projectId: string,
   globalFilterState: FilterState,
-  useClickhouse: boolean,
 ) => {
   const allModels = api.dashboard.chart.useQuery(
     {
@@ -23,7 +22,6 @@ export const getAllModels = (
         },
       ],
       groupBy: [{ type: "string", column: "model" }],
-      queryClickhouse: useClickhouse,
       queryName: "distinct-models",
     },
     {
@@ -38,10 +36,15 @@ export const getAllModels = (
   return allModels.data ? extractAllModels(allModels.data) : [];
 };
 
-const extractAllModels = (data: DatabaseRow[]): string[] => {
+const extractAllModels = (
+  data: DatabaseRow[],
+): { model: string; count: number }[] => {
   return data
     .filter((item) => item.model !== null)
-    .map((item) => item.model as string);
+    .map((item) => ({
+      model: item.model as string,
+      count: item.count as number,
+    }));
 };
 
 type ChartData = {
@@ -138,7 +141,6 @@ export function fillMissingValuesAndTransform(
       values: chartDataArray,
     });
   });
-
   return result;
 }
 

@@ -22,7 +22,10 @@ export const generateDailyMetrics = async (props: QueryType) => {
     props,
     filterParams,
   );
+  const hasTracesFilter = filter.some((f) => f.clickhouseTable === "traces");
+  const tracesFilter = filter.filter((f) => f.clickhouseTable === "traces");
   const appliedFilter = filter.apply();
+  const appliedTracesFilter = tracesFilter.apply();
 
   const timeFilter = filter.find(
     (f) =>
@@ -38,8 +41,8 @@ export const generateDailyMetrics = async (props: QueryType) => {
         o.provided_model_name as model,
         count(o.id) as countObservations,
         count(distinct t.id) as countTraces,
-        arraySum(mapValues(mapFilter(x -> positionCaseInsensitive(x.1, 'input') > 0, o.usage_details))) as inputUsage,
-        arraySum(mapValues(mapFilter(x -> positionCaseInsensitive(x.1, 'output') > 0, o.usage_details))) as outputUsage,
+        sum(arraySum(mapValues(mapFilter(x -> positionCaseInsensitive(x.1, 'input') > 0, o.usage_details)))) as inputUsage,
+        sum(arraySum(mapValues(mapFilter(x -> positionCaseInsensitive(x.1, 'output') > 0, o.usage_details)))) as outputUsage,
         sumMap(o.usage_details)['total'] as totalUsage,
         sum(coalesce(o.total_cost, 0)) as totalCost
       FROM traces t FINAL
@@ -48,7 +51,7 @@ export const generateDailyMetrics = async (props: QueryType) => {
       AND t.project_id = {projectId: String}
       ${filter.length() > 0 ? `AND ${appliedFilter.query}` : ""}
       ${timeFilter ? `AND start_time >= {cteTimeFilter: DateTime64(3)} - ${TRACE_TO_OBSERVATIONS_INTERVAL}` : ""}
-      GROUP BY date, model, usage_details
+      GROUP BY date, model
     ), daily_model_usage AS (
       SELECT
         "date",
@@ -71,7 +74,7 @@ export const generateDailyMetrics = async (props: QueryType) => {
         count(t.id) as countTraces
       FROM traces t FINAL
       WHERE t.project_id = {projectId: String}
-      ${filter.length() > 0 ? `AND ${appliedFilter.query}` : ""}
+      ${hasTracesFilter ? `AND ${appliedTracesFilter.query}` : ""}
       GROUP BY date
     )
       
@@ -96,6 +99,7 @@ export const generateDailyMetrics = async (props: QueryType) => {
   }>({
     query,
     params: {
+      ...appliedTracesFilter.params,
       ...appliedFilter.params,
       projectId: props.projectId,
       ...(props.limit !== undefined ? { limit: props.limit } : {}),
@@ -135,7 +139,9 @@ export const getDailyMetricsCount = async (props: QueryType) => {
     props,
     filterParams,
   );
-  const appliedFilter = filter.apply();
+  const appliedFilter = filter
+    .filter((f) => f.clickhouseTable === "traces")
+    .apply();
 
   const query = `
     SELECT count(distinct toDate(timestamp)) as count
@@ -172,6 +178,20 @@ const filterParams = [
     filterType: "ArrayOptionsFilter",
     clickhouseTable: "traces",
     clickhousePrefix: "t",
+  },
+  {
+    id: "traceEnvironment",
+    clickhouseSelect: "environment",
+    filterType: "StringOptionsFilter",
+    clickhouseTable: "traces",
+    clickhousePrefix: "t",
+  },
+  {
+    id: "observationEnvironment",
+    clickhouseSelect: "environment",
+    filterType: "StringOptionsFilter",
+    clickhouseTable: "observations",
+    clickhousePrefix: "o",
   },
   {
     id: "fromTimestamp",

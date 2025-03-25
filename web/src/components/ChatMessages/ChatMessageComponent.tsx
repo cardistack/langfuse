@@ -1,10 +1,14 @@
 import { capitalize } from "lodash";
 import { GripVertical, MinusCircleIcon } from "lucide-react";
-import { type ChangeEvent, useEffect, useState, useRef } from "react";
-import { ChatMessageRole, type ChatMessageWithId } from "@langfuse/shared";
+import { memo, useState, useCallback } from "react";
+import {
+  ChatMessageRole,
+  SYSTEM_ROLES,
+  type ChatMessageWithId,
+} from "@langfuse/shared";
 import { Button } from "@/src/components/ui/button";
 import { Card, CardContent } from "@/src/components/ui/card";
-import { Textarea } from "@/src/components/ui/textarea";
+import { CodeMirrorEditor } from "@/src/components/editor";
 import type { MessagesContext } from "./types";
 import { useSortable } from "@dnd-kit/sortable";
 import { cn } from "@/src/utils/tailwind";
@@ -13,16 +17,37 @@ import { CSS } from "@dnd-kit/utilities";
 type ChatMessageProps = Pick<
   MessagesContext,
   "deleteMessage" | "updateMessage" | "availableRoles"
-> & { message: ChatMessageWithId };
+> & { message: ChatMessageWithId; index: number };
+
+const ROLES: string[] = [
+  ChatMessageRole.User,
+  ChatMessageRole.System,
+  ChatMessageRole.Developer,
+  ChatMessageRole.Assistant,
+];
+
+const getRoleNamePlaceholder = (role: string) => {
+  switch (role) {
+    case ChatMessageRole.System:
+      return "a system";
+    case ChatMessageRole.Developer:
+      return "a developer";
+    case ChatMessageRole.Assistant:
+      return "an assistant";
+    case ChatMessageRole.User:
+      return "a user";
+    default:
+      return `a ${role}`;
+  }
+};
 
 export const ChatMessageComponent: React.FC<ChatMessageProps> = ({
   message,
   updateMessage,
   deleteMessage,
   availableRoles,
+  index,
 }) => {
-  const textAreaRef = useRef<HTMLTextAreaElement | null>(null);
-  const [textAreaRows, setTextAreaRows] = useState(1);
   const [roleIndex, setRoleIndex] = useState(1);
 
   const {
@@ -35,8 +60,6 @@ export const ChatMessageComponent: React.FC<ChatMessageProps> = ({
   } = useSortable({ id: message.id });
 
   const toggleRole = () => {
-    if (message.role === ChatMessageRole.System) return;
-
     // if user has set custom roles, available roles will be non-empty and we toggle through custom and default roles (assistant, user)
     if (!!availableRoles && Boolean(availableRoles.length)) {
       let randomRole = availableRoles[roleIndex % availableRoles.length];
@@ -47,30 +70,26 @@ export const ChatMessageComponent: React.FC<ChatMessageProps> = ({
       setRoleIndex(roleIndex + 1);
     } else {
       // if user has not set custom roles, we toggle through default roles (assistant, user)
-      updateMessage(
-        message.id,
-        "role",
-        message.role === ChatMessageRole.User
-          ? ChatMessageRole.Assistant
-          : ChatMessageRole.User,
-      );
+      if (index === 0) {
+        const currentIndex = ROLES.indexOf(message.role);
+        const nextRole = ROLES[(currentIndex + 1) % ROLES.length];
+        updateMessage(message.id, "role", nextRole);
+      } else {
+        updateMessage(
+          message.id,
+          "role",
+          message.role === ChatMessageRole.User
+            ? ChatMessageRole.Assistant
+            : ChatMessageRole.User,
+        );
+      }
     }
   };
 
-  const handleContentChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
-    updateMessage(message.id, "content", event.target.value);
-  };
-
-  const placeholder = `Enter ${message.role === ChatMessageRole.User ? "a user" : message.role === ChatMessageRole.System ? "a system" : "an assistant"} message here.`;
-
-  useEffect(() => {
-    const textAreaWidth = textAreaRef.current?.clientWidth ?? 0;
-    const charsPerRow = Math.floor(textAreaWidth / 10);
-
-    setTextAreaRows(
-      countContentRows(message.content, charsPerRow || undefined),
-    );
-  }, [message.content]);
+  const onValueChange = useCallback(
+    (value: string) => updateMessage(message.id, "content", value),
+    [message.id, updateMessage],
+  );
 
   return (
     <Card
@@ -84,7 +103,7 @@ export const ChatMessageComponent: React.FC<ChatMessageProps> = ({
         "group relative whitespace-nowrap p-3",
       )}
     >
-      {message.role !== ChatMessageRole.System && (
+      {!SYSTEM_ROLES.includes(message.role) && (
         <div
           {...attributes}
           {...listeners}
@@ -94,32 +113,26 @@ export const ChatMessageComponent: React.FC<ChatMessageProps> = ({
         </div>
       )}
       <CardContent className="ml-4 flex flex-row space-x-1 p-0">
-        <div className="min-w-[6rem]">
+        <div className="min-w-[5rem]">
           <Button
             onClick={toggleRole}
             type="button" // prevents submitting a form if this button is inside a form
             variant="outline"
-            className="text-xs"
+            className="px-2 text-xs"
           >
             {capitalize(message.role)}
           </Button>
         </div>
-
-        <Textarea
-          ref={textAreaRef}
-          id={message.id}
-          className="height-[auto] min-h-6 w-full font-mono text-xs focus:outline-none"
-          placeholder={placeholder}
+        <MemoizedEditor
           value={message.content}
-          onChange={handleContentChange}
-          rows={textAreaRows}
+          onChange={onValueChange}
+          role={message.role}
         />
         <Button
           variant="ghost"
           type="button" // prevents submitting a form if this button is inside a form
           size="icon"
           onClick={() => deleteMessage(message.id)}
-          disabled={message.role === ChatMessageRole.System}
         >
           <MinusCircleIcon size={16} />
         </Button>
@@ -128,14 +141,24 @@ export const ChatMessageComponent: React.FC<ChatMessageProps> = ({
   );
 };
 
-function countContentRows(str: string, charsPerRow = 80) {
-  const lines = str.split("\n");
+const MemoizedEditor = memo(function MemoizedEditor(props: {
+  value: string;
+  role: (typeof ROLES)[1];
+  onChange: (value: string) => void;
+}) {
+  const { value, role, onChange } = props;
+  const placeholder = `Enter ${getRoleNamePlaceholder(role)} message here.`;
 
-  const totalRows = lines.reduce((acc, line) => {
-    const additionalRows = Math.max(1, Math.ceil(line.length / charsPerRow));
-
-    return acc + additionalRows;
-  }, 0);
-
-  return totalRows;
-}
+  return (
+    <CodeMirrorEditor
+      value={value}
+      onChange={onChange}
+      mode="prompt"
+      minHeight={30}
+      className="w-full"
+      editable={true}
+      lineNumbers={false}
+      placeholder={placeholder}
+    />
+  );
+});
