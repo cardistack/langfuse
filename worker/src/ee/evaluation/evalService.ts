@@ -3,7 +3,6 @@ import { sql } from "kysely";
 import { z } from "zod";
 import { JobConfigState } from "@prisma/client";
 import {
-  ScoreSource,
   QueueJobs,
   QueueName,
   EvalExecutionEvent,
@@ -23,6 +22,7 @@ import {
   StorageService,
   StorageServiceFactory,
   CreateEvalQueueEventType,
+  ChatMessageType,
 } from "@langfuse/shared/src/server";
 import {
   availableTraceEvalVariables,
@@ -39,6 +39,7 @@ import {
   availableDatasetEvalVariables,
   variableMapping,
   JobTimeScope,
+  ScoreSource,
 } from "@langfuse/shared";
 import { kyselyPrisma, prisma } from "@langfuse/shared/src/db";
 import { backOff } from "exponential-backoff";
@@ -65,16 +66,89 @@ const getS3StorageServiceClient = (bucketName: string): StorageService => {
   return s3StorageServiceClient;
 };
 
-// this function is used to determine which eval jobs to create for a given trace
-// there might be multiple eval jobs to create for a single trace
+/**
+ * Determines which eval jobs to create for a given event (traces or dataset run items).
+ * There might be multiple eval jobs to create for a single trace.
+ * Supports:
+ * - TraceQueue: Live trace data
+ * - DatasetRunItemUpsert: Live dataset run items
+ * - CreateEvalQueue: Historical batch data (traces or dataset run items)
+ *
+ * @param {Object} params - Function parameters
+ * @param {TraceQueueEventType|DatasetRunItemUpsertEventType|CreateEvalQueueEventType} params.event - Event that triggered job creation
+ * @param {Date} params.jobTimestamp - When the job was created
+ * @param {JobTimeScope} [params.enforcedJobTimeScope] - Optional filter for job configurations ("NEW"|"EXISTING")
+ *
+ * Data Flow Architecture for Evaluation Jobs
+ *
+ * ┌─────────────────────────┐    ┌─────────────────────────┐    ┌─────────────────────────┐
+ * │                         │    │                         │    │                         │
+ * │  TraceQueue             │    │  DatasetRunItemUpsert   │    │  CreateEvalQueue        │
+ * │  - Live trace data      │    │  - Live dataset run item│    │  - Historical batch     │
+ * │  - No timestamp in body │    │  - No timestamp in body │    │  - Has timestamp in body│
+ * │  - enforcedTimeScope=NEW│    │  - enforcedTimeScope=NEW│    │  - No enforcedTimeScope │
+ * │  - Always linked to     │    │  - Always linked to     │    │  - Always linked to     │
+ * │    traces only          │    │    traces & sometimes   │    │    traces & sometimes   │
+ * │                         │    │    to observations      │    │    to observations      │
+ * └──────────────┬──────────┘    └──────────────┬──────────┘    └──────────────┬──────────┘
+ *                │                              │                              │
+ *                │                              │                              │
+ *                └──────────────────┬───────────┴──────────────────────────────┘
+ *                                   │
+ *                                   ▼
+ * ┌───────────────────────────────────────────────────────────────────────────────────────┐
+ * │                                                                                       │
+ * │  createEvalJobs function                                                              │
+ * │  ───────────────────────                                                              │
+ * │                                                                                       │
+ * │                     ┌────────────────────────────┐                                    │
+ * │                     │                            │                                    │
+ * │                     │  1. Fetch & Filter         │                                    │
+ * │                     │  - Fetches job configs     │                                    │
+ * │                     │  - Filters by time scope   │                                    │
+ * │                     │  - Creates evaluation jobs │                                    │
+ * │                     │                            │                                    │
+ * │                     └───────────────┬────────────┘                                    │
+ * │                                     │                                                 │
+ * │                                     ▼                                                 │
+ * │                     ┌────────────────────────────┐                                    │
+ * │                     │                            │                                    │
+ * │                     │  2. Validation Checks      │                                    │
+ * │                     │                            │                                    │
+ * │                     ├────────────────────────────┤                                    │
+ * │                     │  ┌────────────────────┐    │                                    │
+ * │                     │  │ traceExists        │◄───┼── Always run for all events        │
+ * │                     │  └────────────────────┘    │                                    │
+ * │                     │                            │                                    │
+ * │                     │  ┌────────────────────┐    │                                    │
+ * │                     │  │ observationExists  │◄───┼── Only run for DatasetRunItemUpsert│
+ * │                     │  └────────────────────┘    │    and CreateEvalQueue if          │
+ * │                     │                            │    observationId is set            │
+ * │                     └───────────────┬────────────┘                                    │
+ * │                                     │                                                 │
+ * │                                     ▼                                                 │
+ * │                     ┌────────────────────────────┐                                    │
+ * │                     │                            │                                    │
+ * │                     │  3. EvaluationExecution    │                                    │
+ * │                     │  - Jobs queued with delay  │                                    │
+ * │                     │  - Includes job parameters │                                    │
+ * │                     │                            │                                    │
+ * │                     └────────────────────────────┘                                    │
+ * │                                                                                       │
+ * └───────────────────────────────────────────────────────────────────────────────────────┘
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────── │
+ */
 export const createEvalJobs = async ({
   event,
+  jobTimestamp,
   enforcedJobTimeScope,
 }: {
   event:
     | TraceQueueEventType
     | DatasetRunItemUpsertEventType
     | CreateEvalQueueEventType;
+  jobTimestamp: Date;
   enforcedJobTimeScope?: JobTimeScope;
 }) => {
   // Fetch all configs for a given project. Those may be dataset or trace configs.
@@ -123,7 +197,8 @@ export const createEvalJobs = async ({
     const traceExists = await checkTraceExists(
       event.projectId,
       event.traceId,
-      "timestamp" in event ? new Date(event.timestamp) : new Date(),
+      // Fallback to jobTimestamp if no payload timestamp is set to allow for successful retry attempts.
+      "timestamp" in event ? new Date(event.timestamp) : new Date(jobTimestamp),
       config.target_object === "trace" ? validatedFilter : [],
     );
 
@@ -156,7 +231,7 @@ export const createEvalJobs = async ({
         >(Prisma.sql`
           SELECT dataset_item_id as id
           FROM dataset_run_items as dri
-          JOIN dataset_items as di ON di.id = dri.dataset_item_id
+          JOIN dataset_items as di ON di.id = dri.dataset_item_id AND di.project_id = ${event.projectId}
           WHERE dri.project_id = ${event.projectId}
             AND dri.trace_id = ${event.traceId}
             ${condition}
@@ -176,7 +251,10 @@ export const createEvalJobs = async ({
       const observationExists = await checkObservationExists(
         event.projectId,
         observationId,
-        "timestamp" in event ? new Date(event.timestamp) : new Date(),
+        // Fallback to jobTimestamp if no payload timestamp is set to allow for successful retry attempts.
+        "timestamp" in event
+          ? new Date(event.timestamp)
+          : new Date(jobTimestamp),
       );
       if (!observationExists) {
         logger.warn(
@@ -305,7 +383,14 @@ export const evaluate = async ({
     .selectAll()
     .where("id", "=", event.jobExecutionId)
     .where("project_id", "=", event.projectId)
-    .executeTakeFirstOrThrow();
+    .executeTakeFirst();
+
+  if (!job) {
+    logger.info(
+      `Job execution with id ${event.jobExecutionId} for project ${event.projectId} not found. This was likely deleted by the user.`,
+    );
+    return;
+  }
 
   if (!job?.job_input_trace_id) {
     throw new ForbiddenError(
@@ -430,7 +515,13 @@ export const evaluate = async ({
     );
   }
 
-  const messages = [{ role: ChatMessageRole.User, content: prompt }];
+  const messages = [
+    {
+      type: ChatMessageType.User,
+      role: ChatMessageRole.User,
+      content: prompt,
+    } as const,
+  ];
 
   const parsedLLMOutput = await backOff(
     async () =>
@@ -503,7 +594,6 @@ export const evaluate = async ({
             validKey: true,
             scope: {
               projectId: event.projectId,
-              accessLevel: "scores",
             },
           },
         },
@@ -619,7 +709,7 @@ export async function extractVariablesFromTracingData({
           return { var: variable, value: "" };
         }
 
-        const trace = await getTraceById(traceId, projectId);
+        const trace = await getTraceById({ traceId, projectId });
 
         // user facing errors
         if (!trace) {

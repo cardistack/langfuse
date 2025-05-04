@@ -41,6 +41,7 @@ const EnvSchema = z.object({
     .enum(["true", "false"])
     .default("false"),
 
+  BATCH_EXPORT_PAGE_SIZE: z.coerce.number().positive().default(500),
   BATCH_EXPORT_ROW_LIMIT: z.coerce.number().positive().default(1_500_000),
   BATCH_EXPORT_DOWNLOAD_LINK_EXPIRATION_HOURS: z.coerce
     .number()
@@ -189,6 +190,9 @@ const EnvSchema = z.object({
   QUEUE_CONSUMER_DATA_RETENTION_QUEUE_IS_ENABLED: z
     .enum(["true", "false"])
     .default("true"),
+  QUEUE_CONSUMER_DEAD_LETTER_RETRY_QUEUE_IS_ENABLED: z
+    .enum(["true", "false"])
+    .default("false"),
 
   // Core data S3 upload - Langfuse Cloud
   LANGFUSE_S3_CORE_DATA_EXPORT_IS_ENABLED: z

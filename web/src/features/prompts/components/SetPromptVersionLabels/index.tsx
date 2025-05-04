@@ -87,19 +87,23 @@ export function SetPromptVersionLabels({
   });
 
   const handleSubmitLabels = async () => {
-    if (!projectId) {
-      alert("Project ID is missing");
-      return;
+    try {
+      if (!projectId) {
+        alert("Project ID is missing");
+        return;
+      }
+
+      await mutatePromptVersionLabels.mutateAsync({
+        projectId: projectId as string,
+        promptId: prompt.id,
+        labels: selectedLabels,
+      });
+
+      capture("prompt_detail:apply_labels", { labels: selectedLabels });
+      setIsOpen(false);
+    } catch (err) {
+      console.error(err);
     }
-
-    await mutatePromptVersionLabels.mutateAsync({
-      projectId: projectId as string,
-      promptId: prompt.id,
-      labels: selectedLabels,
-    });
-
-    capture("prompt_detail:apply_labels", { labels: selectedLabels });
-    setIsOpen(false);
   };
 
   const handleOnOpenChange = (open: boolean) => {
@@ -139,12 +143,10 @@ export function SetPromptVersionLabels({
         </div>
       </PopoverTrigger>
       <PopoverContent
-        className="fixed max-h-[50vh] overflow-y-auto"
-        style={{
-          top: "var(--popover-top)",
-          left: "var(--popover-left)",
-          transform: "none",
-        }}
+        className="max-h-[50vh] overflow-y-auto"
+        align="start"
+        side="bottom"
+        sideOffset={5}
       >
         <div
           onClick={(event) => event.stopPropagation()}

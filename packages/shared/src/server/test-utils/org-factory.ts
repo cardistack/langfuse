@@ -29,7 +29,7 @@ export const createOrgProjectAndApiKey = async (
       }),
     },
   });
-  await prisma.project.create({
+  const project = await prisma.project.create({
     data: {
       id: projectId,
       name: v4(),
@@ -47,8 +47,9 @@ export const createOrgProjectAndApiKey = async (
       publicKey: publicKey,
       hashedSecretKey: await hashSecretKey(secretKey),
       displaySecretKey: getDisplaySecretKey(secretKey),
+      scope: "PROJECT",
     },
   });
 
-  return { projectId, publicKey, secretKey, auth };
+  return { projectId, orgId: org.id, publicKey, secretKey, auth, org, project };
 };

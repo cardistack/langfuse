@@ -4,6 +4,11 @@ export type Generated<T> = T extends ColumnType<infer S, infer I, infer U>
   : ColumnType<T, T | undefined, T>;
 export type Timestamp = ColumnType<Date, Date | string, Date | string>;
 
+export const ApiKeyScope = {
+    ORGANIZATION: "ORGANIZATION",
+    PROJECT: "PROJECT"
+} as const;
+export type ApiKeyScope = (typeof ApiKeyScope)[keyof typeof ApiKeyScope];
 export const Role = {
     OWNER: "OWNER",
     ADMIN: "ADMIN",
@@ -80,12 +85,33 @@ export const JobExecutionStatus = {
     CANCELLED: "CANCELLED"
 } as const;
 export type JobExecutionStatus = (typeof JobExecutionStatus)[keyof typeof JobExecutionStatus];
+export const BlobStorageIntegrationFileType = {
+    JSON: "JSON",
+    CSV: "CSV",
+    JSONL: "JSONL"
+} as const;
+export type BlobStorageIntegrationFileType = (typeof BlobStorageIntegrationFileType)[keyof typeof BlobStorageIntegrationFileType];
 export const BlobStorageIntegrationType = {
     S3: "S3",
     S3_COMPATIBLE: "S3_COMPATIBLE",
     AZURE_BLOB_STORAGE: "AZURE_BLOB_STORAGE"
 } as const;
 export type BlobStorageIntegrationType = (typeof BlobStorageIntegrationType)[keyof typeof BlobStorageIntegrationType];
+export const DashboardWidgetViews = {
+    TRACES: "TRACES",
+    OBSERVATIONS: "OBSERVATIONS",
+    SCORES_NUMERIC: "SCORES_NUMERIC",
+    SCORES_CATEGORICAL: "SCORES_CATEGORICAL"
+} as const;
+export type DashboardWidgetViews = (typeof DashboardWidgetViews)[keyof typeof DashboardWidgetViews];
+export const DashboardWidgetChartType = {
+    LINE_TIME_SERIES: "LINE_TIME_SERIES",
+    BAR_TIME_SERIES: "BAR_TIME_SERIES",
+    HORIZONTAL_BAR: "HORIZONTAL_BAR",
+    VERTICAL_BAR: "VERTICAL_BAR",
+    PIE: "PIE"
+} as const;
+export type DashboardWidgetChartType = (typeof DashboardWidgetChartType)[keyof typeof DashboardWidgetChartType];
 export type Account = {
     id: string;
     user_id: string;
@@ -137,7 +163,9 @@ export type ApiKey = {
     display_secret_key: string;
     last_used_at: Timestamp | null;
     expires_at: Timestamp | null;
-    project_id: string;
+    project_id: string | null;
+    organization_id: string | null;
+    scope: Generated<ApiKeyScope>;
 };
 export type AuditLog = {
     id: string;
@@ -208,6 +236,7 @@ export type BlobStorageIntegration = {
     last_sync_at: Timestamp | null;
     enabled: boolean;
     export_frequency: string;
+    file_type: Generated<BlobStorageIntegrationFileType>;
     created_at: Generated<Timestamp>;
     updated_at: Generated<Timestamp>;
 };
@@ -226,6 +255,33 @@ export type CronJobs = {
     last_run: Timestamp | null;
     job_started_at: Timestamp | null;
     state: string | null;
+};
+export type Dashboard = {
+    id: string;
+    created_at: Generated<Timestamp>;
+    updated_at: Generated<Timestamp>;
+    created_by: string | null;
+    updated_by: string | null;
+    project_id: string | null;
+    name: string;
+    description: string;
+    definition: unknown;
+};
+export type DashboardWidget = {
+    id: string;
+    created_at: Generated<Timestamp>;
+    updated_at: Generated<Timestamp>;
+    created_by: string | null;
+    updated_by: string | null;
+    project_id: string | null;
+    name: string;
+    description: string;
+    view: DashboardWidgetViews;
+    dimensions: unknown;
+    metrics: unknown;
+    filters: unknown;
+    chart_type: DashboardWidgetChartType;
+    chart_config: unknown;
 };
 export type Dataset = {
     id: string;
@@ -401,6 +457,24 @@ export type LlmApiKeys = {
     config: unknown | null;
     project_id: string;
 };
+export type LlmSchema = {
+    id: string;
+    created_at: Generated<Timestamp>;
+    updated_at: Generated<Timestamp>;
+    project_id: string;
+    name: string;
+    description: string;
+    schema: unknown;
+};
+export type LlmTool = {
+    id: string;
+    created_at: Generated<Timestamp>;
+    updated_at: Generated<Timestamp>;
+    project_id: string;
+    name: string;
+    description: string;
+    parameters: unknown;
+};
 export type Media = {
     id: string;
     sha_256_hash: string;
@@ -457,6 +531,7 @@ export type Organization = {
     created_at: Generated<Timestamp>;
     updated_at: Generated<Timestamp>;
     cloud_config: unknown | null;
+    metadata: unknown | null;
 };
 export type OrganizationMembership = {
     id: string;
@@ -490,6 +565,7 @@ export type Project = {
     deleted_at: Timestamp | null;
     name: string;
     retention_days: number | null;
+    metadata: unknown | null;
 };
 export type ProjectMembership = {
     org_membership_id: string;
@@ -524,6 +600,13 @@ export type PromptDependency = {
     child_name: string;
     child_label: string | null;
     child_version: number | null;
+};
+export type PromptProtectedLabels = {
+    id: string;
+    created_at: Generated<Timestamp>;
+    updated_at: Generated<Timestamp>;
+    project_id: string;
+    label: string;
 };
 export type ScoreConfig = {
     id: string;
@@ -598,6 +681,8 @@ export type DB = {
     blob_storage_integrations: BlobStorageIntegration;
     comments: Comment;
     cron_jobs: CronJobs;
+    dashboard_widgets: DashboardWidget;
+    dashboards: Dashboard;
     dataset_items: DatasetItem;
     dataset_run_items: DatasetRunItems;
     dataset_runs: DatasetRuns;
@@ -606,6 +691,8 @@ export type DB = {
     job_configurations: JobConfiguration;
     job_executions: JobExecution;
     llm_api_keys: LlmApiKeys;
+    llm_schemas: LlmSchema;
+    llm_tools: LlmTool;
     media: Media;
     membership_invitations: MembershipInvitation;
     models: Model;
@@ -618,6 +705,7 @@ export type DB = {
     project_memberships: ProjectMembership;
     projects: Project;
     prompt_dependencies: PromptDependency;
+    prompt_protected_labels: PromptProtectedLabels;
     prompts: Prompt;
     score_configs: ScoreConfig;
     scores: LegacyPrismaScore;

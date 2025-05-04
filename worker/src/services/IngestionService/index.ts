@@ -184,9 +184,13 @@ export class IngestionService {
             value: validatedScore.value,
             source: validatedScore.source,
             trace_id: validatedScore.traceId,
+            session_id: validatedScore.sessionId,
             data_type: validatedScore.dataType,
             observation_id: validatedScore.observationId,
             comment: validatedScore.comment,
+            metadata: scoreEvent.body.metadata
+              ? convertJsonSchemaToRecord(scoreEvent.body.metadata)
+              : {},
             string_value: validatedScore.stringValue,
             created_at: Date.now(),
             updated_at: Date.now(),
@@ -454,6 +458,11 @@ export class IngestionService {
     const mergedRecord = this.mergeRecords(
       recordsToMerge,
       immutableEntityKeys[TableName.Scores],
+    );
+
+    // If metadata exists, it is an object due to previous parsing
+    mergedRecord.metadata = convertRecordValuesToString(
+      (mergedRecord.metadata as Record<string, unknown>) ?? {},
     );
 
     return scoreRecordInsertSchema.parse(mergedRecord);
@@ -894,6 +903,12 @@ export class IngestionService {
           `,
           format: "JSONEachRow",
           query_params: { projectId, entityId, ...additionalFilters.params },
+          clickhouse_settings: {
+            log_comment: JSON.stringify({
+              feature: "ingestion",
+              projectId,
+            }),
+          },
         });
 
         const result = await queryResult.json();
@@ -928,12 +943,6 @@ export class IngestionService {
     const { traceEventList, projectId, entityId } = params;
 
     return traceEventList.map((trace) => {
-      if (!trace.body?.timestamp) {
-        logger.warn(
-          `Trace ${entityId} in project ${projectId} does not have a timestamp, using event time`,
-        );
-      }
-
       const traceRecord: TraceRecordInsertType = {
         id: entityId,
         timestamp: this.getMillisecondTimestamp(
@@ -1052,12 +1061,6 @@ export class IngestionService {
             ) as Record<string, number>)
           : {}),
       };
-
-      if (obs.type?.endsWith("-create") && !obs.body?.startTime) {
-        logger.warn(
-          `Observation ${entityId} in project ${projectId} does not have a startTime, using event time`,
-        );
-      }
 
       const observationRecord: ObservationRecordInsertType = {
         id: entityId,

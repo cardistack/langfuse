@@ -109,22 +109,37 @@ export const InnerEvaluatorForm = (props: {
     },
   });
 
-  const traceFilterOptions = api.traces.filterOptions.useQuery(
+  const traceFilterOptionsResponse = api.traces.filterOptions.useQuery(
+    { projectId: props.projectId },
     {
-      projectId: props.projectId,
-    },
-    {
-      trpc: {
-        context: {
-          skipBatch: true,
-        },
-      },
+      trpc: { context: { skipBatch: true } },
       refetchOnMount: false,
       refetchOnWindowFocus: false,
       refetchOnReconnect: false,
       staleTime: Infinity,
     },
   );
+
+  const environmentFilterOptionsResponse =
+    api.projects.environmentFilterOptions.useQuery(
+      { projectId: props.projectId },
+      {
+        trpc: { context: { skipBatch: true } },
+        refetchOnMount: false,
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
+        staleTime: Infinity,
+      },
+    );
+
+  const traceFilterOptions = useMemo(() => {
+    return {
+      ...(traceFilterOptionsResponse.data ?? {}),
+      environment: environmentFilterOptionsResponse.data?.map((e) => ({
+        value: e.environment,
+      })),
+    };
+  }, [traceFilterOptionsResponse.data, environmentFilterOptionsResponse.data]);
 
   const datasets = api.datasets.allDatasetMeta.useQuery(
     {
@@ -390,7 +405,7 @@ export const InnerEvaluatorForm = (props: {
                               New{" "}
                               {form.watch("target") === "trace"
                                 ? "traces"
-                                : "dataset items"}
+                                : "dataset run items"}
                             </label>
                           </div>
                         </div>
@@ -418,9 +433,10 @@ export const InnerEvaluatorForm = (props: {
                               Existing{" "}
                               {form.watch("target") === "trace"
                                 ? "traces"
-                                : "dataset items"}
+                                : "dataset run items"}
                             </label>
                             {field.value.includes("EXISTING") &&
+                              props.mode !== "edit" &&
                               !props.disabled && (
                                 <ExecutionCountTooltip
                                   projectId={props.projectId}
@@ -449,12 +465,13 @@ export const InnerEvaluatorForm = (props: {
                       <FormControl>
                         <InlineFilterBuilder
                           columns={tracesTableColsWithOptions(
-                            traceFilterOptions.data,
+                            traceFilterOptions,
                             evalTraceTableCols,
                           )}
                           filterState={field.value ?? []}
-                          onChange={(value) => field.onChange(value)}
+                          onChange={field.onChange}
                           disabled={props.disabled}
+                          columnsWithCustomSelect={["tags"]}
                         />
                       </FormControl>
                       <FormDescription>
@@ -475,7 +492,7 @@ export const InnerEvaluatorForm = (props: {
                             evalDatasetFormFilterCols,
                           )}
                           filterState={field.value ?? []}
-                          onChange={(value) => field.onChange(value)}
+                          onChange={field.onChange}
                           disabled={props.disabled}
                         />
                       </FormControl>

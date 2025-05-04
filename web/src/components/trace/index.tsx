@@ -1,4 +1,4 @@
-import { type ObservationLevelType, type Trace } from "@langfuse/shared";
+import { type ObservationLevelType, type TraceDomain } from "@langfuse/shared";
 import { ObservationTree } from "./ObservationTree";
 import { ObservationPreview } from "./ObservationPreview";
 import { TracePreview } from "./TracePreview";
@@ -14,7 +14,7 @@ import { Settings2, ChevronsUpDown, ChevronsDownUp } from "lucide-react";
 import { useCallback, useState } from "react";
 import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePostHogClientCapture";
 import { TraceTimelineView } from "@/src/components/trace/TraceTimelineView";
-import { type APIScore, ObservationLevel } from "@langfuse/shared";
+import { type APIScoreV2, ObservationLevel } from "@langfuse/shared";
 import { useIsAuthenticatedAndProjectMember } from "@/src/features/auth/hooks";
 import { TraceGraphView } from "@/src/features/trace-graph-view/components/TraceGraphView";
 import { isLanggraphTrace } from "@/src/features/trace-graph-view/utils/isLanggraphTrace";
@@ -53,11 +53,11 @@ const getNestedObservationKeys = (
 
 export function Trace(props: {
   observations: Array<ObservationReturnTypeWithMetadata>;
-  trace: Omit<Trace, "input" | "output"> & {
-    input: string | undefined;
-    output: string | undefined;
+  trace: Omit<TraceDomain, "input" | "output"> & {
+    input: string | null;
+    output: string | null;
   };
-  scores: APIScore[];
+  scores: APIScoreV2[];
   projectId: string;
   viewType?: "detailed" | "focused";
   isValidObservationId?: boolean;
@@ -378,7 +378,7 @@ export function Trace(props: {
               <div className="h-full w-full flex-1 flex-col overflow-hidden">
                 {isLanggraphTrace(props.observations) && showGraph ? (
                   <div className="flex h-full w-full flex-col overflow-hidden">
-                    <div className="h-1/2 w-full overflow-y-auto">
+                    <div className="h-1/2 w-full overflow-y-auto overflow-x-hidden">
                       <TraceTimelineView
                         key={`timeline-${props.trace.id}`}
                         trace={props.trace}
@@ -408,7 +408,7 @@ export function Trace(props: {
                     </div>
                   </div>
                 ) : (
-                  <div className="flex h-full w-full overflow-auto">
+                  <div className="flex h-full w-full overflow-y-auto overflow-x-hidden">
                     <TraceTimelineView
                       key={props.trace.id}
                       trace={props.trace}

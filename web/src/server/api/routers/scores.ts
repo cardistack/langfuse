@@ -12,7 +12,6 @@ import {
   protectedProjectProcedure,
 } from "@/src/server/api/trpc";
 import {
-  CreateAnnotationScoreData,
   orderBy,
   paginationZod,
   singleFilter,
@@ -20,13 +19,13 @@ import {
   UpdateAnnotationScoreData,
   validateDbScore,
   ScoreSource,
-  type Score,
   LangfuseNotFoundError,
-  InvalidRequestError,
   InternalServerError,
   BatchActionQuerySchema,
   BatchActionType,
   BatchExportTableName,
+  type ScoreDomain,
+  CreateAnnotationScoreData,
 } from "@langfuse/shared";
 import {
   getScoresGroupedByNameSourceType,
@@ -43,12 +42,16 @@ import {
   hasAnyScore,
   ScoreDeleteQueue,
   QueueJobs,
+  getScoreMetadataById,
+  deleteScores,
+  traceWithSessionIdExists,
 } from "@langfuse/shared/src/server";
 import { v4 } from "uuid";
 import { throwIfNoEntitlement } from "@/src/features/entitlements/server/hasEntitlement";
 import { createBatchActionJob } from "@/src/features/table/server/createBatchActionJob";
 import { TRPCError } from "@trpc/server";
 import { randomUUID } from "crypto";
+import { isTraceScore } from "@/src/features/scores/lib/helpers";
 
 const ScoreFilterOptions = z.object({
   projectId: z.string(), // Required for protectedProjectProcedure
@@ -59,16 +62,20 @@ const ScoreFilterOptions = z.object({
 const ScoreAllOptions = ScoreFilterOptions.extend({
   ...paginationZod,
 });
-type AllScoresReturnType = Score & {
+type AllScoresReturnType = Omit<ScoreDomain, "metadata"> & {
   traceName: string | null;
   traceUserId: string | null;
   traceTags: Array<string> | null;
   jobConfigurationId: string | null;
   authorUserImage: string | null;
   authorUserName: string | null;
+  hasMetadata: boolean;
 };
 
 export const scoresRouter = createTRPCRouter({
+  /**
+   * Get all scores for a project, meant for internal use and *excludes metadata of scores*
+   */
   all: protectedProjectProcedure
     .input(ScoreAllOptions)
     .query(async ({ input, ctx }) => {
@@ -78,6 +85,8 @@ export const scoresRouter = createTRPCRouter({
         orderBy: input.orderBy,
         limit: input.limit,
         offset: input.page * input.limit,
+        excludeMetadata: true,
+        includeHasMetadataFlag: true,
       });
 
       const [jobExecutions, users] = await Promise.all([
@@ -124,6 +133,26 @@ export const scoresRouter = createTRPCRouter({
           };
         }),
       };
+    }),
+  byId: protectedProjectProcedure
+    .input(
+      z.object({
+        scoreId: z.string(), // used for matching
+        projectId: z.string(), // used for security check
+      }),
+    )
+    .query(async ({ input }) => {
+      const score = await getScoreById({
+        projectId: input.projectId,
+        scoreId: input.scoreId,
+      });
+      if (!score) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: `No score with id ${input.scoreId} in project ${input.projectId} in Clickhouse`,
+        });
+      }
+      return score;
     }),
   countAll: protectedProjectProcedure
     .input(ScoreAllOptions)
@@ -246,64 +275,96 @@ export const scoresRouter = createTRPCRouter({
         scope: "scores:CUD",
       });
 
-      const clickhouseTrace = await getTraceById(
-        input.traceId,
-        input.projectId,
-      );
+      const inflatedParams = isTraceScore(input.scoreTarget)
+        ? {
+            observationId: input.scoreTarget.observationId ?? null,
+            traceId: input.scoreTarget.traceId,
+            sessionId: null,
+          }
+        : {
+            observationId: null,
+            traceId: null,
+            sessionId: input.scoreTarget.sessionId,
+          };
 
-      if (!clickhouseTrace) {
-        logger.error(
-          `No trace with id ${input.traceId} in project ${input.projectId} in Clickhouse`,
+      if (inflatedParams.traceId) {
+        const clickhouseTrace = await getTraceById({
+          traceId: inflatedParams.traceId,
+          projectId: input.projectId,
+        });
+
+        if (!clickhouseTrace) {
+          logger.error(
+            `No trace with id ${inflatedParams.traceId} in project ${input.projectId} in Clickhouse`,
+          );
+          throw new LangfuseNotFoundError(
+            `No trace with id ${inflatedParams.traceId} in project ${input.projectId} in Clickhouse`,
+          );
+        }
+      } else if (inflatedParams.sessionId) {
+        // We consider no longer writing all sessions into postgres, hence we should search for traces with the session id
+        const isSessionReferenced = await traceWithSessionIdExists(
+          input.projectId,
+          inflatedParams.sessionId,
         );
-        throw new LangfuseNotFoundError(
-          `No trace with id ${input.traceId} in project ${input.projectId} in Clickhouse`,
-        );
+        if (!isSessionReferenced) {
+          logger.error(
+            `No trace referencing session with id ${inflatedParams.sessionId} in project ${input.projectId} in Clickhouse`,
+          );
+          throw new LangfuseNotFoundError(
+            `No trace referencing session with id ${inflatedParams.sessionId} in project ${input.projectId} in Clickhouse`,
+          );
+        }
       }
 
       const clickhouseScore = await searchExistingAnnotationScore(
         input.projectId,
-        input.traceId,
-        input.observationId ?? null,
+        inflatedParams.observationId,
+        inflatedParams.traceId,
+        inflatedParams.sessionId,
         input.name,
         input.configId,
       );
 
-      if (clickhouseScore) {
-        logger.error(
-          `Score for name ${input.name} already exists for trace ${input.traceId} in project ${input.projectId}`,
-        );
-        throw new InvalidRequestError(
-          `Score for name ${input.name} already exists for trace ${input.traceId} in project ${input.projectId}`,
-        );
-      }
-
-      const score = {
-        id: v4(),
-        projectId: input.projectId,
-        environment: input.environment ?? "default",
-        traceId: input.traceId,
-        observationId: input.observationId ?? null,
-        value: input.value ?? null,
-        stringValue: input.stringValue ?? null,
-        dataType: input.dataType ?? null,
-        configId: input.configId ?? null,
-        name: input.name,
-        comment: input.comment ?? null,
-        authorUserId: ctx.session.user.id,
-        source: ScoreSource.ANNOTATION,
-        queueId: input.queueId ?? null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        timestamp: new Date(),
-      };
+      const score = !!clickhouseScore
+        ? {
+            ...clickhouseScore,
+            value: input.value ?? null,
+            stringValue: input.stringValue ?? null,
+            comment: input.comment ?? null,
+            metadata: {},
+            authorUserId: ctx.session.user.id,
+            queueId: input.queueId ?? null,
+            timestamp: new Date(),
+          }
+        : {
+            id: v4(),
+            projectId: input.projectId,
+            environment: input.environment ?? "default",
+            ...inflatedParams,
+            value: input.value ?? null,
+            stringValue: input.stringValue ?? null,
+            dataType: input.dataType ?? null,
+            configId: input.configId ?? null,
+            name: input.name,
+            comment: input.comment ?? null,
+            metadata: {},
+            authorUserId: ctx.session.user.id,
+            source: ScoreSource.ANNOTATION,
+            queueId: input.queueId ?? null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            timestamp: new Date(),
+          };
 
       await upsertScore({
         id: score.id, // Reuse ID that was generated by Prisma
         timestamp: convertDateToClickhouseDateTime(new Date()),
         project_id: input.projectId,
         environment: input.environment ?? "default",
-        trace_id: input.traceId,
-        observation_id: input.observationId,
+        trace_id: inflatedParams.traceId,
+        observation_id: inflatedParams.observationId,
+        session_id: inflatedParams.sessionId,
         name: input.name,
         value: input.value !== null ? input.value : undefined,
         source: ScoreSource.ANNOTATION,
@@ -334,14 +395,14 @@ export const scoresRouter = createTRPCRouter({
         scope: "scores:CUD",
       });
 
-      let updatedScore: Score | null | undefined = null;
+      let updatedScore: ScoreDomain | null | undefined = null;
 
       // Fetch the current score from Clickhouse
-      const score = await getScoreById(
-        input.projectId,
-        input.id,
-        ScoreSource.ANNOTATION,
-      );
+      const score = await getScoreById({
+        projectId: input.projectId,
+        scoreId: input.id,
+        source: ScoreSource.ANNOTATION,
+      });
       if (!score) {
         logger.warn(
           `No annotation score with id ${input.id} in project ${input.projectId} in Clickhouse`,
@@ -365,6 +426,7 @@ export const scoresRouter = createTRPCRouter({
           config_id: score.configId,
           trace_id: score.traceId,
           observation_id: score.observationId,
+          session_id: score.sessionId,
         });
 
         updatedScore = {
@@ -374,6 +436,7 @@ export const scoresRouter = createTRPCRouter({
           comment: input.comment ?? null,
           authorUserId: ctx.session.user.id,
           queueId: input.queueId ?? null,
+          timestamp: new Date(),
         };
 
         await auditLog({
@@ -404,11 +467,11 @@ export const scoresRouter = createTRPCRouter({
       });
 
       // Fetch the current score from Clickhouse
-      const clickhouseScore = await getScoreById(
-        input.projectId,
-        input.id,
-        ScoreSource.ANNOTATION,
-      );
+      const clickhouseScore = await getScoreById({
+        projectId: input.projectId,
+        scoreId: input.id,
+        source: ScoreSource.ANNOTATION,
+      });
       if (!clickhouseScore) {
         logger.warn(
           `No annotation score with id ${input.id} in project ${input.projectId} in Clickhouse`,
@@ -416,14 +479,6 @@ export const scoresRouter = createTRPCRouter({
         throw new LangfuseNotFoundError(
           `No annotation score with id ${input.id} in project ${input.projectId} in Clickhouse`,
         );
-      }
-
-      const scoreDeleteQueue = ScoreDeleteQueue.getInstance();
-      if (!scoreDeleteQueue) {
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: "ScoreDeleteQueue not initialized",
-        });
       }
 
       await auditLog({
@@ -434,16 +489,9 @@ export const scoresRouter = createTRPCRouter({
         before: clickhouseScore,
       });
 
-      // Delete the score from Clickhouse
-      await scoreDeleteQueue.add(QueueJobs.ScoreDelete, {
-        timestamp: new Date(),
-        id: randomUUID(),
-        payload: {
-          projectId: input.projectId,
-          scoreIds: [input.id],
-        },
-        name: QueueJobs.ScoreDelete,
-      });
+      await deleteScores(input.projectId, [clickhouseScore.id]);
+
+      return validateDbScore(clickhouseScore);
     }),
   getScoreKeysAndProps: protectedProjectProcedure
     .input(
@@ -470,5 +518,10 @@ export const scoresRouter = createTRPCRouter({
     )
     .query(async ({ input }) => {
       return await hasAnyScore(input.projectId);
+    }),
+  getScoreMetadataById: protectedProjectProcedure
+    .input(z.object({ projectId: z.string(), id: z.string() }))
+    .query(async ({ input }) => {
+      return (await getScoreMetadataById(input.projectId, input.id)) ?? null;
     }),
 });

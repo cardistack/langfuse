@@ -7,14 +7,192 @@ import { AuthHeaderValidVerificationResult } from "../auth/types";
 /* eslint-disable no-unused-vars */
 // disable lint as this is exported and used in web/worker
 
-export type PromptVariable = { name: string; value: string; isUsed: boolean };
+export const LLMJSONSchema = z.record(z.string(), z.unknown());
+export type LLMJSONSchema = z.infer<typeof LLMJSONSchema>;
 
-export type ChatMessage = {
-  role: ChatMessageRole | string; // Users may ingest any string as role via API/SDK
-  content: string;
-};
+export const JSONSchemaFormSchema = z
+  .string()
+  .transform((value, ctx) => {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed;
+    } catch {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Parameters must be valid JSON",
+      });
+      return z.NEVER;
+    }
+  })
+  .pipe(
+    z
+      .object({
+        type: z.literal("object"),
+        properties: z.record(z.any()),
+        required: z.array(z.string()).optional(),
+        additionalProperties: z.boolean().optional(),
+      })
+      .passthrough()
+      .transform((data) => JSON.stringify(data, null, 2)),
+  );
 
+export const LLMToolDefinitionSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  parameters: LLMJSONSchema,
+});
+export type LLMToolDefinition = z.infer<typeof LLMToolDefinitionSchema>;
+
+const AnthropicMessageContentWithToolUse = z.union([
+  z.object({
+    type: z.literal("text"),
+    text: z.string(),
+  }),
+  z.object({
+    type: z.literal("tool_use"),
+    id: z.string(),
+    name: z.string(),
+    input: z.unknown(),
+  }),
+]);
+
+export const LLMToolCallSchema = z.object({
+  name: z.string(),
+  id: z.string(),
+  args: z.record(z.string(), z.unknown()),
+});
+export type LLMToolCall = z.infer<typeof LLMToolCallSchema>;
+
+export const OpenAIToolCallSchema = z.object({
+  id: z.string(),
+  function: z.object({
+    name: z.string(),
+    arguments: z.union([
+      z.record(z.string(), z.unknown()),
+      z
+        .string()
+        .transform((v) => JSON.parse(v))
+        .pipe(z.record(z.string(), z.unknown())),
+    ]),
+  }),
+  type: z.literal("function"),
+});
+export type OpenAIToolCallSchema = z.infer<typeof OpenAIToolCallSchema>;
+
+export const OpenAIToolSchema = z.object({
+  type: z.literal("function"),
+  function: LLMToolDefinitionSchema,
+});
+export type OpenAIToolSchema = z.infer<typeof OpenAIToolSchema>;
+
+export const OpenAIResponseFormatSchema = z.object({
+  type: z.literal("json_schema"),
+  json_schema: z.object({
+    name: z.string(),
+    schema: LLMJSONSchema,
+  }),
+});
+
+export const ToolCallResponseSchema = z.object({
+  content: z.union([z.string(), z.array(AnthropicMessageContentWithToolUse)]),
+  tool_calls: z.array(LLMToolCallSchema),
+});
+export type ToolCallResponse = z.infer<typeof ToolCallResponseSchema>;
+export enum ChatMessageRole {
+  System = "system",
+  Developer = "developer",
+  User = "user",
+  Assistant = "assistant",
+  Tool = "tool",
+}
+
+export enum ChatMessageType {
+  System = "system",
+  Developer = "developer",
+  User = "user",
+  AssistantText = "assistant-text",
+  AssistantToolCall = "assistant-tool-call",
+  ToolResult = "tool-result",
+  PublicAPICreated = "public-api-created",
+}
+
+export const SystemMessageSchema = z.object({
+  type: z.literal(ChatMessageType.System),
+  role: z.literal(ChatMessageRole.System),
+  content: z.string(),
+});
+export type SystemMessage = z.infer<typeof SystemMessageSchema>;
+
+export const DeveloperMessageSchema = z.object({
+  type: z.literal(ChatMessageType.Developer),
+  role: z.literal(ChatMessageRole.Developer),
+  content: z.string(),
+});
+export type DeveloperMessage = z.infer<typeof DeveloperMessageSchema>;
+
+export const UserMessageSchema = z.object({
+  type: z.literal(ChatMessageType.User),
+  role: z.literal(ChatMessageRole.User),
+  content: z.string(),
+});
+export type UserMessage = z.infer<typeof UserMessageSchema>;
+
+export const AssistantTextMessageSchema = z.object({
+  type: z.literal(ChatMessageType.AssistantText),
+  role: z.literal(ChatMessageRole.Assistant),
+  content: z.string(),
+});
+export type AssistantTextMessage = z.infer<typeof AssistantTextMessageSchema>;
+
+export const AssistantToolCallMessageSchema = z.object({
+  type: z.literal(ChatMessageType.AssistantToolCall),
+  role: z.literal(ChatMessageRole.Assistant),
+  content: z.string(),
+  toolCalls: z.array(LLMToolCallSchema),
+});
+export type AssistantToolCallMessage = z.infer<
+  typeof AssistantToolCallMessageSchema
+>;
+
+export const ToolResultMessageSchema = z.object({
+  type: z.literal(ChatMessageType.ToolResult),
+  role: z.literal(ChatMessageRole.Tool),
+  content: z.string(),
+  toolCallId: z.string(),
+});
+export type ToolResultMessage = z.infer<typeof ToolResultMessageSchema>;
+
+export const ChatMessageDefaultRoleSchema = z.nativeEnum(ChatMessageRole);
+export const ChatMessageSchema = z.union([
+  SystemMessageSchema,
+  DeveloperMessageSchema,
+  UserMessageSchema,
+  AssistantTextMessageSchema,
+  AssistantToolCallMessageSchema,
+  ToolResultMessageSchema,
+  z
+    .object({
+      role: z.union([ChatMessageDefaultRoleSchema, z.string()]), // Users may ingest any string as role via API/SDK
+      content: z.string(),
+    })
+    .transform((msg) => {
+      return {
+        ...msg,
+        type: ChatMessageType.PublicAPICreated as const,
+      };
+    }),
+]);
+
+export type ChatMessage = z.infer<typeof ChatMessageSchema>;
 export type ChatMessageWithId = ChatMessage & { id: string };
+
+export const PromptChatMessageSchema = z.object({
+  role: z.string(),
+  content: z.string(),
+});
+export const PromptChatMessageListSchema = z.array(PromptChatMessageSchema);
+
+export type PromptVariable = { name: string; value: string; isUsed: boolean };
 
 export enum LLMAdapter {
   Anthropic = "anthropic",
@@ -26,30 +204,15 @@ export enum LLMAdapter {
   GoogleAIStudio = "google-ai-studio",
 }
 
-export enum ChatMessageRole {
-  System = "system",
-  User = "user",
-  Assistant = "assistant",
-  Developer = "developer",
-}
-
 export const SYSTEM_ROLES: string[] = [
   ChatMessageRole.System,
   ChatMessageRole.Developer,
 ];
 
-export const ChatMessageDefaultRoleSchema = z.nativeEnum(ChatMessageRole);
-
-const ChatMessageSchema = z.object({
-  role: z.union([ChatMessageDefaultRoleSchema, z.string()]), // Users may ingest any string as role via API/SDK
-  content: z.string(),
-});
-
-export const ChatMessageListSchema = z.array(ChatMessageSchema);
 export const TextPromptSchema = z.string().min(1, "Enter a prompt");
 
 export const PromptContentSchema = z.union([
-  ChatMessageListSchema,
+  PromptChatMessageListSchema,
   TextPromptSchema,
 ]);
 export type PromptContent = z.infer<typeof PromptContentSchema>;
@@ -90,7 +253,18 @@ export const ExperimentMetadataSchema = z
 export type ExperimentMetadata = z.infer<typeof ExperimentMetadataSchema>;
 
 // NOTE: Update docs page when changing this! https://langfuse.com/docs/playground#openai-playground--anthropic-playground
+// WARNING: The first entry in the array is chosen as the default model to add LLM API keys
 export const openAIModels = [
+  "gpt-4.1",
+  "gpt-4.1-2025-04-14",
+  "gpt-4.1-mini",
+  "gpt-4.1-mini-2025-04-14",
+  "gpt-4.1-nano",
+  "gpt-4.1-nano-2025-04-14",
+  "o3",
+  "o3-2025-04-16",
+  "o4-mini",
+  "o4-mini-2025-04-16",
   "gpt-4o",
   "gpt-4o-2024-08-06",
   "gpt-4o-2024-05-13",
@@ -121,6 +295,7 @@ export const openAIModels = [
 export type OpenAIModel = (typeof openAIModels)[number];
 
 // NOTE: Update docs page when changing this! https://langfuse.com/docs/playground#openai-playground--anthropic-playground
+// WARNING: The first entry in the array is chosen as the default model to add LLM API keys
 export const anthropicModels = [
   "claude-3-7-sonnet-20250219",
   "claude-3-5-sonnet-20241022",
@@ -134,8 +309,11 @@ export const anthropicModels = [
   "claude-instant-1.2",
 ] as const;
 
+// WARNING: The first entry in the array is chosen as the default model to add LLM API keys
 export const vertexAIModels = [
+  "gemini-2.5-pro-exp-03-25",
   "gemini-2.0-pro-exp-02-05",
+  "gemini-2.0-flash",
   "gemini-2.0-flash-001",
   "gemini-2.0-flash-lite-preview-02-05",
   "gemini-2.0-flash-exp",
@@ -144,8 +322,11 @@ export const vertexAIModels = [
   "gemini-1.0-pro",
 ] as const;
 
+// WARNING: The first entry in the array is chosen as the default model to add LLM API keys. Make sure it supports top_p, max_tokens and temperature.
 export const googleAIStudioModels = [
+  "gemini-2.5-pro-exp-03-25",
   "gemini-2.0-flash",
+  "gemini-2.0-flash-lite-preview",
   "gemini-2.0-flash-lite-preview-02-05",
   "gemini-2.0-flash-thinking-exp-01-21",
   "gemini-1.5-pro",

@@ -1,5 +1,5 @@
 import { JSONView } from "@/src/components/ui/CodeJsonViewer";
-import { AnnotationQueueObjectType, type APIScore } from "@langfuse/shared";
+import { AnnotationQueueObjectType, type APIScoreV2 } from "@langfuse/shared";
 import { Badge } from "@/src/components/ui/badge";
 import { type ObservationReturnType } from "@/src/server/api/routers/traces";
 import { api } from "@/src/utils/api";
@@ -33,6 +33,8 @@ import { LocalIsoDate } from "@/src/components/LocalIsoDate";
 import { ItemBadge } from "@/src/components/ItemBadge";
 import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePostHogClientCapture";
 import { Tabs, TabsList, TabsTrigger } from "@/src/components/ui/tabs";
+import { useRouter } from "next/router";
+import { CopyIdsPopover } from "@/src/components/trace/CopyIdsPopover";
 
 export const ObservationPreview = ({
   observations,
@@ -46,7 +48,7 @@ export const ObservationPreview = ({
 }: {
   observations: Array<ObservationReturnType>;
   projectId: string;
-  scores: APIScore[];
+  scores: APIScoreV2[];
   currentObservationId: string;
   traceId: string;
   commentCounts?: Map<string, number>;
@@ -66,6 +68,9 @@ export const ObservationPreview = ({
   const hasEntitlement = useHasEntitlement("annotation-queues");
   const isAuthenticatedAndProjectMember =
     useIsAuthenticatedAndProjectMember(projectId);
+  const router = useRouter();
+  const { peek } = router.query;
+  const showScoresTab = isAuthenticatedAndProjectMember && peek === undefined;
 
   const currentObservation = observations.find(
     (o) => o.id === currentObservationId,
@@ -118,13 +123,19 @@ export const ObservationPreview = ({
     <div className="ph-no-capture col-span-2 flex h-full flex-1 flex-col overflow-hidden md:col-span-3">
       <div className="flex h-full flex-1 flex-col items-start gap-1 overflow-hidden">
         <div className="mt-3 grid w-full grid-cols-[auto,auto] items-start justify-between gap-2">
-          <div className="flex w-full flex-row items-start gap-2">
+          <div className="flex w-full flex-row items-start gap-1">
             <div className="mt-1.5">
               <ItemBadge type={preloadedObservation.type} isSmall />
             </div>
-            <span className="mb-0 line-clamp-2 min-w-0 break-all text-lg font-medium md:break-normal md:break-words">
+            <span className="mb-0 ml-1 line-clamp-2 min-w-0 break-all font-medium md:break-normal md:break-words">
               {preloadedObservation.name}
             </span>
+            <CopyIdsPopover
+              idItems={[
+                { id: preloadedObservation.traceId, name: "Trace ID" },
+                { id: preloadedObservation.id, name: "Observation ID" },
+              ]}
+            />
           </div>
           <div className="mr-3 flex h-full flex-wrap content-start items-start justify-end gap-1">
             {observationWithInputAndOutput.data && (
@@ -144,13 +155,16 @@ export const ObservationPreview = ({
                   <AnnotateDrawer
                     key={"annotation-drawer" + preloadedObservation.id}
                     projectId={projectId}
-                    traceId={traceId}
-                    observationId={preloadedObservation.id}
+                    scoreTarget={{
+                      type: "trace",
+                      traceId: traceId,
+                      observationId: preloadedObservation.id,
+                    }}
                     scores={scores}
                     emptySelectedConfigIds={emptySelectedConfigIds}
                     setEmptySelectedConfigIds={setEmptySelectedConfigIds}
-                    type="observation"
                     hasGroupedButton={hasEntitlement}
+                    environment={preloadedObservation.environment}
                   />
                   {hasEntitlement && (
                     <CreateNewAnnotationQueueItem
@@ -252,9 +266,9 @@ export const ObservationPreview = ({
                         className="flex items-center gap-1"
                       >
                         <span>
-                          {preloadedObservation.promptTokens} prompt →{" "}
-                          {preloadedObservation.completionTokens} completion (∑{" "}
-                          {preloadedObservation.totalTokens})
+                          {preloadedObservation.inputUsage} prompt →{" "}
+                          {preloadedObservation.outputUsage} completion (∑{" "}
+                          {preloadedObservation.totalUsage})
                         </span>
                         <InfoIcon className="h-3 w-3" />
                       </Badge>
@@ -266,10 +280,10 @@ export const ObservationPreview = ({
                     </Badge>
                   ) : undefined}
                   {preloadedObservation.model ? (
-                    preloadedObservation.modelId ? (
+                    preloadedObservation.internalModelId ? (
                       <Badge>
                         <Link
-                          href={`/project/${preloadedObservation.projectId}/settings/models/${preloadedObservation.modelId}`}
+                          href={`/project/${preloadedObservation.projectId}/settings/models/${preloadedObservation.internalModelId}`}
                           className="flex items-center"
                           title="View model details"
                         >
@@ -339,7 +353,7 @@ export const ObservationPreview = ({
           {viewType === "detailed" && (
             <TabsBarList>
               <TabsBarTrigger value="preview">Preview</TabsBarTrigger>
-              {isAuthenticatedAndProjectMember && (
+              {showScoresTab && (
                 <TabsBarTrigger value="scores">Scores</TabsBarTrigger>
               )}
               {selectedTab.includes("preview") && isPrettyViewAvailable && (
@@ -404,7 +418,7 @@ export const ObservationPreview = ({
               </div>
             </div>
           </TabsBarContent>
-          {isAuthenticatedAndProjectMember && (
+          {showScoresTab && (
             <TabsBarContent
               value="scores"
               className="mb-2 mr-4 mt-0 flex h-full min-h-0 flex-1 overflow-hidden"

@@ -15,6 +15,7 @@ export * from "./utils/objects";
 export * from "./utils/typeChecks";
 export * from "./features/entitlements/plans";
 export * from "./interfaces/rate-limits";
+export * from "./tableDefinitions/typeHelpers";
 
 // llm api
 export * from "./server/llm/types";
@@ -46,7 +47,13 @@ export * from "@prisma/client";
 export { type DB } from "../prisma/generated/types";
 export * from "./server/repositories/types";
 
+// metadata conversion
+export * from "./server/utils/metadata_conversion";
+
 // errors
 export * from "./errors/index";
 
 export * from "./utils/environment";
+
+// domain
+export * from "./domain";

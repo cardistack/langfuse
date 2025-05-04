@@ -35,13 +35,12 @@ export const constructDatasetRunAggregateColumns = ({
       id,
       accessorKey: id,
       header: name,
-      size: 150,
+      size: 250,
       ...(description && {
         headerTooltip: {
           description,
         },
       }),
-      enableHiding: true,
       cell: ({ row }: { row: Row<DatasetCompareRunRowData> }) => {
         const runData: RunAggregate = row.getValue("runs") ?? {};
 
@@ -75,8 +74,7 @@ export const getDatasetRunAggregateColumnProps = (isLoading: boolean) => ({
   accessorKey: "runs",
   header: "Runs",
   id: "runs",
-  enableHiding: true,
-  hideByDefault: true,
+  isPinned: true,
   cell: () => {
     return isLoading ? <Skeleton className="h-3 w-1/2" /> : null;
   },

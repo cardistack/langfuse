@@ -1,9 +1,10 @@
 "use client";
 import { type OrderByState } from "@langfuse/shared";
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useCallback } from "react";
 import DocPopup from "@/src/components/layouts/doc-popup";
 import { DataTablePagination } from "@/src/components/table/data-table-pagination";
 import {
+  type CustomHeights,
   type RowHeight,
   getRowHeightTailwindClass,
 } from "@/src/components/table/data-table-row-height-switch";
@@ -31,16 +32,9 @@ import {
   type RowSelectionState,
   type VisibilityState,
 } from "@tanstack/react-table";
-import { useRouter } from "next/router";
-import {
-  TablePeekView,
-  type DataTablePeekViewProps,
-} from "@/src/components/table/peek";
-
-type PeekViewProps<TData> = Omit<
-  DataTablePeekViewProps<TData>,
-  "selectedRowId"
->;
+import { TablePeekView } from "@/src/components/table/peek";
+import { type PeekViewProps } from "@/src/components/table/peek/hooks/usePeekView";
+import { usePeekView } from "@/src/components/table/peek/hooks/usePeekView";
 
 interface DataTableProps<TData, TValue> {
   columns: LangfuseColumnDef<TData, TValue>[];
@@ -61,6 +55,7 @@ interface DataTableProps<TData, TValue> {
   setOrderBy?: (s: OrderByState) => void;
   help?: { description: string; href: string };
   rowHeight?: RowHeight;
+  customRowHeights?: CustomHeights;
   className?: string;
   shouldRenderGroupHeaders?: boolean;
   onRowClick?: (row: TData) => void;
@@ -114,6 +109,7 @@ export function DataTable<TData extends object, TValue>({
   orderBy,
   setOrderBy,
   rowHeight,
+  customRowHeights,
   className,
   shouldRenderGroupHeaders = false,
   onRowClick,
@@ -121,11 +117,8 @@ export function DataTable<TData extends object, TValue>({
   pinFirstColumn = false,
 }: DataTableProps<TData, TValue>) {
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
-  const rowheighttw = getRowHeightTailwindClass(rowHeight);
+  const rowheighttw = getRowHeightTailwindClass(rowHeight, customRowHeights);
   const capture = usePostHogClientCapture();
-  const router = useRouter();
-  const peekViewId = router.query.peek as string | undefined;
-
   const flattedColumnsByGroup = useMemo(() => {
     const flatColumnsByGroup = new Map<string, string[]>();
 
@@ -137,24 +130,6 @@ export function DataTable<TData extends object, TValue>({
     });
     return flatColumnsByGroup;
   }, [columns]);
-
-  const handleOnRowClick = (row: TData) => {
-    if (peekView) {
-      const rowId =
-        "id" in row && typeof row.id === "string" ? row.id : undefined;
-
-      // If clicking the same row that's already open, close it
-      if (rowId === peekViewId) {
-        peekView.onOpenChange(false);
-      }
-      // If clicking a different row, update without closing first
-      else {
-        peekView.onOpenChange(true, row);
-      }
-    }
-    onRowClick?.(row);
-  };
-  const hasRowClickAction = !!onRowClick || !!peekView;
 
   const table = useReactTable({
     data: data.data ?? [],
@@ -198,6 +173,25 @@ export function DataTable<TData extends object, TValue>({
     },
     columnResizeMode: "onChange",
   });
+
+  const getRowMemoized = useCallback(
+    (id: string) => table.getRow(id)?.original,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  const { inflatedPeekView, peekViewId, handleOnRowClickPeek } = usePeekView({
+    getRow: getRowMemoized,
+    peekView,
+  });
+
+  const handleOnRowClick = (row: TData) => {
+    if (inflatedPeekView) {
+      handleOnRowClickPeek?.(row);
+    }
+    onRowClick?.(row);
+  };
+  const hasRowClickAction = !!onRowClick || !!inflatedPeekView;
 
   // memo column sizes for performance
   // https://tanstack.com/table/v8/docs/guide/column-sizing#advanced-column-resizing-performance
@@ -370,9 +364,7 @@ export function DataTable<TData extends object, TValue>({
         </div>
         <div className="grow"></div>
       </div>
-      {peekView && peekViewId && (
-        <TablePeekView selectedRowId={peekViewId} {...peekView} />
-      )}
+      {inflatedPeekView && <TablePeekView {...inflatedPeekView} />}
       {pagination !== undefined ? (
         <div
           className={cn(
