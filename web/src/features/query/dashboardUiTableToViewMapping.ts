@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v4";
 import { dashboardColumnDefinitions, singleFilter } from "@langfuse/shared";
 import { type views } from "@/src/features/query/types";
 
@@ -29,6 +29,10 @@ const viewMappings: Record<z.infer<typeof views>, Record<string, string>[]> = {
     {
       uiTableName: "Session",
       viewName: "sessionId",
+    },
+    {
+      uiTableName: "Metadata",
+      viewName: "metadata",
     },
     {
       uiTableName: "Release",
@@ -65,6 +69,10 @@ const viewMappings: Record<z.infer<typeof views>, Record<string, string>[]> = {
       viewName: "sessionId",
     },
     {
+      uiTableName: "Metadata",
+      viewName: "metadata",
+    },
+    {
       uiTableName: "Type",
       viewName: "type",
     },
@@ -99,6 +107,10 @@ const viewMappings: Record<z.infer<typeof views>, Record<string, string>[]> = {
       viewName: "source",
     },
     {
+      uiTableName: "Score Value",
+      viewName: "value",
+    },
+    {
       uiTableName: "Scores Data Type",
       viewName: "dataType",
     },
@@ -117,6 +129,10 @@ const viewMappings: Record<z.infer<typeof views>, Record<string, string>[]> = {
     {
       uiTableName: "Session",
       viewName: "sessionId",
+    },
+    {
+      uiTableName: "Metadata",
+      viewName: "metadata",
     },
     {
       uiTableName: "Trace Name",
@@ -145,6 +161,10 @@ const viewMappings: Record<z.infer<typeof views>, Record<string, string>[]> = {
       viewName: "source",
     },
     {
+      uiTableName: "Score String Value",
+      viewName: "stringValue",
+    },
+    {
       uiTableName: "Scores Data Type",
       viewName: "dataType",
     },
@@ -163,6 +183,10 @@ const viewMappings: Record<z.infer<typeof views>, Record<string, string>[]> = {
     {
       uiTableName: "Session",
       viewName: "sessionId",
+    },
+    {
+      uiTableName: "Metadata",
+      viewName: "metadata",
     },
     {
       uiTableName: "Trace Name",
@@ -199,6 +223,24 @@ const isLegacyUiTableFilter = (
         uiTableId: "observationName",
         clickhouseTableName: "observations",
         clickhouseSelect: 'o."name"',
+      },
+      {
+        uiTableName: "Metadata",
+        uiTableId: "metadata",
+        clickhouseTableName: "traces",
+        clickhouseSelect: 't."metadata"',
+      },
+      {
+        uiTableName: "Score Value",
+        uiTableId: "value",
+        clickhouseTableName: "scores",
+        clickhouseSelect: 's."value"',
+      },
+      {
+        uiTableName: "Score String Value",
+        uiTableId: "stringValue",
+        clickhouseTableName: "scores",
+        clickhouseSelect: 's."string_value"',
       },
     ])
     .some((columnDef) => columnDef.uiTableName === filter.column);

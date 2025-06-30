@@ -1,11 +1,6 @@
-import { z } from "zod";
+import { z } from "zod/v4";
 
 import { auditLog } from "@/src/features/audit-logs/auditLog";
-import {
-  CreatePromptTRPCSchema,
-  PromptLabelSchema,
-  PromptType,
-} from "@/src/features/prompts/server/utils/validation";
 import { throwIfNoProjectAccess } from "@/src/features/rbac/utils/checkProjectAccess";
 import { throwIfNoEntitlement } from "@/src/features/entitlements/server/hasEntitlement";
 import {
@@ -17,12 +12,15 @@ import { createPrompt, duplicatePrompt } from "../actions/createPrompt";
 import { checkHasProtectedLabels } from "../utils/checkHasProtectedLabels";
 import { promptsTableCols } from "@/src/server/api/definitions/promptsTable";
 import {
+  CreatePromptTRPCSchema,
   InvalidRequestError,
+  LATEST_PROMPT_LABEL,
   optionalPaginationZod,
   paginationZod,
+  PromptLabelSchema,
+  PromptType,
 } from "@langfuse/shared";
 import { orderBy, singleFilter } from "@langfuse/shared";
-import { LATEST_PROMPT_LABEL } from "@/src/features/prompts/constants";
 import {
   orderByToPrismaSql,
   PromptService,
@@ -41,6 +39,7 @@ const PromptFilterOptions = z.object({
   filter: z.array(singleFilter),
   orderBy: orderBy,
   ...paginationZod,
+  pathPrefix: z.string().optional(),
 });
 
 export const promptRouter = createTRPCRouter({
@@ -87,11 +86,15 @@ export const promptRouter = createTRPCRouter({
         "prompts",
       );
 
+      const pathFilter = input.pathPrefix
+        ? Prisma.sql` AND (p.name LIKE ${input.pathPrefix + "/%"} OR p.name = ${input.pathPrefix})`
+        : Prisma.empty;
+
       const [prompts, promptCount] = await Promise.all([
         // prompts
         ctx.prisma.$queryRaw<Array<Prompt>>(
           generatePromptQuery(
-            Prisma.sql` 
+            Prisma.sql`
           p.id,
           p.name,
           p.version,
@@ -107,6 +110,7 @@ export const promptRouter = createTRPCRouter({
             orderByCondition,
             input.limit,
             input.page,
+            pathFilter,
           ),
         ),
         // promptCount
@@ -117,7 +121,8 @@ export const promptRouter = createTRPCRouter({
             filterCondition,
             Prisma.empty,
             1, // limit
-            0, // page
+            0, // page,
+            pathFilter,
           ),
         ),
       ]);
@@ -614,12 +619,19 @@ export const promptRouter = createTRPCRouter({
           scope: "prompts:CUD",
         });
 
-        const toBeLabeledPrompt = await ctx.prisma.prompt.findUniqueOrThrow({
+        const toBeLabeledPrompt = await ctx.prisma.prompt.findUnique({
           where: {
             id: input.promptId,
             projectId,
           },
         });
+
+        if (!toBeLabeledPrompt) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Prompt not found.",
+          });
+        }
 
         const { name: promptName } = toBeLabeledPrompt;
         const newLabelSet = new Set(input.labels);
@@ -773,7 +785,7 @@ export const promptRouter = createTRPCRouter({
       const labels = await ctx.prisma.$queryRaw<{ label: string }[]>`
         SELECT DISTINCT UNNEST(labels) AS label
         FROM prompts
-        WHERE project_id = ${input.projectId}      
+        WHERE project_id = ${input.projectId}
         AND labels IS NOT NULL;
       `;
 
@@ -783,7 +795,7 @@ export const promptRouter = createTRPCRouter({
     .input(
       z.object({
         projectId: z.string(),
-        type: z.nativeEnum(PromptType).optional(),
+        type: z.enum(PromptType).optional(),
       }),
     )
     .query(async ({ input, ctx }) => {
@@ -819,7 +831,7 @@ export const promptRouter = createTRPCRouter({
       });
 
       const query = Prisma.sql`
-        SELECT 
+        SELECT
           p.name,
           array_agg(DISTINCT p.version) as "versions",
           array_agg(DISTINCT l) FILTER (WHERE l IS NOT NULL) AS "labels"
@@ -1220,6 +1232,7 @@ const generatePromptQuery = (
   orderCondition: Prisma.Sql,
   limit: number,
   page: number,
+  pathFilter: Prisma.Sql = Prisma.empty,
 ) => {
   return Prisma.sql`
   SELECT
@@ -1230,10 +1243,12 @@ const generatePromptQuery = (
      FROM prompts p
      WHERE "project_id" = ${projectId}
      ${filterCondition}
+     ${pathFilter}
           GROUP BY name
         )
     AND "project_id" = ${projectId}
   ${filterCondition}
+  ${pathFilter}
   ${orderCondition}
   LIMIT ${limit} OFFSET ${page * limit};
 `;

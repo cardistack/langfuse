@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v4";
 import {
   createTRPCRouter,
   protectedProjectProcedure,
@@ -19,8 +19,10 @@ import {
 import {
   getDatasetRunItemsTableCount,
   logger,
+  getRunScoresGroupedByNameSourceType,
 } from "@langfuse/shared/src/server";
 import { createId as createCuid } from "@paralleldrive/cuid2";
+import { composeAggregateScoreKey } from "@/src/features/scores/lib/aggregateScores";
 
 const formatDatasetItemData = (data: string | null | undefined) => {
   if (data === "") return Prisma.DbNull;
@@ -342,7 +344,7 @@ export const datasetRouter = createTRPCRouter({
           expectedOutput: true,
           metadata: true,
         },
-        orderBy: { createdAt: "desc" },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         take: input.limit,
         skip: input.page * input.limit,
       });
@@ -864,7 +866,8 @@ export const datasetRouter = createTRPCRouter({
           dri.project_id = ${input.projectId}
           ${filterQuery}
         ORDER BY 
-          di.created_at DESC
+          di.created_at DESC,
+          di.id DESC
         LIMIT ${input.limit}
         OFFSET ${input.page * input.limit}
       `;
@@ -973,5 +976,59 @@ export const datasetRouter = createTRPCRouter({
           }),
         ),
       );
+    }),
+  getRunLevelScoreKeysAndProps: protectedProjectProcedure
+    .input(
+      z.object({
+        projectId: z.string(),
+        datasetId: z.string(),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      const dataset = await ctx.prisma.dataset.findUnique({
+        where: {
+          id_projectId: {
+            id: input.datasetId,
+            projectId: input.projectId,
+          },
+        },
+        select: {
+          id: true,
+          createdAt: true,
+        },
+      });
+
+      if (!dataset) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Dataset not found",
+        });
+      }
+
+      const datasetRuns = await ctx.prisma.datasetRuns.findMany({
+        where: {
+          datasetId: input.datasetId,
+          projectId: input.projectId,
+        },
+        select: {
+          id: true,
+        },
+      });
+
+      if (datasetRuns.length === 0) {
+        return [];
+      }
+
+      const res = await getRunScoresGroupedByNameSourceType(
+        input.projectId,
+        datasetRuns.map((dr) => dr.id),
+        dataset.createdAt,
+      );
+      return res.map(({ name, source, dataType }) => ({
+        key: composeAggregateScoreKey({ name, source, dataType }),
+        name: name,
+        source: source,
+        dataType: dataType,
+      }));
     }),
 });

@@ -6,12 +6,14 @@ import {
   type TraceParams,
 } from "@langfuse/shared/src/server";
 import { ApiError, LLMApiKeySchema, ZodModelConfig } from "@langfuse/shared";
-import { z, ZodSchema } from "zod";
+import { z } from "zod/v4";
+import { z as zodV3 } from "zod/v3";
+import { ZodSchema as ZodV3Schema } from "zod/v3";
 import { decrypt } from "@langfuse/shared/encryption";
 import { tokenCount } from "./tokenisation/usage";
 import Handlebars from "handlebars";
 
-export async function callStructuredLLM<T extends ZodSchema>(
+export async function callStructuredLLM<T extends ZodV3Schema>(
   jeId: string,
   llmApiKey: z.infer<typeof LLMApiKeySchema>,
   messages: ChatMessage[],
@@ -19,7 +21,7 @@ export async function callStructuredLLM<T extends ZodSchema>(
   provider: string,
   model: string,
   structuredOutputSchema: T,
-): Promise<z.infer<T>> {
+): Promise<zodV3.infer<T>> {
   try {
     const { completion } = await fetchLLMCompletion({
       streaming: false,
@@ -46,7 +48,7 @@ export async function callStructuredLLM<T extends ZodSchema>(
     ) {
       throw new ApiError(e.name, 429);
     }
-    logger.error(`Job ${jeId} failed to call LLM. Eval will fail.`, e);
+
     throw new ApiError(
       `Failed to call LLM: ${e}`,
       (e as any)?.response?.status ?? (e as any)?.status,

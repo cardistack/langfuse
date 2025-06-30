@@ -5,7 +5,7 @@ FROM --platform=${TARGETPLATFORM:-linux/amd64} node:20-alpine3.20 AS alpine
 RUN apk update && apk upgrade --no-cache libcrypto3 libssl3 libc6-compat busybox ssl_client
 
 FROM --platform=${TARGETPLATFORM:-linux/amd64} alpine AS base
-RUN npm install turbo@^1.13.4 --global
+RUN npm install turbo@^2.5.4 --global
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
 RUN corepack enable
@@ -69,6 +69,7 @@ ENV SENTRY_PROJECT=$SENTRY_PROJECT
 # Accept build id as NEXT_PUBLIC_BUILD_ID
 ARG NEXT_PUBLIC_BUILD_ID
 ENV NEXT_PUBLIC_BUILD_ID=$NEXT_PUBLIC_BUILD_ID
+ENV SENTRY_RELEASE=$NEXT_PUBLIC_BUILD_ID
 
 # Copy source code of isolated subworkspace
 COPY --from=pruner /app/out/full/ .
@@ -84,7 +85,7 @@ ENV NEXT_MANUAL_SIG_HANDLE true
 # set the CI flag to true to get CI specific logs
 ENV CI true
 
-RUN NODE_OPTIONS='--max-old-space-size=4096' turbo run build --filter=web...
+RUN NODE_OPTIONS='--max-old-space-size=8192' turbo run build --filter=web...
 
 # Production image, copy all the files and run next
 FROM --platform=${TARGETPLATFORM:-linux/amd64} base AS runner
@@ -148,6 +149,8 @@ USER nextjs
 # Default port to 3000
 ENV PORT 3000
 
+# Docker ENTRYPOINT (dumb-init) is covered by semantic versioning, not the entrypoint.sh itself
+# Reasoning: ENTRYPOINT is overridden by some self-hosted deployments, thus changing this is breaking
 ENTRYPOINT ["dumb-init", "--", "./web/entrypoint.sh"]
 
 # startup command - use dd-trace if NEXT_PUBLIC_LANGFUSE_CLOUD_REGION is configured

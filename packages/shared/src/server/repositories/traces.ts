@@ -27,6 +27,7 @@ import {
 } from "./constants";
 import { env } from "../../env";
 import { ClickHouseClientConfigOptions } from "@clickhouse/client";
+import { recordDistribution } from "../instrumentation";
 
 /**
  * Checks if trace exists in clickhouse.
@@ -41,12 +42,21 @@ import { ClickHouseClientConfigOptions } from "@clickhouse/client";
  * • Filters within ±2 day window
  * • Used for validating trace references before eval job creation
  */
-export const checkTraceExists = async (
-  projectId: string,
-  traceId: string,
-  timestamp: Date,
-  filter: FilterState,
-): Promise<boolean> => {
+export const checkTraceExists = async ({
+  projectId,
+  traceId,
+  timestamp,
+  filter,
+  maxTimeStamp,
+  exactTimestamp,
+}: {
+  projectId: string;
+  traceId: string;
+  timestamp: Date;
+  filter: FilterState;
+  maxTimeStamp: Date | undefined;
+  exactTimestamp?: Date;
+}): Promise<boolean> => {
   const { tracesFilter } = getProjectIdDefaultFilter(projectId, {
     tracesPrefix: "t",
   });
@@ -101,7 +111,9 @@ export const checkTraceExists = async (
     WHERE ${tracesFilterRes.query}
     AND t.project_id = {projectId: String}
     AND timestamp >= {timestamp: DateTime64(3)} - ${TRACE_TO_OBSERVATIONS_INTERVAL}
-    AND timestamp <= {timestamp: DateTime64(3)} + INTERVAL 2 DAY
+    ${maxTimeStamp ? `AND timestamp <= {maxTimeStamp: DateTime64(3)}` : ""}
+    ${!maxTimeStamp ? `AND timestamp <= {timestamp: DateTime64(3)} + INTERVAL 2 DAY` : ""}
+    ${exactTimestamp ? `AND timestamp = {exactTimestamp: DateTime64(3)}` : ""}
     GROUP BY t.id, t.project_id
   `;
 
@@ -113,6 +125,12 @@ export const checkTraceExists = async (
       ...(observationFilterRes ? observationFilterRes.params : {}),
       ...(timestamp
         ? { timestamp: convertDateToClickhouseDateTime(timestamp) }
+        : {}),
+      ...(maxTimeStamp
+        ? { maxTimeStamp: convertDateToClickhouseDateTime(maxTimeStamp) }
+        : {}),
+      ...(exactTimestamp
+        ? { exactTimestamp: convertDateToClickhouseDateTime(exactTimestamp) }
         : {}),
     },
     tags: {
@@ -208,7 +226,16 @@ export const getTracesBySessionId = async (
     },
   });
 
-  return records.map(convertClickhouseToDomain);
+  const traces = records.map(convertClickhouseToDomain);
+
+  traces.forEach((trace) => {
+    recordDistribution(
+      "langfuse.traces_by_session_id_age",
+      new Date().getTime() - trace.timestamp.getTime(),
+    );
+  });
+
+  return traces;
 };
 
 export const hasAnyTrace = async (projectId: string) => {
@@ -353,6 +380,16 @@ export const getTraceById = async ({
 
   const res = records.map(convertClickhouseToDomain);
 
+  res.forEach((trace) => {
+    recordDistribution(
+      "langfuse.query_by_id_age",
+      new Date().getTime() - trace.timestamp.getTime(),
+      {
+        table: "traces",
+      },
+    );
+  });
+
   return res.shift();
 };
 
@@ -424,7 +461,7 @@ export const getTracesGroupedByUsers = async (
   );
 
   const tracesFilterRes = tracesFilter.apply();
-  const search = clickhouseSearchCondition(searchQuery);
+  const search = clickhouseSearchCondition(searchQuery, undefined, "t");
 
   // We mainly use queries like this to retrieve filter options.
   // Therefore, we can skip final as some inaccuracy in count is acceptable.
@@ -570,7 +607,7 @@ export const deleteTraces = async (projectId: string, traceIds: string[]) => {
       traceIds,
     },
     clickhouseConfigs: {
-      request_timeout: 120_000, // 2 minutes
+      request_timeout: env.LANGFUSE_CLICKHOUSE_DELETION_TIMEOUT_MS,
     },
     tags: {
       feature: "tracing",
@@ -597,7 +634,7 @@ export const deleteTracesOlderThanDays = async (
       cutoffDate: convertDateToClickhouseDateTime(beforeDate),
     },
     clickhouseConfigs: {
-      request_timeout: 120_000, // 2 minutes
+      request_timeout: env.LANGFUSE_CLICKHOUSE_DELETION_TIMEOUT_MS,
     },
     tags: {
       feature: "tracing",
@@ -619,7 +656,7 @@ export const deleteTracesByProjectId = async (projectId: string) => {
       projectId,
     },
     clickhouseConfigs: {
-      request_timeout: 120_000, // 2 minutes
+      request_timeout: env.LANGFUSE_CLICKHOUSE_DELETION_TIMEOUT_MS,
     },
     tags: {
       feature: "tracing",
@@ -670,7 +707,7 @@ export const getTotalUserCount = async (
   );
 
   const tracesFilterRes = tracesFilter.apply();
-  const search = clickhouseSearchCondition(searchQuery);
+  const search = clickhouseSearchCondition(searchQuery, undefined, "t");
 
   const query = `
     SELECT COUNT(DISTINCT t.user_id) AS totalCount
@@ -1036,3 +1073,37 @@ export const traceWithSessionIdExists = async (
 
   return result.length > 0;
 };
+
+export async function getAgentGraphData(params: {
+  projectId: string;
+  traceId: string;
+  chMinStartTime: string;
+  chMaxStartTime: string;
+}) {
+  const { projectId, traceId, chMinStartTime, chMaxStartTime } = params;
+
+  const query = `
+          SELECT
+            id,
+            parent_observation_id,
+            metadata['langgraph_node'] AS node,
+            metadata['langgraph_step'] AS step
+          FROM
+            observations
+          WHERE
+            project_id = {projectId: String}
+            AND trace_id = {traceId: String}
+            AND start_time >= {chMinStartTime: DateTime64(3)}
+            AND start_time <= {chMaxStartTime: DateTime64(3)}
+        `;
+
+  return queryClickhouse({
+    query,
+    params: {
+      traceId,
+      projectId,
+      chMinStartTime,
+      chMaxStartTime,
+    },
+  });
+}

@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v4";
 
 import { throwIfNoProjectAccess } from "@/src/features/rbac/utils/checkProjectAccess";
 import { auditLog } from "@/src/features/audit-logs/auditLog";
@@ -152,7 +152,10 @@ export const scoresRouter = createTRPCRouter({
           message: `No score with id ${input.scoreId} in project ${input.projectId} in Clickhouse`,
         });
       }
-      return score;
+      return {
+        ...score,
+        metadata: score.metadata ? JSON.stringify(score.metadata) : null,
+      };
     }),
   countAll: protectedProjectProcedure
     .input(ScoreAllOptions)
@@ -342,6 +345,8 @@ export const scoresRouter = createTRPCRouter({
             projectId: input.projectId,
             environment: input.environment ?? "default",
             ...inflatedParams,
+            // only trace and session scores are supported for annotation
+            datasetRunId: null,
             value: input.value ?? null,
             stringValue: input.stringValue ?? null,
             dataType: input.dataType ?? null,
@@ -427,6 +432,7 @@ export const scoresRouter = createTRPCRouter({
           trace_id: score.traceId,
           observation_id: score.observationId,
           session_id: score.sessionId,
+          environment: score.environment,
         });
 
         updatedScore = {

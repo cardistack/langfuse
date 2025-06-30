@@ -6,7 +6,7 @@ RUN apk update && apk upgrade --no-cache libcrypto3 libssl3 libc6-compat busybox
 
 
 FROM --platform=${TARGETPLATFORM:-linux/amd64} alpine AS base
-RUN npm install turbo@^1.13.4 --global
+RUN npm install turbo@^2.5.4 --global
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
 RUN corepack enable
@@ -73,8 +73,9 @@ RUN chmod +x ./worker/entrypoint.sh
 EXPOSE 3030
 ENV PORT=3030
 
+# Docker ENTRYPOINT (dumb-init) is covered by semantic versioning, not the entrypoint.sh itself
+# Reasoning: ENTRYPOINT is overridden by some self-hosted deployments, thus changing this is breaking
 ENTRYPOINT ["dumb-init", "--", "./worker/entrypoint.sh"]
 
 # startup command
 CMD ["node", "worker/dist/index.js"]
-

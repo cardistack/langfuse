@@ -6,8 +6,10 @@ import {
 import { ScoreSource } from "@langfuse/shared";
 import { type APIScoreV2, type ValidatedScoreConfig } from "@langfuse/shared";
 import { isTraceScore } from "@/src/features/scores/lib/helpers";
+import { type AnnotationScoreDataSchema } from "@/src/features/scores/schema";
+import { type z } from "zod/v4";
 
-const filterTraceScores =
+const filterTraceAnnotationScores =
   ({ traceId, observationId }: ScoreTargetTrace) =>
   (s: APIScoreV2) =>
     s.source === ScoreSource.ANNOTATION &&
@@ -16,12 +18,12 @@ const filterTraceScores =
       ? s.observationId === observationId
       : s.observationId === null);
 
-const filterSessionScores =
+const filterSessionAnnotationScores =
   ({ sessionId }: ScoreTargetSession) =>
   (s: APIScoreV2) =>
     s.source === ScoreSource.ANNOTATION && s.sessionId === sessionId;
 
-export const getDefaultScoreData = ({
+export const getDefaultAnnotationScoreData = ({
   scores,
   emptySelectedConfigIds,
   configs,
@@ -31,10 +33,10 @@ export const getDefaultScoreData = ({
   emptySelectedConfigIds: string[];
   configs: ValidatedScoreConfig[];
   scoreTarget: ScoreTarget;
-}) => {
+}): z.infer<typeof AnnotationScoreDataSchema>[] => {
   const isValidScore = isTraceScore(scoreTarget)
-    ? filterTraceScores(scoreTarget)
-    : filterSessionScores(scoreTarget);
+    ? filterTraceAnnotationScores(scoreTarget)
+    : filterSessionAnnotationScores(scoreTarget);
 
   const populatedScores = scores
     .filter(isValidScore)

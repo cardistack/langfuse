@@ -1,18 +1,16 @@
-import { z } from "zod";
-import { PromptType } from "@/src/features/prompts/server/utils/validation";
+import { z } from "zod/v4";
 import {
   PromptChatMessageListSchema,
-  TextPromptSchema,
+  TextPromptContentSchema,
+  PromptNameSchema,
+  COMMIT_MESSAGE_MAX_LENGTH,
+  PromptType,
 } from "@langfuse/shared";
-import { COMMIT_MESSAGE_MAX_LENGTH } from "@/src/features/prompts/constants";
 
 const NewPromptBaseSchema = z.object({
-  name: z
-    .string()
-    .min(1, "Enter a name")
-    .regex(/^[^|]*$/, "Prompt name cannot contain '|' character"),
+  name: PromptNameSchema,
   isActive: z.boolean({
-    required_error: "Enter whether the prompt should go live",
+    error: "Enter whether the prompt should go live",
   }),
   config: z.string().refine(validateJson, "Config needs to be valid JSON"),
   commitMessage: z
@@ -35,10 +33,10 @@ const NewChatPromptSchema = NewPromptBaseSchema.extend({
 const NewTextPromptSchema = NewPromptBaseSchema.extend({
   type: z.literal(PromptType.Text),
   chatPrompt: z.array(z.any()),
-  textPrompt: TextPromptSchema,
+  textPrompt: TextPromptContentSchema,
 });
 
-export const NewPromptFormSchema = z.union([
+export const NewPromptFormSchema = z.discriminatedUnion("type", [
   NewChatPromptSchema,
   NewTextPromptSchema,
 ]);
