@@ -3,6 +3,7 @@ import {
   deleteObservationsByProjectId,
   deleteScoresByProjectId,
   deleteTracesByProjectId,
+  deleteDatasetRunItemsByProjectId,
   getCurrentSpan,
   logger,
   QueueName,
@@ -76,22 +77,25 @@ export const projectDeleteProcessor: Processor = async (
     // No need to delete from table as this will be done below via Prisma
   }
 
-  logger.info(`Deleting S3 event logs for ${projectId} in org ${orgId}`);
-
-  // Remove event files from S3
-  await removeIngestionEventsFromS3AndDeleteClickhouseRefsForProject(
-    projectId,
-    undefined,
+  logger.info(
+    `Deleting ClickHouse and S3 data for ${projectId} in org ${orgId}`,
   );
-
-  logger.info(`Deleting ClickHouse data for ${projectId} in org ${orgId}`);
 
   // Delete project data from ClickHouse first
   await Promise.all([
+    env.LANGFUSE_ENABLE_BLOB_STORAGE_FILE_LOG === "true"
+      ? removeIngestionEventsFromS3AndDeleteClickhouseRefsForProject(
+          projectId,
+          undefined,
+        )
+      : Promise.resolve(),
     deleteTracesByProjectId(projectId),
     deleteObservationsByProjectId(projectId),
     deleteScoresByProjectId(projectId),
   ]);
+
+  // Trigger async delete of dataset run items
+  await deleteDatasetRunItemsByProjectId({ projectId });
 
   logger.info(`Deleting PG data for project ${projectId} in org ${orgId}`);
 

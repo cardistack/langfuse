@@ -15,7 +15,9 @@ const EnvSchema = z.object({
     .default(6379)
     .nullable(),
   REDIS_AUTH: z.string().nullish(),
+  REDIS_USERNAME: z.string().nullish(),
   REDIS_CONNECTION_STRING: z.string().nullish(),
+  REDIS_KEY_PREFIX: z.string().nullish(),
   REDIS_TLS_ENABLED: z.enum(["true", "false"]).default("false"),
   REDIS_TLS_CA_PATH: z.string().optional(),
   REDIS_TLS_CERT_PATH: z.string().optional(),
@@ -31,9 +33,12 @@ const EnvSchema = z.object({
       "ENCRYPTION_KEY must be 256 bits, 64 string characters in hex format, generate via: openssl rand -hex 32",
     )
     .optional(),
-  LANGFUSE_CACHE_PROMPT_ENABLED: z.enum(["true", "false"]).default("false"),
-  LANGFUSE_CACHE_PROMPT_TTL_SECONDS: z.coerce.number().default(60 * 60),
+  LANGFUSE_CACHE_MODEL_MATCH_ENABLED: z.enum(["true", "false"]).default("true"),
+  LANGFUSE_CACHE_MODEL_MATCH_TTL_SECONDS: z.coerce.number().default(86400), // 24 hours
+  LANGFUSE_CACHE_PROMPT_ENABLED: z.enum(["true", "false"]).default("true"),
+  LANGFUSE_CACHE_PROMPT_TTL_SECONDS: z.coerce.number().default(300), // 5 minutes
   CLICKHOUSE_URL: z.string().url(),
+  CLICKHOUSE_READ_ONLY_URL: z.string().url().optional(),
   CLICKHOUSE_CLUSTER_NAME: z.string().default("default"),
   CLICKHOUSE_DB: z.string().default("default"),
   CLICKHOUSE_USER: z.string(),
@@ -46,6 +51,18 @@ const EnvSchema = z.object({
     .nonnegative()
     .default(15_000),
   LANGFUSE_INGESTION_QUEUE_SHARD_COUNT: z.coerce.number().positive().default(1),
+  LANGFUSE_OTEL_INGESTION_QUEUE_SHARD_COUNT: z.coerce
+    .number()
+    .positive()
+    .default(1),
+  LANGFUSE_TRACE_UPSERT_QUEUE_SHARD_COUNT: z.coerce
+    .number()
+    .positive()
+    .default(1),
+  LANGFUSE_TRACE_DELETE_DELAY_MS: z.coerce
+    .number()
+    .nonnegative()
+    .default(5_000),
   SALT: z.string().optional(), // used by components imported by web package
   LANGFUSE_LOG_LEVEL: z
     .enum(["trace", "debug", "info", "warn", "error", "fatal"])
@@ -84,9 +101,16 @@ const EnvSchema = z.object({
   LANGFUSE_S3_MEDIA_UPLOAD_SSE: z.enum(["AES256", "aws:kms"]).optional(),
   LANGFUSE_S3_MEDIA_UPLOAD_SSE_KMS_KEY_ID: z.string().optional(),
   LANGFUSE_USE_AZURE_BLOB: z.enum(["true", "false"]).default("false"),
+  LANGFUSE_AZURE_SKIP_CONTAINER_CHECK: z
+    .enum(["true", "false"])
+    .default("true"),
   LANGFUSE_USE_GOOGLE_CLOUD_STORAGE: z.enum(["true", "false"]).default("false"),
   LANGFUSE_GOOGLE_CLOUD_STORAGE_CREDENTIALS: z.string().optional(),
   STRIPE_SECRET_KEY: z.string().optional(),
+
+  LANGFUSE_ENABLE_BLOB_STORAGE_FILE_LOG: z
+    .enum(["true", "false"])
+    .default("true"),
 
   LANGFUSE_S3_LIST_MAX_KEYS: z.coerce.number().positive().default(200),
   LANGFUSE_S3_CORE_DATA_EXPORT_IS_ENABLED: z
@@ -104,11 +128,93 @@ const EnvSchema = z.object({
   LANGFUSE_API_TRACE_OBSERVATIONS_SIZE_LIMIT_BYTES: z.coerce
     .number()
     .default(80e6), // 80MB
-  LANGFUSE_CLICKHOUSE_DELETION_TIMEOUT_MS: z.coerce.number().default(240_000), // 4 minutes
+  LANGFUSE_CLICKHOUSE_DELETION_TIMEOUT_MS: z.coerce.number().default(600_000), // 10 minutes
+  LANGFUSE_CLICKHOUSE_QUERY_MAX_ATTEMPTS: z.coerce.number().default(3), // Maximum attempts for socket hang up errors
   LANGFUSE_SKIP_S3_LIST_FOR_OBSERVATIONS_PROJECT_IDS: z.string().optional(),
+  LANGFUSE_INGESTION_PROCESSING_SAMPLED_PROJECTS: z
+    .string()
+    .optional()
+    .transform((val) => {
+      try {
+        if (!val) return new Map<string, number>();
+
+        const map = new Map<string, number>();
+        const parts = val.split(",");
+
+        for (const part of parts) {
+          const [projectId, sampleRateStr] = part.split(":");
+
+          if (!projectId || sampleRateStr === undefined) {
+            throw new Error(`Invalid format: ${part}`);
+          }
+
+          // Validate sample rate is between 0 and 1
+          const sampleRate = z.coerce
+            .number()
+            .min(0)
+            .max(1)
+            .parse(sampleRateStr);
+
+          map.set(projectId, sampleRate);
+        }
+
+        return map;
+      } catch (err) {
+        return new Map<string, number>();
+      }
+    }),
+  LANGFUSE_WEBHOOK_WHITELISTED_IPS: z
+    .string()
+    .optional()
+    .transform((s) =>
+      s ? s.split(",").map((s) => s.toLowerCase().trim()) : [],
+    ),
+  SLACK_CLIENT_ID: z.string().optional(),
+  SLACK_CLIENT_SECRET: z.string().optional(),
+  SLACK_STATE_SECRET: z.string().optional(),
+  SLACK_FETCH_LIMIT: z.coerce
+    .number()
+    .positive()
+    .optional()
+    .default(1_000)
+    .describe(
+      "How many records should be fetched from Slack, before we give up",
+    ),
+  HTTPS_PROXY: z.string().optional(),
+
+  LANGFUSE_SERVER_SIDE_IO_CHAR_LIMIT: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(1_000),
+
+  LANGFUSE_CLICKHOUSE_DATA_EXPORT_REQUEST_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(600_000), // 10 minutes
+
+  LANGFUSE_EVENT_PROPAGATION_WORKER_GLOBAL_CONCURRENCY: z.coerce
+    .number()
+    .positive()
+    .default(10),
+
+  LANGFUSE_FETCH_LLM_COMPLETION_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(120_000), // 2 minutes
+
+  LANGFUSE_AWS_BEDROCK_REGION: z.string().optional(),
+
+  // Langfuse AI Features
+  LANGFUSE_AI_FEATURES_PUBLIC_KEY: z.string().optional(),
+  LANGFUSE_AI_FEATURES_SECRET_KEY: z.string().optional(),
+  LANGFUSE_AI_FEATURES_HOST: z.string().optional(),
+  LANGFUSE_AI_FEATURES_PROJECT_ID: z.string().optional(),
 });
 
 export const env: z.infer<typeof EnvSchema> =
-  process.env.DOCKER_BUILD === "1"
+  process.env.DOCKER_BUILD === "1" // eslint-disable-line turbo/no-undeclared-env-vars
     ? (process.env as any)
     : EnvSchema.parse(removeEmptyEnvVariables(process.env));

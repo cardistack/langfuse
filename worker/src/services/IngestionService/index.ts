@@ -1,9 +1,8 @@
 import { Cluster, Redis } from "ioredis";
 import { v4 } from "uuid";
-import { Prisma } from "@prisma/client";
 import {
-  LangfuseNotFoundError,
   Model,
+  ObservationLevel,
   Price,
   PrismaClient,
   Prompt,
@@ -14,6 +13,7 @@ import {
   convertObservationReadToInsert,
   convertScoreReadToInsert,
   convertTraceReadToInsert,
+  convertTraceToStagingObservation,
   eventTypes,
   IngestionEntityTypes,
   IngestionEventType,
@@ -27,6 +27,7 @@ import {
   QueueJobs,
   recordIncrement,
   ScoreEventType,
+  DatasetRunItemEventType,
   scoreRecordInsertSchema,
   ScoreRecordInsertType,
   scoreRecordReadSchema,
@@ -36,30 +37,111 @@ import {
   traceRecordReadSchema,
   TraceUpsertQueue,
   UsageCostType,
+  findModel,
   validateAndInflateScore,
+  DatasetRunItemRecordInsertType,
+  EventRecordInsertType,
+  hasNoJobConfigsCache,
+  traceException,
 } from "@langfuse/shared/src/server";
 
+import { tokenCountAsync } from "../../features/tokenisation/async-usage";
 import { tokenCount } from "../../features/tokenisation/usage";
 import { ClickhouseWriter, TableName } from "../ClickhouseWriter";
 import {
   convertJsonSchemaToRecord,
+  convertPostgresJsonToMetadataRecord,
   convertRecordValuesToString,
   overwriteObject,
 } from "./utils";
 import { randomUUID } from "crypto";
-import { env } from "../../env";
-import { findModel } from "../modelMatch";
 import { SpanKind } from "@opentelemetry/api";
+import { ClickhouseReadSkipCache } from "../../utils/clickhouseReadSkipCache";
 
 type InsertRecord =
   | TraceRecordInsertType
   | ScoreRecordInsertType
-  | ObservationRecordInsertType;
+  | ObservationRecordInsertType
+  | DatasetRunItemRecordInsertType;
+
+/**
+ * Flexible input type for writing events to the events table.
+ * This is intentionally loose to allow for iteration as the events
+ * table schema evolves. Only required fields are enforced.
+ */
+export type EventInput = {
+  // Required identifiers
+  projectId: string;
+  traceId: string;
+  spanId: string;
+  startTimeISO: string;
+
+  // Optional identifiers
+  orgId?: string;
+  parentSpanId?: string;
+
+  // Core properties
+  name?: string;
+  type?: string;
+  environment?: string;
+  version?: string;
+  endTimeISO: string;
+  completionStartTime?: string;
+
+  // User/session
+  userId?: string;
+  sessionId?: string;
+  level?: string;
+  statusMessage?: string;
+
+  // Prompt
+  promptId?: string;
+  promptName?: string;
+  promptVersion?: string;
+
+  // Model
+  modelName?: string;
+  modelParameters?: string;
+
+  // Usage & Cost
+  providedUsageDetails?: Record<string, number>;
+  usageDetails?: Record<string, number>;
+  providedCostDetails?: Record<string, number>;
+  costDetails?: Record<string, number>;
+  totalCost?: number;
+
+  // I/O
+  input?: string;
+  output?: string;
+
+  // Metadata
+  // metadata can be a complex nested object with attributes, resourceAttributes, scopeAttributes, etc.
+  metadata: Record<string, unknown>;
+
+  // Source/instrumentation metadata
+  source: string;
+  serviceName?: string;
+  serviceVersion?: string;
+  scopeName?: string;
+  scopeVersion?: string;
+  telemetrySdkLanguage?: string;
+  telemetrySdkName?: string;
+  telemetrySdkVersion?: string;
+
+  // Storage
+  blobStorageFilePath?: string;
+  eventRaw?: string;
+  eventBytes?: number;
+
+  // Catch-all for future fields
+  [key: string]: any;
+};
 
 const immutableEntityKeys: {
   [TableName.Traces]: (keyof TraceRecordInsertType)[];
   [TableName.Scores]: (keyof ScoreRecordInsertType)[];
   [TableName.Observations]: (keyof ObservationRecordInsertType)[];
+  [TableName.DatasetRunItems]: (keyof DatasetRunItemRecordInsertType)[];
 } = {
   [TableName.Traces]: [
     "id",
@@ -84,6 +166,26 @@ const immutableEntityKeys: {
     "created_at",
     "environment",
   ],
+  // We do not accept updates, hence this list is currently not used.
+  [TableName.DatasetRunItems]: [
+    "id",
+    "project_id",
+    "dataset_run_id",
+    "dataset_item_id",
+    "dataset_id",
+    "trace_id",
+    "observation_id",
+    "error",
+    "created_at",
+    "updated_at",
+    "dataset_run_name",
+    "dataset_run_description",
+    "dataset_run_metadata",
+    "dataset_run_created_at",
+    "dataset_item_input",
+    "dataset_item_expected_output",
+    "dataset_item_metadata",
+  ],
 };
 
 export class IngestionService {
@@ -92,8 +194,8 @@ export class IngestionService {
   constructor(
     private redis: Redis | Cluster,
     private prisma: PrismaClient,
-    private clickHouseWriter: ClickhouseWriter,
-    private clickhouseClient: ClickhouseClientType,
+    private clickHouseWriter: ClickhouseWriter, // eslint-disable-line no-unused-vars
+    private clickhouseClient: ClickhouseClientType, // eslint-disable-line no-unused-vars
   ) {
     this.promptService = new PromptService(prisma, redis);
   }
@@ -104,6 +206,7 @@ export class IngestionService {
     eventBodyId: string,
     createdAtTimestamp: Date,
     events: IngestionEventType[],
+    forwardToEventsTable: boolean,
   ): Promise<void> {
     logger.debug(
       `Merging ingestion ${eventType} event for project ${projectId} and event ${eventBodyId}`,
@@ -116,6 +219,7 @@ export class IngestionService {
           entityId: eventBodyId,
           createdAtTimestamp,
           traceEventList: events as TraceEventType[],
+          createEventTraceRecord: forwardToEventsTable,
         });
       case "observation":
         return await this.processObservationEventList({
@@ -123,6 +227,7 @@ export class IngestionService {
           entityId: eventBodyId,
           createdAtTimestamp,
           observationEventList: events as ObservationEvent[],
+          writeToStagingTables: forwardToEventsTable,
         });
       case "score": {
         return await this.processScoreEventList({
@@ -132,7 +237,232 @@ export class IngestionService {
           scoreEventList: events as ScoreEventType[],
         });
       }
+      case "dataset_run_item": {
+        return await this.processDatasetRunItemEventList({
+          projectId,
+          entityId: eventBodyId,
+          createdAtTimestamp,
+          datasetRunItemEventList: events as DatasetRunItemEventType[],
+        });
+      }
     }
+  }
+
+  /**
+   * Writes a single event directly to the events table.
+   * Unlike other ingestion methods, this does not perform merging since
+   * events are immutable and written once.
+   *
+   * @param eventData - The event data to write
+   * @param fileKey - The file key where the raw event data is stored
+   */
+  public async writeEvent(
+    eventData: EventInput,
+    fileKey: string,
+  ): Promise<void> {
+    logger.debug(
+      `Writing event for project ${eventData.projectId} and span ${eventData.spanId}`,
+    );
+
+    const now = this.getMicrosecondTimestamp();
+
+    // Store the full metadata JSON
+    const metadata = eventData.metadata;
+
+    // Flatten to path-based arrays
+    const flattened = this.flattenJsonToPathArrays(metadata);
+    const metadataNames = flattened.names;
+    const metadataValues = flattened.values;
+
+    // Flatten to typed arrays
+    const typed = this.flattenJsonToTypedPathArrays(metadata);
+    const metadataStringNames = typed.stringNames;
+    const metadataStringValues = typed.stringValues;
+    const metadataNumberNames = typed.numberNames;
+    const metadataNumberValues = typed.numberValues;
+    const metadataBoolNames = typed.boolNames;
+    const metadataBoolValues = typed.boolValues;
+
+    const eventRecord: EventRecordInsertType = {
+      // Required identifiers
+      id: eventData.spanId,
+      project_id: eventData.projectId,
+      trace_id: eventData.traceId,
+      span_id: eventData.spanId,
+
+      // Optional identifiers
+      parent_span_id: eventData.parentSpanId,
+
+      // Core properties with defaults
+      name: eventData.name ?? "",
+      type: eventData.type ?? "SPAN",
+      environment: eventData.environment ?? "default",
+      version: eventData.version,
+
+      // User/session
+      user_id: eventData.userId,
+      session_id: eventData.sessionId,
+
+      // Status
+      level: eventData.level ?? "DEFAULT",
+      status_message: eventData.statusMessage,
+
+      // Timestamps
+      start_time: this.getMicrosecondTimestamp(eventData.startTimeISO),
+      end_time: this.getMicrosecondTimestamp(eventData.endTimeISO),
+      completion_start_time: eventData.completionStartTime
+        ? this.getMicrosecondTimestamp(eventData.completionStartTime)
+        : null,
+
+      // Prompt
+      // prompt_id: eventData.promptId,
+      prompt_name: eventData.promptName,
+      prompt_version: eventData.promptVersion,
+
+      // Model
+      // model_id: eventData.modelId,
+      provided_model_name: eventData.modelName,
+      model_parameters: eventData.modelParameters,
+
+      // Usage & Cost
+      // provided_usage_details: eventData.providedUsageDetails ?? {},
+      // usage_details: eventData.usageDetails ?? {},
+      // provided_cost_details: eventData.providedCostDetails ?? {},
+      // cost_details: eventData.costDetails ?? {},
+      // total_cost: eventData.totalCost,
+
+      // I/O
+      input: eventData.input,
+      output: eventData.output,
+
+      // Metadata (multiple approaches)
+      metadata,
+      metadata_names: metadataNames,
+      metadata_values: metadataValues,
+      metadata_string_names: metadataStringNames,
+      metadata_string_values: metadataStringValues,
+      metadata_number_names: metadataNumberNames,
+      metadata_number_values: metadataNumberValues,
+      metadata_bool_names: metadataBoolNames,
+      metadata_bool_values: metadataBoolValues,
+
+      // Source/instrumentation metadata
+      source: eventData.source,
+      service_name: eventData.serviceName,
+      service_version: eventData.serviceVersion,
+      scope_name: eventData.scopeName,
+      scope_version: eventData.scopeVersion,
+      telemetry_sdk_language: eventData.telemetrySdkLanguage,
+      telemetry_sdk_name: eventData.telemetrySdkName,
+      telemetry_sdk_version: eventData.telemetrySdkVersion,
+
+      // Storage
+      blob_storage_file_path: fileKey,
+      // event_raw: eventData.eventRaw ?? "",
+      event_bytes: eventData.eventBytes ?? 0,
+
+      // System timestamps
+      created_at: now,
+      updated_at: now,
+      event_ts: now,
+      is_deleted: 0,
+    } as any;
+
+    // Write directly to ClickHouse queue (no merging for immutable events)
+    this.clickHouseWriter.addToQueue(TableName.Events, eventRecord);
+  }
+
+  private async processDatasetRunItemEventList(params: {
+    projectId: string;
+    entityId: string;
+    createdAtTimestamp: Date;
+    datasetRunItemEventList: DatasetRunItemEventType[];
+  }) {
+    const { projectId, entityId, datasetRunItemEventList } = params;
+    if (datasetRunItemEventList.length === 0) return;
+
+    const finalDatasetRunItemRecords: DatasetRunItemRecordInsertType[] = (
+      await Promise.all(
+        datasetRunItemEventList.map(
+          async (
+            event: DatasetRunItemEventType,
+          ): Promise<DatasetRunItemRecordInsertType[]> => {
+            const [runData, itemData] = await Promise.all([
+              this.prisma.datasetRuns.findFirst({
+                where: {
+                  id: event.body.runId,
+                  datasetId: event.body.datasetId,
+                  projectId,
+                },
+                select: {
+                  name: true,
+                  description: true,
+                  metadata: true,
+                  createdAt: true,
+                },
+              }),
+              this.prisma.datasetItem.findFirst({
+                where: {
+                  datasetId: event.body.datasetId,
+                  projectId,
+                  id: event.body.datasetItemId,
+                  status: "ACTIVE",
+                },
+                select: {
+                  input: true,
+                  expectedOutput: true,
+                  metadata: true,
+                },
+              }),
+            ]);
+
+            if (!runData || !itemData) return [];
+
+            const timestamp = event.body.createdAt
+              ? new Date(event.body.createdAt).getTime()
+              : new Date().getTime();
+
+            return [
+              {
+                id: entityId,
+                project_id: projectId,
+                dataset_run_id: event.body.runId,
+                dataset_item_id: event.body.datasetItemId,
+                dataset_id: event.body.datasetId,
+                trace_id: event.body.traceId,
+                observation_id: event.body.observationId,
+                error: event.body.error,
+                created_at: timestamp,
+                updated_at: timestamp,
+                event_ts: timestamp,
+                is_deleted: 0,
+                // enriched with run data
+                dataset_run_name: runData.name,
+                dataset_run_description: runData.description,
+                dataset_run_metadata: runData.metadata
+                  ? convertPostgresJsonToMetadataRecord(runData.metadata)
+                  : {},
+                dataset_run_created_at: runData.createdAt.getTime(),
+                // enriched with item data
+                dataset_item_input: JSON.stringify(itemData.input),
+                dataset_item_expected_output: JSON.stringify(
+                  itemData.expectedOutput,
+                ),
+                dataset_item_metadata: itemData.metadata
+                  ? convertPostgresJsonToMetadataRecord(itemData.metadata)
+                  : {},
+              },
+            ];
+          },
+        ),
+      )
+    ).flat();
+
+    finalDatasetRunItemRecords.forEach((record) => {
+      if (record) {
+        this.clickHouseWriter.addToQueue(TableName.DatasetRunItems, record);
+      }
+    });
   }
 
   private async processScoreEventList(params: {
@@ -170,36 +500,52 @@ export class IngestionService {
       }),
       Promise.all(
         timeSortedEvents.map(async (scoreEvent) => {
-          const validatedScore = await validateAndInflateScore({
-            body: scoreEvent.body,
-            scoreId: entityId,
-            projectId,
-          });
+          try {
+            const validatedScore = await validateAndInflateScore({
+              body: scoreEvent.body,
+              scoreId: entityId,
+              projectId,
+            });
 
-          return {
-            id: entityId,
-            project_id: projectId,
-            environment: validatedScore.environment,
-            timestamp: this.getMillisecondTimestamp(scoreEvent.timestamp),
-            name: validatedScore.name,
-            value: validatedScore.value,
-            source: validatedScore.source,
-            trace_id: validatedScore.traceId,
-            session_id: validatedScore.sessionId,
-            dataset_run_id: validatedScore.datasetRunId,
-            data_type: validatedScore.dataType,
-            observation_id: validatedScore.observationId,
-            comment: validatedScore.comment,
-            metadata: scoreEvent.body.metadata
-              ? convertJsonSchemaToRecord(scoreEvent.body.metadata)
-              : {},
-            string_value: validatedScore.stringValue,
-            created_at: Date.now(),
-            updated_at: Date.now(),
-            event_ts: new Date(scoreEvent.timestamp).getTime(),
-            is_deleted: 0,
-          };
+            return {
+              id: entityId,
+              project_id: projectId,
+              environment: validatedScore.environment,
+              timestamp: this.getMillisecondTimestamp(scoreEvent.timestamp),
+              name: validatedScore.name,
+              value: validatedScore.value,
+              source: validatedScore.source,
+              trace_id: validatedScore.traceId,
+              session_id: validatedScore.sessionId,
+              dataset_run_id: validatedScore.datasetRunId,
+              data_type: validatedScore.dataType,
+              observation_id: validatedScore.observationId,
+              config_id: validatedScore.configId,
+              comment: validatedScore.comment,
+              metadata: scoreEvent.body.metadata
+                ? convertJsonSchemaToRecord(scoreEvent.body.metadata)
+                : {},
+              string_value: validatedScore.stringValue,
+              execution_trace_id: validatedScore.executionTraceId,
+              queue_id: validatedScore.queueId ?? null,
+              created_at: Date.now(),
+              updated_at: Date.now(),
+              event_ts: new Date(scoreEvent.timestamp).getTime(),
+              is_deleted: 0,
+            };
+            // Gracefully handle any score schema validation errors, skip the score insert and reject silently.
+          } catch (error) {
+            logger.info(
+              `Failed to validate and enrich score body for project: ${projectId} and score: ${entityId}`,
+              error,
+            );
+            return null;
+          }
         }),
+      ).then((results) =>
+        results.filter(
+          (record): record is NonNullable<typeof record> => record !== null,
+        ),
       ),
     ]);
 
@@ -226,8 +572,15 @@ export class IngestionService {
     entityId: string;
     createdAtTimestamp: Date;
     traceEventList: TraceEventType[];
+    createEventTraceRecord: boolean;
   }) {
-    const { projectId, entityId, createdAtTimestamp, traceEventList } = params;
+    const {
+      projectId,
+      entityId,
+      createdAtTimestamp,
+      traceEventList,
+      createEventTraceRecord,
+    } = params;
     if (traceEventList.length === 0) return;
 
     const timeSortedEvents =
@@ -238,6 +591,18 @@ export class IngestionService {
       entityId,
       traceEventList: timeSortedEvents,
     });
+
+    // Search for the first non-null input and output in the trace events and set them on the merged result.
+    // Fallback to the ClickHouse input/output if none are found within the events list.
+    const reversedRawRecords = timeSortedEvents.slice().reverse();
+    const finalIO = {
+      input: this.stringify(
+        reversedRawRecords.find((record) => record?.body?.input)?.body?.input,
+      ),
+      output: this.stringify(
+        reversedRawRecords.find((record) => record?.body?.output)?.body?.output,
+      ),
+    };
 
     const minTimestamp = Math.min(
       ...timeSortedEvents.flatMap((e) =>
@@ -274,65 +639,74 @@ export class IngestionService {
     finalTraceRecord.created_at =
       clickhouseTraceRecord?.created_at ?? createdAtTimestamp.getTime();
 
-    // Search for the first non-null input and output in the trace events and set them on the merged result.
-    // Fallback to the ClickHouse input/output if none are found within the events list.
-    const reversedRawRecords = timeSortedEvents.slice().reverse();
-    finalTraceRecord.input = this.stringify(
-      reversedRawRecords.find((record) => record?.body?.input)?.body?.input ??
-        clickhouseTraceRecord?.input,
-    );
-    finalTraceRecord.output = this.stringify(
-      reversedRawRecords.find((record) => record?.body?.output)?.body?.output ??
-        clickhouseTraceRecord?.output,
-    );
-
-    // If the trace has a sessionId, we upsert the corresponding session into Postgres.
-    if (finalTraceRecord.session_id) {
-      try {
-        await this.prisma.traceSession.upsert({
-          where: {
-            id_projectId: {
-              id: finalTraceRecord.session_id,
-              projectId,
-            },
-          },
-          create: {
-            id: finalTraceRecord.session_id,
-            projectId,
-          },
-          update: {},
-        });
-      } catch (e) {
-        if (
-          e instanceof Prisma.PrismaClientKnownRequestError &&
-          e.code === "P2002"
-        ) {
-          logger.warn(
-            `Failed to upsert session. Session ${finalTraceRecord.session_id} in project ${projectId} already exists`,
-          );
-        } else {
-          throw e;
-        }
-      }
-    }
+    finalTraceRecord.input = finalIO.input ?? clickhouseTraceRecord?.input;
+    finalTraceRecord.output = finalIO.output ?? clickhouseTraceRecord?.output;
 
     this.clickHouseWriter.addToQueue(TableName.Traces, finalTraceRecord);
 
-    // Add trace into trace upsert queue for eval processing
-    const traceUpsertQueue = TraceUpsertQueue.getInstance();
-    if (!traceUpsertQueue) {
-      logger.error("TraceUpsertQueue is not initialized");
-      return;
+    // If the trace has a sessionId, we upsert the corresponding session into Postgres.
+    const traceRecordWithSession = traceRecords
+      .slice()
+      .reverse()
+      .find((t) => t.session_id);
+    if (traceRecordWithSession) {
+      try {
+        await this.prisma.$executeRaw`
+          INSERT INTO trace_sessions (id, project_id, environment, created_at, updated_at)
+          VALUES (${traceRecordWithSession.session_id}, ${projectId}, ${traceRecordWithSession.environment}, NOW(), NOW())
+          ON CONFLICT (id, project_id)
+          DO NOTHING
+        `;
+      } catch (e) {
+        logger.error(
+          `Failed to upsert session ${traceRecordWithSession.session_id}`,
+          e,
+        );
+        throw e;
+      }
     }
-    await traceUpsertQueue.add(QueueJobs.TraceUpsert, {
-      payload: {
-        projectId: finalTraceRecord.project_id,
-        traceId: finalTraceRecord.id,
-      },
-      id: randomUUID(),
-      timestamp: new Date(),
-      name: QueueJobs.TraceUpsert as const,
-    });
+
+    // Dual-write to staging table for batch propagation to events table
+    // We pretend the trace is a "span" where span_id = trace_id
+    if (createEventTraceRecord) {
+      const traceAsStagingObservation = convertTraceToStagingObservation(
+        finalTraceRecord,
+        createdAtTimestamp.getTime(),
+      );
+      this.clickHouseWriter.addToQueue(
+        TableName.ObservationsBatchStaging,
+        traceAsStagingObservation,
+      );
+    }
+
+    // Add trace into trace upsert queue for eval processing
+    // First check if we already know this project has no job configurations
+    const hasNoJobConfigs = await hasNoJobConfigsCache(projectId);
+    if (hasNoJobConfigs) {
+      logger.debug(
+        `Skipping TraceUpsert queue for project ${projectId} - no job configs cached`,
+      );
+      return;
+    } else {
+      // Job configs present, so we add to the TraceUpsert queue.
+      const shardingKey = `${projectId}-${entityId}`;
+      const traceUpsertQueue = TraceUpsertQueue.getInstance({ shardingKey });
+      if (!traceUpsertQueue) {
+        logger.error("TraceUpsertQueue is not initialized");
+        return;
+      }
+      await traceUpsertQueue.add(QueueJobs.TraceUpsert, {
+        payload: {
+          projectId,
+          traceId: entityId,
+          exactTimestamp: new Date(finalTraceRecord.timestamp),
+          traceEnvironment: finalTraceRecord.environment,
+        },
+        id: randomUUID(),
+        timestamp: new Date(),
+        name: QueueJobs.TraceUpsert as const,
+      });
+    }
   }
 
   private async processObservationEventList(params: {
@@ -340,9 +714,15 @@ export class IngestionService {
     entityId: string;
     createdAtTimestamp: Date;
     observationEventList: ObservationEvent[];
+    writeToStagingTables: boolean;
   }) {
-    const { projectId, entityId, createdAtTimestamp, observationEventList } =
-      params;
+    const {
+      projectId,
+      entityId,
+      createdAtTimestamp,
+      observationEventList,
+      writeToStagingTables,
+    } = params;
     if (observationEventList.length === 0) return;
 
     const timeSortedEvents =
@@ -444,6 +824,18 @@ export class IngestionService {
       TableName.Observations,
       finalObservationRecord,
     );
+
+    // Dual-write to staging table for batch propagation to events table
+    if (writeToStagingTables) {
+      const stagingRecord = {
+        ...finalObservationRecord,
+        s3_first_seen_timestamp: createdAtTimestamp.getTime(),
+      };
+      this.clickHouseWriter.addToQueue(
+        TableName.ObservationsBatchStaging,
+        stagingRecord,
+      );
+    }
   }
 
   private async mergeScoreRecords(params: {
@@ -499,8 +891,7 @@ export class IngestionService {
     observationRecords: ObservationRecordInsertType[];
     clickhouseObservationRecord?: ObservationRecordInsertType | null;
   }): Promise<ObservationRecordInsertType> {
-    const { projectId, observationRecords, clickhouseObservationRecord } =
-      params;
+    const { observationRecords, clickhouseObservationRecord } = params;
 
     // Set clickhouse first as this is the baseline for immutable fields
     const recordsToMerge = [
@@ -616,18 +1007,18 @@ export class IngestionService {
     | {}
   > {
     const { projectId, observationRecord } = params;
-    const internalModel = observationRecord.provided_model_name
-      ? await findModel({
-          projectId,
-          model: observationRecord.provided_model_name,
-        })
-      : null;
+    const { model: internalModel, prices: modelPrices } =
+      observationRecord.provided_model_name
+        ? await findModel({
+            projectId,
+            model: observationRecord.provided_model_name,
+          })
+        : { model: null, prices: [] };
 
-    const final_usage_details = this.getUsageUnits(
+    const final_usage_details = await this.getUsageUnits(
       observationRecord,
       internalModel,
     );
-    const modelPrices = await this.getModelPrices(internalModel?.id);
 
     const final_cost_details = IngestionService.calculateUsageCosts(
       modelPrices,
@@ -650,55 +1041,117 @@ export class IngestionService {
     };
   }
 
-  private async getModelPrices(modelId?: string): Promise<Price[]> {
-    return modelId
-      ? ((await this.prisma.price.findMany({ where: { modelId } })) ?? [])
-      : [];
-  }
-
-  private getUsageUnits(
+  private async getUsageUnits(
     observationRecord: ObservationRecordInsertType,
     model: Model | null | undefined,
-  ): Pick<
-    ObservationRecordInsertType,
-    "usage_details" | "provided_usage_details"
+  ): Promise<
+    Pick<
+      ObservationRecordInsertType,
+      "usage_details" | "provided_usage_details"
+    >
   > {
     const providedUsageDetails = Object.fromEntries(
       Object.entries(observationRecord.provided_usage_details).filter(
-        ([k, v]) => v != null && v >= 0,
+        ([k, v]) => v != null && v >= 0, // eslint-disable-line no-unused-vars
       ),
     );
 
     if (
-      // Manual tokenisation when no user provided usage
+      // Manual tokenisation when no user provided usage and generation has not status ERROR
       model &&
-      Object.keys(providedUsageDetails).length === 0
+      Object.keys(providedUsageDetails).length === 0 &&
+      observationRecord.level !== ObservationLevel.ERROR
     ) {
-      const newInputCount = tokenCount({
-        text: observationRecord.input,
-        model,
-      });
-      const newOutputCount = tokenCount({
-        text: observationRecord.output,
-        model,
-      });
+      try {
+        let newInputCount: number | undefined;
+        let newOutputCount: number | undefined;
+        await instrumentAsync(
+          {
+            name: "token-count",
+          },
+          async (span) => {
+            try {
+              [newInputCount, newOutputCount] = await Promise.all([
+                tokenCountAsync({
+                  text: observationRecord.input,
+                  model,
+                }),
+                tokenCountAsync({
+                  text: observationRecord.output,
+                  model,
+                }),
+              ]);
+            } catch (error) {
+              logger.warn(
+                `Async tokenization has failed. Falling back to synchronous tokenization`,
+                error,
+              );
+              newInputCount = tokenCount({
+                text: observationRecord.input,
+                model,
+              });
+              newOutputCount = tokenCount({
+                text: observationRecord.output,
+                model,
+              });
+            }
 
-      logger.debug(
-        `Tokenized observation ${observationRecord.id} with model ${model.id}, input: ${newInputCount}, output: ${newOutputCount}`,
-      );
+            // Tracing
+            newInputCount
+              ? span.setAttribute(
+                  "langfuse.tokenization.input-count",
+                  newInputCount,
+                )
+              : undefined;
+            newOutputCount
+              ? span.setAttribute(
+                  "langfuse.tokenization.output-count",
+                  newOutputCount,
+                )
+              : undefined;
+            newInputCount || newOutputCount
+              ? span.setAttribute(
+                  "langfuse.tokenization.tokenizer",
+                  model.tokenizerId || "unknown",
+                )
+              : undefined;
+            newInputCount
+              ? recordIncrement("langfuse.tokenisedTokens", newInputCount)
+              : undefined;
+            newOutputCount
+              ? recordIncrement("langfuse.tokenisedTokens", newOutputCount)
+              : undefined;
+          },
+        );
 
-      const newTotalCount =
-        newInputCount || newOutputCount
-          ? (newInputCount ?? 0) + (newOutputCount ?? 0)
-          : undefined;
+        logger.debug(
+          `Tokenized observation ${observationRecord.id} with model ${model.id}, input: ${newInputCount}, output: ${newOutputCount}`,
+        );
 
-      const usage_details: Record<string, number> = {};
+        const newTotalCount =
+          newInputCount || newOutputCount
+            ? (newInputCount ?? 0) + (newOutputCount ?? 0)
+            : undefined;
 
-      if (newInputCount != null) usage_details.input = newInputCount;
-      if (newOutputCount != null) usage_details.output = newOutputCount;
-      if (newTotalCount != null) usage_details.total = newTotalCount;
+        const usage_details: Record<string, number> = {};
 
-      return { usage_details, provided_usage_details: providedUsageDetails };
+        if (newInputCount != null) usage_details.input = newInputCount;
+        if (newOutputCount != null) usage_details.output = newOutputCount;
+        if (newTotalCount != null) usage_details.total = newTotalCount;
+
+        return { usage_details, provided_usage_details: providedUsageDetails };
+      } catch (error) {
+        traceException(error);
+        logger.error(
+          `Tokenization failed for observation ${observationRecord.id} with model ${model.id}. Continuing without token counts.`,
+          error,
+        );
+        // Continue without token counts - return empty usage_details
+        return {
+          usage_details: {},
+          provided_usage_details: providedUsageDetails,
+        };
+      }
     }
 
     const usageDetails = { ...providedUsageDetails };
@@ -723,7 +1176,7 @@ export class IngestionService {
     const { provided_cost_details } = observationRecord;
 
     const providedCostKeys = Object.entries(provided_cost_details ?? {})
-      .filter(([_, value]) => value != null)
+      .filter(([_, value]) => value != null) // eslint-disable-line no-unused-vars
       .map(([key]) => key);
 
     // If user has provided any cost point, do not calculate any other cost points
@@ -770,7 +1223,7 @@ export class IngestionService {
       finalTotalCost = finalCostDetails.total;
     } else if (finalCostEntries.length > 0) {
       finalTotalCost = finalCostEntries.reduce(
-        (acc, [_, cost]) => acc + cost,
+        (acc, [_, cost]) => acc + cost, // eslint-disable-line no-unused-vars
         0,
       );
 
@@ -783,57 +1236,7 @@ export class IngestionService {
     };
   }
 
-  private skipClickhouseReadProjectsCache = new Map<string, boolean>();
-
-  private async shouldSkipClickHouseRead(
-    projectId: string,
-    minProjectCreateDate: string | undefined = undefined,
-  ): Promise<boolean> {
-    if (
-      env.LANGFUSE_SKIP_INGESTION_CLICKHOUSE_READ_PROJECT_IDS &&
-      env.LANGFUSE_SKIP_INGESTION_CLICKHOUSE_READ_PROJECT_IDS.split(
-        ",",
-      ).includes(projectId)
-    ) {
-      return true;
-    }
-
-    if (
-      !env.LANGFUSE_SKIP_INGESTION_CLICKHOUSE_READ_MIN_PROJECT_CREATE_DATE &&
-      !minProjectCreateDate
-    ) {
-      return false;
-    }
-
-    if (this.skipClickhouseReadProjectsCache.has(projectId)) {
-      return this.skipClickhouseReadProjectsCache.get(projectId) ?? false;
-    }
-
-    const project = await this.prisma.project.findFirst({
-      where: {
-        id: projectId,
-        deletedAt: null,
-      },
-      select: {
-        id: true,
-        createdAt: true,
-      },
-    });
-
-    if (!project) {
-      throw new LangfuseNotFoundError(`Project ${projectId} not found`);
-    }
-
-    const cutoffDate = new Date(
-      env.LANGFUSE_SKIP_INGESTION_CLICKHOUSE_READ_MIN_PROJECT_CREATE_DATE ??
-        minProjectCreateDate ??
-        new Date(), // Fallback to today. Should never apply.
-    );
-    const result = project.createdAt >= cutoffDate;
-    this.skipClickhouseReadProjectsCache.set(projectId, result);
-    return result;
-  }
-
+  // eslint-disable-next-line no-unused-vars
   private async getClickhouseRecord(params: {
     projectId: string;
     entityId: string;
@@ -843,6 +1246,7 @@ export class IngestionService {
       params: Record<string, unknown>;
     };
   }): Promise<TraceRecordInsertType | null>;
+  // eslint-disable-next-line no-unused-vars, no-dupe-class-members
   private async getClickhouseRecord(params: {
     projectId: string;
     entityId: string;
@@ -852,6 +1256,7 @@ export class IngestionService {
       params: Record<string, unknown>;
     };
   }): Promise<ScoreRecordInsertType | null>;
+  // eslint-disable-next-line no-unused-vars, no-dupe-class-members
   private async getClickhouseRecord(params: {
     projectId: string;
     entityId: string;
@@ -861,6 +1266,7 @@ export class IngestionService {
       params: Record<string, unknown>;
     };
   }): Promise<ObservationRecordInsertType | null>;
+  // eslint-disable-next-line no-dupe-class-members
   private async getClickhouseRecord(params: {
     projectId: string;
     entityId: string;
@@ -870,7 +1276,11 @@ export class IngestionService {
       params: Record<string, unknown>;
     };
   }) {
-    if (await this.shouldSkipClickHouseRead(params.projectId)) {
+    if (
+      await ClickhouseReadSkipCache.getInstance(
+        this.prisma,
+      ).shouldSkipClickHouseRead(params.projectId)
+    ) {
       recordIncrement("langfuse.ingestion.clickhouse_read_for_update", 1, {
         skipped: "true",
         table: params.table,
@@ -1004,7 +1414,17 @@ export class IngestionService {
 
   private getObservationType(
     observation: ObservationEvent,
-  ): "EVENT" | "SPAN" | "GENERATION" {
+  ):
+    | "EVENT"
+    | "SPAN"
+    | "GENERATION"
+    | "AGENT"
+    | "TOOL"
+    | "CHAIN"
+    | "RETRIEVER"
+    | "EVALUATOR"
+    | "GUARDRAIL"
+    | "EMBEDDING" {
     switch (observation.type) {
       case eventTypes.OBSERVATION_CREATE:
       case eventTypes.OBSERVATION_UPDATE:
@@ -1017,6 +1437,20 @@ export class IngestionService {
       case eventTypes.GENERATION_CREATE:
       case eventTypes.GENERATION_UPDATE:
         return "GENERATION" as const;
+      case eventTypes.AGENT_CREATE:
+        return "AGENT" as const;
+      case eventTypes.TOOL_CREATE:
+        return "TOOL" as const;
+      case eventTypes.CHAIN_CREATE:
+        return "CHAIN" as const;
+      case eventTypes.RETRIEVER_CREATE:
+        return "RETRIEVER" as const;
+      case eventTypes.EVALUATOR_CREATE:
+        return "EVALUATOR" as const;
+      case eventTypes.EMBEDDING_CREATE:
+        return "EMBEDDING" as const;
+      case eventTypes.GUARDRAIL_CREATE:
+        return "GUARDRAIL" as const;
     }
   }
 
@@ -1059,7 +1493,7 @@ export class IngestionService {
         ...("usageDetails" in obs.body
           ? (Object.fromEntries(
               Object.entries(obs.body.usageDetails ?? {}).filter(
-                ([_, val]) => val != null,
+                ([_, val]) => val != null, // eslint-disable-line no-unused-vars
               ),
             ) as Record<string, number>)
           : {}),
@@ -1080,7 +1514,7 @@ export class IngestionService {
         ...("costDetails" in obs.body
           ? (Object.fromEntries(
               Object.entries(obs.body.costDetails ?? {}).filter(
-                ([_, val]) => val != null,
+                ([_, val]) => val != null, // eslint-disable-line no-unused-vars
               ),
             ) as Record<string, number>)
           : {}),
@@ -1151,8 +1585,103 @@ export class IngestionService {
     return typeof obj === "string" ? obj : JSON.stringify(obj);
   }
 
+  private getMicrosecondTimestamp(timestamp?: string | null): number {
+    return timestamp ? new Date(timestamp).getTime() * 1000 : Date.now() * 1000;
+  }
+
   private getMillisecondTimestamp(timestamp?: string | null): number {
     return timestamp ? new Date(timestamp).getTime() : Date.now();
+  }
+
+  /**
+   * Flattens a nested JSON object into path-based names and values.
+   * For example: {foo: {bar: "baz"}} becomes:
+   * - names: ["foo.bar"]
+   * - values: ["baz"]
+   */
+  private flattenJsonToPathArrays(
+    obj: Record<string, unknown>,
+    prefix: string = "",
+  ): { names: string[]; values: unknown[] } {
+    const names: string[] = [];
+    const values: unknown[] = [];
+
+    for (const [key, value] of Object.entries(obj)) {
+      const path = prefix ? `${prefix}.${key}` : key;
+
+      if (
+        value !== null &&
+        value !== undefined &&
+        typeof value === "object" &&
+        !Array.isArray(value)
+      ) {
+        // Recursively flatten nested objects
+        const nested = this.flattenJsonToPathArrays(
+          value as Record<string, unknown>,
+          path,
+        );
+        names.push(...nested.names);
+        values.push(...nested.values);
+      } else {
+        // Leaf value
+        names.push(path);
+        values.push(value);
+      }
+    }
+
+    return { names, values };
+  }
+
+  /**
+   * Flattens a nested JSON object into type-specific path arrays.
+   * Values are separated into string, number, bool, and other arrays based on their type.
+   * Non-primitive values are JSON.stringify'd and placed in the strings group.
+   */
+  private flattenJsonToTypedPathArrays(obj: Record<string, unknown>): {
+    stringNames: string[];
+    stringValues: string[];
+    numberNames: string[];
+    numberValues: number[];
+    boolNames: string[];
+    boolValues: number[]; // ClickHouse uses 0/1 for booleans
+  } {
+    const stringNames: string[] = [];
+    const stringValues: string[] = [];
+    const numberNames: string[] = [];
+    const numberValues: number[] = [];
+    const boolNames: string[] = [];
+    const boolValues: number[] = [];
+
+    const { names, values } = this.flattenJsonToPathArrays(obj);
+
+    for (let i = 0; i < names.length; i++) {
+      const name = names[i];
+      const value = values[i];
+
+      if (typeof value === "boolean") {
+        boolNames.push(name);
+        boolValues.push(value ? 1 : 0);
+      } else if (typeof value === "number") {
+        numberNames.push(name);
+        numberValues.push(value);
+      } else if (typeof value === "string") {
+        stringNames.push(name);
+        stringValues.push(value);
+      } else {
+        // For arrays, objects, null, undefined, etc., stringify and put in strings
+        stringNames.push(name);
+        stringValues.push(JSON.stringify(value));
+      }
+    }
+
+    return {
+      stringNames,
+      stringValues,
+      numberNames,
+      numberValues,
+      boolNames,
+      boolValues,
+    };
   }
 }
 

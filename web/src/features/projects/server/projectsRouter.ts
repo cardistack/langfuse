@@ -17,12 +17,13 @@ import {
   getEnvironmentsForProject,
 } from "@langfuse/shared/src/server";
 import { randomUUID } from "crypto";
+import { StringNoHTMLNonEmpty } from "@langfuse/shared";
 
 export const projectsRouter = createTRPCRouter({
   create: protectedOrganizationProcedure
     .input(
       z.object({
-        name: z.string(),
+        name: StringNoHTMLNonEmpty,
         orgId: z.string(),
       }),
     )
@@ -147,29 +148,12 @@ export const projectsRouter = createTRPCRouter({
         projectId: ctx.session.projectId,
         scope: "project:delete",
       });
-      const beforeProject = await ctx.prisma.project.findUnique({
-        where: {
-          id: input.projectId,
-        },
-      });
-      if (!beforeProject) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: "Project not found",
-        });
-      }
-      await auditLog({
-        session: ctx.session,
-        resourceType: "project",
-        resourceId: input.projectId,
-        before: beforeProject,
-        action: "delete",
-      });
 
       // API keys need to be deleted from cache. Otherwise, they will still be valid.
-      await new ApiAuthService(ctx.prisma, redis).invalidateProjectApiKeys(
-        input.projectId,
-      );
+      await new ApiAuthService(
+        ctx.prisma,
+        redis,
+      ).invalidateCachedProjectApiKeys(input.projectId);
 
       // Delete API keys from DB
       await ctx.prisma.apiKey.deleteMany({
@@ -179,7 +163,7 @@ export const projectsRouter = createTRPCRouter({
         },
       });
 
-      await ctx.prisma.project.update({
+      const project = await ctx.prisma.project.update({
         where: {
           id: input.projectId,
           orgId: ctx.session.orgId,
@@ -187,6 +171,14 @@ export const projectsRouter = createTRPCRouter({
         data: {
           deletedAt: new Date(),
         },
+      });
+
+      await auditLog({
+        session: ctx.session,
+        resourceType: "project",
+        resourceId: input.projectId,
+        before: project,
+        action: "delete",
       });
 
       const projectDeleteQueue = ProjectDeleteQueue.getInstance();
@@ -273,12 +265,15 @@ export const projectsRouter = createTRPCRouter({
 
       // API keys need to be deleted from cache. Otherwise, they will still be valid.
       // It has to be called after the db is done to prevent new API keys from being cached.
-      await new ApiAuthService(ctx.prisma, redis).invalidateProjectApiKeys(
-        input.projectId,
-      );
+      await new ApiAuthService(
+        ctx.prisma,
+        redis,
+      ).invalidateCachedProjectApiKeys(input.projectId);
     }),
 
   environmentFilterOptions: protectedProjectProcedure
-    .input(z.object({ projectId: z.string() }))
+    .input(
+      z.object({ projectId: z.string(), fromTimestamp: z.date().optional() }),
+    )
     .query(async ({ input }) => getEnvironmentsForProject(input)),
 });

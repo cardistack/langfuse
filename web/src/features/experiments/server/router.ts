@@ -2,11 +2,12 @@ import { z } from "zod/v4";
 import { randomUUID } from "crypto";
 import {
   type ExperimentMetadata,
+  ExperimentCreateQueue,
+  PromptService,
   QueueJobs,
   QueueName,
   redis,
   ZodModelConfig,
-  ExperimentCreateQueue,
 } from "@langfuse/shared/src/server";
 import {
   createTRPCRouter,
@@ -19,6 +20,8 @@ import {
   datasetItemMatchesVariable,
   UnauthorizedError,
   PromptType,
+  extractPlaceholderNames,
+  type PromptMessage,
 } from "@langfuse/shared";
 import { throwIfNoProjectAccess } from "@/src/features/rbac/utils/checkProjectAccess";
 
@@ -91,16 +94,37 @@ export const experimentsRouter = createTRPCRouter({
         };
       }
 
-      const extractedVariables = extractVariables(
-        prompt?.type === PromptType.Text
-          ? (prompt.prompt?.toString() ?? "")
-          : JSON.stringify(prompt.prompt),
-      );
+      const promptService = new PromptService(ctx.prisma, redis);
+      const resolvedPrompt = await promptService.resolvePrompt(prompt);
 
-      if (!Boolean(extractedVariables.length)) {
+      if (!resolvedPrompt) {
         return {
           isValid: false,
-          message: "Selected prompt has no variables.",
+          message: "Selected prompt not found.",
+        };
+      }
+
+      const extractedVariables = extractVariables(
+        resolvedPrompt?.type === PromptType.Text
+          ? (resolvedPrompt.prompt?.toString() ?? "")
+          : JSON.stringify(resolvedPrompt?.prompt),
+      );
+
+      const promptMessages =
+        resolvedPrompt?.type === PromptType.Chat &&
+        Array.isArray(resolvedPrompt?.prompt)
+          ? resolvedPrompt.prompt
+          : [];
+      const placeholderNames = extractPlaceholderNames(
+        promptMessages as PromptMessage[],
+      );
+
+      const allVariables = [...extractedVariables, ...placeholderNames];
+
+      if (!Boolean(allVariables.length)) {
+        return {
+          isValid: false,
+          message: "Selected prompt has no variables or placeholders.",
         };
       }
 
@@ -119,10 +143,7 @@ export const experimentsRouter = createTRPCRouter({
         };
       }
 
-      const variablesMap = validateDatasetItems(
-        datasetItems,
-        extractedVariables,
-      );
+      const variablesMap = validateDatasetItems(datasetItems, allVariables);
 
       if (!Boolean(Object.keys(variablesMap).length)) {
         return {
@@ -142,7 +163,8 @@ export const experimentsRouter = createTRPCRouter({
     .input(
       z.object({
         projectId: z.string(),
-        name: z.string().optional(),
+        name: z.string().min(1, "Please enter an experiment name"),
+        runName: z.string().min(1, "Run name is required"),
         promptId: z.string().min(1, "Please select a prompt"),
         datasetId: z.string().min(1, "Please select a dataset"),
         description: z.string().max(1000).optional(),
@@ -151,6 +173,7 @@ export const experimentsRouter = createTRPCRouter({
           model: z.string().min(1, "Please select a model"),
           modelParams: ZodModelConfig,
         }),
+        structuredOutputSchema: z.record(z.string(), z.any()).optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -169,16 +192,21 @@ export const experimentsRouter = createTRPCRouter({
         provider: input.modelConfig.provider,
         model: input.modelConfig.model,
         model_params: input.modelConfig.modelParams,
+        ...(input.structuredOutputSchema && {
+          structured_output_schema: input.structuredOutputSchema,
+        }),
       };
-      const name =
-        input.name ?? `${input.promptId}-${new Date().toISOString()}`;
 
       const datasetRun = await ctx.prisma.datasetRuns.create({
         data: {
-          name: name,
+          name: input.runName,
           description: input.description,
           datasetId: input.datasetId,
-          metadata: metadata,
+          metadata: {
+            ...metadata,
+            experiment_name: input.name,
+            experiment_run_name: input.runName,
+          },
           projectId: input.projectId,
         },
       });
@@ -196,6 +224,10 @@ export const experimentsRouter = createTRPCRouter({
             runId: datasetRun.id,
             description: input.description,
           },
+          retryBaggage: {
+            originalJobTimestamp: new Date(),
+            attempt: 0,
+          },
         });
       }
 
@@ -203,7 +235,7 @@ export const experimentsRouter = createTRPCRouter({
         success: true,
         datasetId: input.datasetId,
         runId: datasetRun.id,
-        runName: name,
+        runName: input.runName,
       };
     }),
 });

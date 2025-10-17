@@ -22,6 +22,10 @@ type PostHogExecutionConfig = {
 
 const POSTHOG_UUID_NAMESPACE = "0f6c91df-d035-4813-b838-9741ba38ef0b";
 
+const postHogSettings = {
+  flushAt: 1000,
+};
+
 const processPostHogTraces = async (config: PostHogExecutionConfig) => {
   const postHogTraces = getTracesForPostHog(
     config.projectId,
@@ -34,20 +38,34 @@ const processPostHogTraces = async (config: PostHogExecutionConfig) => {
   // Send each via PostHog SDK
   const posthog = new PostHog(config.decryptedPostHogApiKey, {
     host: config.postHogHost,
+    ...postHogSettings,
+  });
+
+  posthog.on("error", (error) => {
+    logger.error(
+      `Error sending traces to PostHog for project ${config.projectId}: ${error}`,
+    );
+    throw new Error(
+      `Error sending traces to PostHog for project ${config.projectId}: ${error}`,
+    );
   });
 
   let count = 0;
   for await (const trace of postHogTraces) {
     count++;
+    const uuid = v5(
+      `${config.projectId}-${trace.langfuse_id}`,
+      POSTHOG_UUID_NAMESPACE,
+    );
     posthog.capture({
-      distinctId: trace.langfuse_user_id as string,
+      distinctId: trace.langfuse_user_id
+        ? (trace.langfuse_user_id as string)
+        : // use random uuid for anonymous users to maximize posthog performance, will be ignored as we set $process_person_profile to false
+          uuid,
       event: "langfuse trace",
       properties: trace,
       timestamp: trace.timestamp as Date,
-      uuid: v5(
-        `${config.projectId}-${trace.langfuse_id}`,
-        POSTHOG_UUID_NAMESPACE,
-      ),
+      uuid,
     });
     if (count % 10000 === 0) {
       await posthog.flush();
@@ -74,20 +92,34 @@ const processPostHogGenerations = async (config: PostHogExecutionConfig) => {
   // Send each via PostHog SDK
   const posthog = new PostHog(config.decryptedPostHogApiKey, {
     host: config.postHogHost,
+    ...postHogSettings,
+  });
+
+  posthog.on("error", (error) => {
+    logger.error(
+      `Error sending generations to PostHog for project ${config.projectId}: ${error}`,
+    );
+    throw new Error(
+      `Error sending generations to PostHog for project ${config.projectId}: ${error}`,
+    );
   });
 
   let count = 0;
   for await (const generation of postHogGenerations) {
     count++;
+    const uuid = v5(
+      `${config.projectId}-${generation.langfuse_id}`,
+      POSTHOG_UUID_NAMESPACE,
+    );
     posthog.capture({
-      distinctId: generation.langfuse_user_id as string,
+      distinctId: generation.langfuse_user_id
+        ? (generation.langfuse_user_id as string)
+        : // use random uuid for anonymous users to maximize posthog performance, will be ignored as we set $process_person_profile to false
+          uuid,
       event: "langfuse generation",
       properties: generation,
       timestamp: generation.timestamp as Date,
-      uuid: v5(
-        `${config.projectId}-${generation.langfuse_id}`,
-        POSTHOG_UUID_NAMESPACE,
-      ),
+      uuid,
     });
     if (count % 10000 === 0) {
       await posthog.flush();
@@ -114,20 +146,33 @@ const processPostHogScores = async (config: PostHogExecutionConfig) => {
   // Send each via PostHog SDK
   const posthog = new PostHog(config.decryptedPostHogApiKey, {
     host: config.postHogHost,
+    ...postHogSettings,
   });
 
+  posthog.on("error", (error) => {
+    logger.error(
+      `Error sending scores to PostHog for project ${config.projectId}: ${error}`,
+    );
+    throw new Error(
+      `Error sending scores to PostHog for project ${config.projectId}: ${error}`,
+    );
+  });
   let count = 0;
   for await (const score of postHogScores) {
     count++;
+    const uuid = v5(
+      `${config.projectId}-${score.langfuse_id}`,
+      POSTHOG_UUID_NAMESPACE,
+    );
     posthog.capture({
-      distinctId: score.langfuse_user_id as string,
+      distinctId: score.langfuse_user_id
+        ? (score.langfuse_user_id as string)
+        : // use random uuid for anonymous users to maximize posthog performance, will be ignored as we set $process_person_profile to false
+          uuid,
       event: "langfuse score",
       properties: score,
       timestamp: score.timestamp as Date,
-      uuid: v5(
-        `${config.projectId}-${score.langfuse_id}`,
-        POSTHOG_UUID_NAMESPACE,
-      ),
+      uuid,
     });
     if (count % 10000 === 0) {
       await posthog.flush();

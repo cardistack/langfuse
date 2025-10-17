@@ -3,7 +3,7 @@ import { useRowHeightLocalStorage } from "@/src/components/table/data-table-row-
 import { DataTableToolbar } from "@/src/components/table/data-table-toolbar";
 import TableLink from "@/src/components/table/table-link";
 import { type LangfuseColumnDef } from "@/src/components/table/types";
-import { IOTableCell } from "@/src/components/ui/CodeJsonViewer";
+import { IOTableCell } from "../../ui/IOTableCell";
 import { Avatar, AvatarImage } from "@/src/components/ui/avatar";
 import useColumnVisibility from "@/src/features/column-visibility/hooks/useColumnVisibility";
 import { useQueryFilterState } from "@/src/features/filters/hooks/useFilterState";
@@ -11,6 +11,7 @@ import { isNumericDataType } from "@/src/features/scores/lib/helpers";
 import { useOrderByState } from "@/src/features/orderBy/hooks/useOrderByState";
 import { useDebounce } from "@/src/hooks/useDebounce";
 import { useTableDateRange } from "@/src/hooks/useTableDateRange";
+import { toAbsoluteTimeRange } from "@/src/utils/date-range-utils";
 import {
   type ScoreOptions,
   scoresTableColsWithOptions,
@@ -70,6 +71,7 @@ export type ScoresTableRow = {
   jobConfigurationId?: string;
   traceTags?: string[];
   environment?: string;
+  executionTraceId?: string;
 };
 
 function createFilterState(
@@ -114,8 +116,12 @@ export default function ScoresTable({
   const { selectAll, setSelectAll } = useSelectAll(projectId, "scores");
 
   const [rowHeight, setRowHeight] = useRowHeightLocalStorage("scores", "s");
-  const { selectedOption, dateRange, setDateRangeAndOption } =
-    useTableDateRange(projectId);
+  const { timeRange, setTimeRange } = useTableDateRange(projectId);
+
+  // Convert timeRange to absolute date range for compatibility
+  const dateRange = React.useMemo(() => {
+    return toAbsoluteTimeRange(timeRange) ?? undefined;
+  }, [timeRange]);
 
   const [userFilterState, setUserFilterState] = useQueryFilterState(
     [],
@@ -126,17 +132,30 @@ export default function ScoresTable({
   const dateRangeFilter: FilterState = dateRange
     ? [
         {
-          column: "Timestamp",
+          column: "timestamp",
           type: "datetime",
           operator: ">=",
           value: dateRange.from,
         },
+        ...(dateRange.to
+          ? [
+              {
+                column: "timestamp",
+                type: "datetime",
+                operator: "<=",
+                value: dateRange.to,
+              } as const,
+            ]
+          : []),
       ]
     : [];
 
   const environmentFilterOptions =
     api.projects.environmentFilterOptions.useQuery(
-      { projectId },
+      {
+        projectId,
+        fromTimestamp: dateRange?.from,
+      },
       {
         trpc: { context: { skipBatch: true } },
         refetchOnMount: false,
@@ -188,8 +207,12 @@ export default function ScoresTable({
     orderBy: orderByState,
   };
 
-  const scores = api.scores.all.useQuery(getAllPayload);
-  const totalScoreCountQuery = api.scores.countAll.useQuery(getCountPayload);
+  const scores = api.scores.all.useQuery(getAllPayload, {
+    enabled: !environmentFilterOptions.isLoading,
+  });
+  const totalScoreCountQuery = api.scores.countAll.useQuery(getCountPayload, {
+    enabled: !environmentFilterOptions.isLoading,
+  });
   const totalCount = totalScoreCountQuery.data?.totalCount ?? null;
 
   const scoreDeleteMutation = api.scores.deleteMany.useMutation({
@@ -309,6 +332,24 @@ export default function ScoresTable({
       },
     },
     {
+      accessorKey: "executionTraceId",
+      id: "executionTraceId",
+      header: "Execution Trace",
+      enableSorting: false,
+      enableHiding: true,
+      defaultHidden: true,
+      size: 100,
+      cell: ({ row }) => {
+        const value = row.getValue("executionTraceId");
+        return typeof value === "string" ? (
+          <TableLink
+            path={`/project/${projectId}/traces/${encodeURIComponent(value)}`}
+            value={value}
+          />
+        ) : undefined;
+      },
+    },
+    {
       accessorKey: "observationId",
       id: "observationId",
       header: "Observation",
@@ -368,7 +409,7 @@ export default function ScoresTable({
       id: "userId",
       headerTooltip: {
         description: "The user ID associated with the trace.",
-        href: "https://langfuse.com/docs/tracing-features/users",
+        href: "https://langfuse.com/docs/observability/features/users",
       },
       enableHiding: true,
       enableSorting: true,
@@ -437,7 +478,7 @@ export default function ScoresTable({
       headerTooltip: {
         description: "Add metadata to scores to track additional information.",
         // TODO: docs for metadata on scores
-        href: "https://langfuse.com/docs/tracing-features/metadata",
+        href: "https://langfuse.com/docs/observability/features/metadata",
       },
       cell: ({ row }) => {
         const scoreId: ScoresTableRow["id"] = row.getValue("id");
@@ -493,7 +534,7 @@ export default function ScoresTable({
       id: "jobConfigurationId",
       headerTooltip: {
         description: "The Job Configuration ID associated with the trace.",
-        href: "https://langfuse.com/docs/scores/model-based-evals",
+        href: "https://langfuse.com/docs/evaluation/evaluation-methods/llm-as-a-judge",
       },
       enableHiding: true,
       enableSorting: false,
@@ -598,6 +639,7 @@ export default function ScoresTable({
       jobConfigurationId: score.jobConfigurationId ?? undefined,
       traceTags: score.traceTags ?? undefined,
       environment: score.environment ?? undefined,
+      executionTraceId: score.executionTraceId ?? undefined,
     };
   };
 
@@ -605,7 +647,10 @@ export default function ScoresTable({
     traceFilterOptions: ScoreOptions | undefined,
   ) => {
     return scoresTableColsWithOptions(traceFilterOptions).filter(
-      (c) => !omittedFilter?.includes(c.name) && !hiddenColumns.includes(c.id),
+      (c) =>
+        c.id !== "timestamp" &&
+        !omittedFilter?.includes(c.name) &&
+        !hiddenColumns.includes(c.id),
     );
   };
 
@@ -659,8 +704,8 @@ export default function ScoresTable({
         ]}
         rowHeight={rowHeight}
         setRowHeight={setRowHeight}
-        selectedOption={selectedOption}
-        setDateRangeAndOption={setDateRangeAndOption}
+        timeRange={timeRange}
+        setTimeRange={setTimeRange}
         multiSelect={{
           selectAll,
           setSelectAll,
@@ -678,9 +723,10 @@ export default function ScoresTable({
         }}
       />
       <DataTable
+        tableName={"scores"}
         columns={columns}
         data={
-          scores.isLoading || isViewLoading
+          scores.isPending || isViewLoading
             ? { isLoading: true, isError: false }
             : scores.isError
               ? {
@@ -736,7 +782,7 @@ const ScoresMetadataCell = ({
   );
   return (
     <IOTableCell
-      isLoading={score.isLoading}
+      isLoading={score.isPending}
       data={score.data?.metadata}
       singleLine={singleLine}
     />

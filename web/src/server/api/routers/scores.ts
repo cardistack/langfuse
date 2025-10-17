@@ -26,6 +26,7 @@ import {
   BatchExportTableName,
   type ScoreDomain,
   CreateAnnotationScoreData,
+  type ScoreConfigDomain,
 } from "@langfuse/shared";
 import {
   getScoresGroupedByNameSourceType,
@@ -44,7 +45,8 @@ import {
   QueueJobs,
   getScoreMetadataById,
   deleteScores,
-  traceWithSessionIdExists,
+  getTracesIdentifierForSession,
+  validateConfigAgainstBody,
 } from "@langfuse/shared/src/server";
 import { v4 } from "uuid";
 import { throwIfNoEntitlement } from "@/src/features/entitlements/server/hasEntitlement";
@@ -70,6 +72,7 @@ type AllScoresReturnType = Omit<ScoreDomain, "metadata"> & {
   authorUserImage: string | null;
   authorUserName: string | null;
   hasMetadata: boolean;
+  executionTraceId: string | null;
 };
 
 export const scoresRouter = createTRPCRouter({
@@ -294,6 +297,7 @@ export const scoresRouter = createTRPCRouter({
         const clickhouseTrace = await getTraceById({
           traceId: inflatedParams.traceId,
           projectId: input.projectId,
+          clickhouseFeatureTag: "annotations-trpc",
         });
 
         if (!clickhouseTrace) {
@@ -306,11 +310,11 @@ export const scoresRouter = createTRPCRouter({
         }
       } else if (inflatedParams.sessionId) {
         // We consider no longer writing all sessions into postgres, hence we should search for traces with the session id
-        const isSessionReferenced = await traceWithSessionIdExists(
+        const traceIdentifiers = await getTracesIdentifierForSession(
           input.projectId,
           inflatedParams.sessionId,
         );
-        if (!isSessionReferenced) {
+        if (traceIdentifiers.length === 0) {
           logger.error(
             `No trace referencing session with id ${inflatedParams.sessionId} in project ${input.projectId} in Clickhouse`,
           );
@@ -327,6 +331,7 @@ export const scoresRouter = createTRPCRouter({
         inflatedParams.sessionId,
         input.name,
         input.configId,
+        input.dataType,
       );
 
       const score = !!clickhouseScore
@@ -357,6 +362,7 @@ export const scoresRouter = createTRPCRouter({
             authorUserId: ctx.session.user.id,
             source: ScoreSource.ANNOTATION,
             queueId: input.queueId ?? null,
+            executionTraceId: null,
             createdAt: new Date(),
             updatedAt: new Date(),
             timestamp: new Date(),
@@ -416,6 +422,39 @@ export const scoresRouter = createTRPCRouter({
           `No annotation score with id ${input.id} in project ${input.projectId} in Clickhouse`,
         );
       } else {
+        // validate score against config
+        if (score.configId) {
+          const config = await ctx.prisma.scoreConfig.findFirst({
+            where: {
+              id: score.configId,
+              projectId: input.projectId,
+            },
+          });
+          if (!config) {
+            throw new LangfuseNotFoundError(
+              `No score config with id ${score.configId} in project ${input.projectId}`,
+            );
+          }
+          try {
+            validateConfigAgainstBody({
+              body: {
+                ...score,
+                value: input.value ?? null,
+                stringValue: input.stringValue ?? null,
+                comment: input.comment ?? null,
+              },
+              config: config as ScoreConfigDomain,
+              context: "ANNOTATION",
+            });
+          } catch (error) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                "Score does not comply with config schema. Please adjust or delete score.",
+            });
+          }
+        }
+
         await upsertScore({
           id: input.id,
           project_id: input.projectId,
@@ -499,6 +538,9 @@ export const scoresRouter = createTRPCRouter({
 
       return validateDbScore(clickhouseScore);
     }),
+  /**
+   * @deprecated, use getScoreColumns instead
+   */
   getScoreKeysAndProps: protectedProjectProcedure
     .input(
       z.object({
@@ -508,13 +550,45 @@ export const scoresRouter = createTRPCRouter({
     )
     .query(async ({ input }) => {
       const date = getDateFromOption(input.selectedTimeOption);
-      const res = await getScoresGroupedByNameSourceType(input.projectId, date);
+      const res = await getScoresGroupedByNameSourceType({
+        projectId: input.projectId,
+        fromTimestamp: date,
+        filter: [],
+      });
       return res.map(({ name, source, dataType }) => ({
         key: composeAggregateScoreKey({ name, source, dataType }),
         name: name,
         source: source,
         dataType: dataType,
       }));
+    }),
+  getScoreColumns: protectedProjectProcedure
+    .input(
+      z.object({
+        projectId: z.string(),
+        filter: z.array(singleFilter).optional(),
+        fromTimestamp: z.date().optional(),
+        toTimestamp: z.date().optional(),
+      }),
+    )
+    .query(async ({ input }) => {
+      const { projectId, filter, fromTimestamp, toTimestamp } = input;
+
+      const groupedScores = await getScoresGroupedByNameSourceType({
+        projectId,
+        filter: filter || [],
+        fromTimestamp,
+        toTimestamp,
+      });
+
+      const scoreColumns = groupedScores.map(({ name, source, dataType }) => ({
+        key: composeAggregateScoreKey({ name, source, dataType }),
+        name,
+        source,
+        dataType,
+      }));
+
+      return { scoreColumns };
     }),
   hasAny: protectedProjectProcedure
     .input(

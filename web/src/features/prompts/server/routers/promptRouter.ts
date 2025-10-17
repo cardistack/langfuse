@@ -10,7 +10,6 @@ import {
 import { type Prompt, Prisma } from "@langfuse/shared/src/db";
 import { createPrompt, duplicatePrompt } from "../actions/createPrompt";
 import { checkHasProtectedLabels } from "../utils/checkHasProtectedLabels";
-import { promptsTableCols } from "@/src/server/api/definitions/promptsTable";
 import {
   CreatePromptTRPCSchema,
   InvalidRequestError,
@@ -18,7 +17,10 @@ import {
   optionalPaginationZod,
   paginationZod,
   PromptLabelSchema,
+  promptsTableCols,
   PromptType,
+  StringNoHTMLNonEmpty,
+  TracingSearchType,
 } from "@langfuse/shared";
 import { orderBy, singleFilter } from "@langfuse/shared";
 import {
@@ -33,6 +35,35 @@ import {
 } from "@langfuse/shared/src/server";
 import { aggregateScores } from "@/src/features/scores/lib/aggregateScores";
 import { TRPCError } from "@trpc/server";
+import { promptChangeEventSourcing } from "@/src/features/prompts/server/promptChangeEventSourcing";
+
+const buildPromptSearchFilter = (
+  searchQuery: string | undefined | null,
+  searchType?: TracingSearchType[],
+): Prisma.Sql => {
+  if (searchQuery === undefined || searchQuery === null || searchQuery === "") {
+    return Prisma.empty;
+  }
+
+  const q = searchQuery;
+  const types = searchType ?? ["id"];
+  const searchConditions: Prisma.Sql[] = [];
+
+  if (types.includes("id")) {
+    searchConditions.push(Prisma.sql`p.name ILIKE ${`%${q}%`}`);
+    searchConditions.push(
+      Prisma.sql`EXISTS (SELECT 1 FROM UNNEST(p.tags) AS tag WHERE tag ILIKE ${`%${q}%`})`,
+    );
+  }
+
+  if (types.includes("content")) {
+    searchConditions.push(Prisma.sql`p.prompt::text ILIKE ${`%${q}%`}`);
+  }
+
+  return searchConditions.length > 0
+    ? Prisma.sql` AND (${Prisma.join(searchConditions, " OR ")})`
+    : Prisma.empty;
+};
 
 const PromptFilterOptions = z.object({
   projectId: z.string(), // Required for protectedProjectProcedure
@@ -40,6 +71,8 @@ const PromptFilterOptions = z.object({
   orderBy: orderBy,
   ...paginationZod,
   pathPrefix: z.string().optional(),
+  searchQuery: z.string().optional(),
+  searchType: z.array(TracingSearchType).optional(),
 });
 
 export const promptRouter = createTRPCRouter({
@@ -86,13 +119,22 @@ export const promptRouter = createTRPCRouter({
         "prompts",
       );
 
+      // pathFilter: SQL WHERE clause to filter prompts by folder (e.g., "AND p.name LIKE 'folder/%'")
       const pathFilter = input.pathPrefix
-        ? Prisma.sql` AND (p.name LIKE ${input.pathPrefix + "/%"} OR p.name = ${input.pathPrefix})`
+        ? (() => {
+            const prefix = input.pathPrefix;
+            return Prisma.sql` AND (p.name LIKE ${`${prefix}/%`} OR p.name = ${prefix})`;
+          })()
         : Prisma.empty;
+
+      const searchFilter = buildPromptSearchFilter(
+        input.searchQuery,
+        input.searchType,
+      );
 
       const [prompts, promptCount] = await Promise.all([
         // prompts
-        ctx.prisma.$queryRaw<Array<Prompt>>(
+        ctx.prisma.$queryRaw<Array<Prompt & { row_type: "folder" | "prompt" }>>(
           generatePromptQuery(
             Prisma.sql`
           p.id,
@@ -104,25 +146,30 @@ export const promptRouter = createTRPCRouter({
           p.updated_at as "updatedAt",
           p.created_at as "createdAt",
           p.labels,
-          p.tags`,
+          p.tags,
+          p.row_type`,
             input.projectId,
             filterCondition,
             orderByCondition,
             input.limit,
             input.page,
-            pathFilter,
+            pathFilter, // SQL WHERE clause: filters DB to only prompts in current folder, derived from prefix.
+            searchFilter,
+            input.pathPrefix, // Raw folder path: used for segment splitting & folder detection logic
           ),
         ),
         // promptCount
         ctx.prisma.$queryRaw<Array<{ totalCount: bigint }>>(
           generatePromptQuery(
-            Prisma.sql` count(*) AS "totalCount"`,
+            Prisma.sql`count(*) AS "totalCount"`,
             input.projectId,
             filterCondition,
             Prisma.empty,
             1, // limit
-            0, // page,
+            0, // input.page,
             pathFilter,
+            searchFilter,
+            input.pathPrefix,
           ),
         ),
       ]);
@@ -134,7 +181,15 @@ export const promptRouter = createTRPCRouter({
       };
     }),
   count: protectedProjectProcedure
-    .input(z.object({ projectId: z.string() }))
+    .input(
+      z.object({
+        projectId: z.string(),
+        searchQuery: z.string().optional(),
+        searchType: z.array(TracingSearchType).optional(),
+        pathPrefix: z.string().optional(),
+        filter: z.array(singleFilter).optional(),
+      }),
+    )
     .query(async ({ input, ctx }) => {
       throwIfNoProjectAccess({
         session: ctx.session,
@@ -142,14 +197,37 @@ export const promptRouter = createTRPCRouter({
         scope: "prompts:read",
       });
 
+      const filterCondition = input.filter
+        ? tableColumnsToSqlFilterAndPrefix(
+            input.filter,
+            promptsTableCols,
+            "prompts",
+          )
+        : Prisma.empty;
+
+      const pathFilter = input.pathPrefix
+        ? (() => {
+            const prefix = input.pathPrefix;
+            return Prisma.sql` AND (p.name LIKE ${`${prefix}/%`} OR p.name = ${prefix})`;
+          })()
+        : Prisma.empty;
+
+      const searchFilter = buildPromptSearchFilter(
+        input.searchQuery,
+        input.searchType,
+      );
+
       const count = await ctx.prisma.$queryRaw<Array<{ totalCount: bigint }>>(
         generatePromptQuery(
           Prisma.sql` count(*) AS "totalCount"`,
           input.projectId,
-          Prisma.empty,
+          filterCondition,
           Prisma.empty,
           1, // limit
           0, // page
+          pathFilter,
+          searchFilter,
+          input.pathPrefix,
         ),
       );
 
@@ -259,7 +337,7 @@ export const promptRouter = createTRPCRouter({
       z.object({
         projectId: z.string(),
         promptId: z.string(),
-        name: z.string(),
+        name: StringNoHTMLNonEmpty,
         isSingleVersion: z.boolean(),
       }),
     )
@@ -448,6 +526,16 @@ export const promptRouter = createTRPCRouter({
 
         // Unlock cache
         await promptService.unlockCache({ projectId, promptName });
+
+        // Trigger webhooks for prompt deletion
+        await Promise.all(
+          prompts.map(async (prompt) =>
+            promptChangeEventSourcing(
+              await promptService.resolvePrompt(prompt),
+              "deleted",
+            ),
+          ),
+        );
       } catch (e) {
         logger.error(e);
         throw e;
@@ -596,6 +684,12 @@ export const promptRouter = createTRPCRouter({
 
         // Unlock cache
         await promptService.unlockCache({ projectId, promptName });
+
+        // Trigger webhooks for prompt version deletion
+        await promptChangeEventSourcing(
+          await promptService.resolvePrompt(promptVersion),
+          "deleted",
+        );
       } catch (e) {
         logger.error(e);
         throw e;
@@ -707,6 +801,8 @@ export const promptRouter = createTRPCRouter({
           }
         }
 
+        const touchedPromptIds = [toBeLabeledPrompt.id];
+
         await auditLog(
           {
             session: ctx.session,
@@ -730,6 +826,8 @@ export const promptRouter = createTRPCRouter({
           },
           orderBy: [{ version: "desc" }],
         });
+
+        touchedPromptIds.push(...previousLabeledPrompts.map((p) => p.id));
 
         const toBeExecuted = [
           ctx.prisma.prompt.update({
@@ -768,6 +866,24 @@ export const promptRouter = createTRPCRouter({
 
         // Unlock cache
         await promptService.unlockCache({ projectId, promptName });
+
+        // Trigger webhooks for prompt label update
+        const updatedPrompts = await ctx.prisma.prompt.findMany({
+          where: {
+            id: { in: touchedPromptIds },
+            projectId,
+          },
+        });
+
+        // Send webhooks for ALL affected prompts
+        await Promise.all(
+          updatedPrompts.map(async (prompt) =>
+            promptChangeEventSourcing(
+              await promptService.resolvePrompt(prompt),
+              "updated",
+            ),
+          ),
+        );
       } catch (e) {
         logger.error(`Failed to set prompt labels: ${e}`, e);
         throw e;
@@ -901,8 +1017,24 @@ export const promptRouter = createTRPCRouter({
 
         // Unlock cache
         await promptService.unlockCache({ projectId, promptName });
-      } catch (error) {
-        logger.error(error);
+
+        // Trigger webhooks for prompt tag update
+
+        const prompts = await ctx.prisma.prompt.findMany({
+          where: { projectId, name: promptName },
+        });
+
+        await Promise.all(
+          prompts.map(async (prompt) =>
+            promptChangeEventSourcing(
+              await promptService.resolvePrompt(prompt),
+              "updated",
+            ),
+          ),
+        );
+      } catch (e) {
+        logger.error(`Failed to update prompt tags: ${e}`, e);
+        throw e;
       }
     }),
   allPromptMeta: protectedProjectProcedure
@@ -1233,23 +1365,143 @@ const generatePromptQuery = (
   limit: number,
   page: number,
   pathFilter: Prisma.Sql = Prisma.empty,
+  searchFilter: Prisma.Sql = Prisma.empty,
+  pathPrefix?: string,
 ) => {
-  return Prisma.sql`
-  SELECT
-   ${select}
-   FROM prompts p
-   WHERE (name, version) IN (
-    SELECT name, MAX(version)
-     FROM prompts p
-     WHERE "project_id" = ${projectId}
-     ${filterCondition}
-     ${pathFilter}
-          GROUP BY name
-        )
-    AND "project_id" = ${projectId}
-  ${filterCondition}
-  ${pathFilter}
-  ${orderCondition}
-  LIMIT ${limit} OFFSET ${page * limit};
-`;
+  const prefix = pathPrefix ?? "";
+
+  // CTE to get latest versions (same for root and folder queries)
+  const latestCTE = Prisma.sql`
+    latest AS (
+      SELECT p.*
+      FROM prompts p
+      WHERE (p.name, p.version) IN (
+        SELECT name, MAX(version)
+        FROM prompts p
+        WHERE p.project_id = ${projectId}
+          ${filterCondition}
+          ${pathFilter}
+          ${searchFilter}
+        GROUP BY name
+      )
+        AND p.project_id = ${projectId}
+        ${filterCondition}
+        ${pathFilter}
+        ${searchFilter}
+    )`;
+
+  // Common ORDER BY and LIMIT clauses
+  const orderAndLimit = Prisma.sql`
+    ${orderCondition.sql ? Prisma.sql`ORDER BY p.sort_priority, ${Prisma.raw(orderCondition.sql.replace(/ORDER BY /i, ""))}` : Prisma.empty}
+    LIMIT ${limit} OFFSET ${page * limit}`;
+
+  if (prefix) {
+    // When we're inside a folder, show individual prompts within that folder
+    // and folder representatives for subfolders
+
+    return Prisma.sql`
+    WITH ${latestCTE},
+    individual_prompts_in_folder AS (
+      /* Individual prompts exactly at this folder level (no deeper slashes) */
+      SELECT
+        p.id,
+        SUBSTRING(p.name, CHAR_LENGTH(${prefix}) + 2) as name, -- Remove prefix, show relative name
+        p.version,
+        p.project_id,
+        p.prompt,
+        p.type,
+        p.updated_at,
+        p.created_at,
+        p.labels,
+        p.tags,
+        p.config,
+        p.created_by,
+        2 as sort_priority, -- Individual prompts second
+        'prompt'::text as row_type  -- Mark as individual prompt
+      FROM latest p
+      WHERE SUBSTRING(p.name, CHAR_LENGTH(${prefix}) + 2) NOT LIKE '%/%'
+        AND SUBSTRING(p.name, CHAR_LENGTH(${prefix}) + 2) != ''  -- Exclude prompts that match prefix exactly
+        AND p.name != ${prefix}  -- Additional safety check
+    ),
+    subfolder_representatives AS (
+      /* Folder representatives for deeper nested prompts */
+      SELECT
+        p.id,
+        SPLIT_PART(SUBSTRING(p.name, CHAR_LENGTH(${prefix}) + 2), '/', 1) as name, -- First segment after prefix
+        p.version,
+        p.project_id,
+        p.prompt,
+        p.type,
+        p.updated_at,
+        p.created_at,
+        p.labels,
+        p.tags,
+        p.config,
+        p.created_by,
+        1 as sort_priority, -- Folders first
+        'folder'::text as row_type, -- Mark as folder representative
+        ROW_NUMBER() OVER (PARTITION BY SPLIT_PART(SUBSTRING(p.name, CHAR_LENGTH(${prefix}) + 2), '/', 1) ORDER BY p.version DESC) AS rn
+      FROM latest p
+      WHERE SUBSTRING(p.name, CHAR_LENGTH(${prefix}) + 2) LIKE '%/%'
+    ),
+    combined AS (
+      SELECT
+        id, name, version, project_id, prompt, type, updated_at, created_at, labels, tags, config, created_by, sort_priority, row_type
+      FROM individual_prompts_in_folder
+      UNION ALL
+      SELECT
+        id, name, version, project_id, prompt, type, updated_at, created_at, labels, tags, config, created_by, sort_priority, row_type
+      FROM subfolder_representatives WHERE rn = 1
+    )
+    SELECT
+      ${select}
+    FROM combined p
+    ${orderAndLimit};
+    `;
+  } else {
+    const baseColumns = Prisma.sql`id, name, version, project_id, prompt, type, updated_at, created_at, labels, tags, config, created_by`;
+
+    // When we're at the root level, show all individual prompts that don't have folders
+    // and one representative per folder for prompts that do have folders
+    return Prisma.sql`
+    WITH ${latestCTE},
+    individual_prompts AS (
+      /* Individual prompts without folders */
+      SELECT p.*, 'prompt'::text as row_type
+      FROM latest p
+      WHERE p.name NOT LIKE '%/%'
+    ),
+    folder_representatives AS (
+      /* One representative per folder - return folder name, not full prompt name */
+      SELECT
+        p.id,
+        SPLIT_PART(p.name, '/', 1) as name,  -- Return folder segment name instead of full name
+        p.version,
+        p.project_id,
+        p.prompt,
+        p.type,
+        p.updated_at,
+        p.created_at,
+        p.labels,
+        p.tags,
+        p.config,
+        p.created_by,
+        'folder'::text as row_type, -- Mark as folder representative
+        ROW_NUMBER() OVER (PARTITION BY SPLIT_PART(p.name, '/', 1) ORDER BY p.version DESC) AS rn
+      FROM latest p
+      WHERE p.name LIKE '%/%'
+    ),
+    combined AS (
+      SELECT ${baseColumns}, row_type, 1 as sort_priority  -- Folders first
+      FROM folder_representatives WHERE rn = 1
+      UNION ALL
+      SELECT ${baseColumns}, row_type, 2 as sort_priority  -- Individual prompts second
+      FROM individual_prompts
+    )
+    SELECT
+      ${select}
+    FROM combined p
+    ${orderAndLimit};
+    `;
+  }
 };

@@ -2,7 +2,6 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
 
 import type { Session } from "next-auth";
-import { pruneDatabase } from "@/src/__tests__/test-utils";
 import { prisma } from "@langfuse/shared/src/db";
 import { appRouter } from "@/src/server/api/root";
 import { createInnerTRPCContext } from "@/src/server/api/trpc";
@@ -19,8 +18,6 @@ import { randomUUID } from "crypto";
 describe("traces trpc", () => {
   const projectId = "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a";
 
-  beforeEach(async () => await pruneDatabase());
-
   const session: Session = {
     expires: "1",
     user: {
@@ -34,6 +31,8 @@ describe("traces trpc", () => {
           role: "OWNER",
           plan: "cloud:hobby",
           cloudConfig: undefined,
+          metadata: {},
+          aiFeaturesEnabled: false,
           projects: [
             {
               id: projectId,
@@ -41,6 +40,7 @@ describe("traces trpc", () => {
               retentionDays: 30,
               deletedAt: null,
               name: "Test Project",
+              metadata: {},
             },
           ],
         },
@@ -54,7 +54,7 @@ describe("traces trpc", () => {
     environment: {} as any,
   };
 
-  const ctx = createInnerTRPCContext({ session });
+  const ctx = createInnerTRPCContext({ session, headers: {} });
   const caller = appRouter.createCaller({ ...ctx, prisma });
 
   describe("generations.all", () => {

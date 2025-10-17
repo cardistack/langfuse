@@ -5,12 +5,14 @@ const entitlements = [
   // features
   "rbac-project-roles",
   "cloud-billing",
+  "cloud-spend-alerts",
   "cloud-multi-tenant-sso",
   "self-host-ui-customization",
   "self-host-allowed-organization-creators",
   "trace-deletion", // Not in use anymore, but necessary to use the TableAction type.
   "audit-logs",
   "data-retention",
+  "scheduled-blob-exports",
   "prompt-protected-labels",
   "admin-api",
 ] as const;
@@ -21,7 +23,10 @@ const cloudAllPlansEntitlements: Entitlement[] = [
   "trace-deletion",
 ];
 
-const selfHostedAllPlansEntitlements: Entitlement[] = ["trace-deletion"];
+const selfHostedAllPlansEntitlements: Entitlement[] = [
+  "trace-deletion",
+  "scheduled-blob-exports",
+];
 
 // Entitlement Limits: Limits on the number of resources that can be created/used
 const entitlementLimits = [
@@ -49,15 +54,15 @@ export const entitlementAccess: Record<
   "cloud:hobby": {
     entitlements: [...cloudAllPlansEntitlements],
     entitlementLimits: {
-      "organization-member-count": 3, // 2 acc to billing page, 1 overage possible
+      "organization-member-count": 2,
       "data-access-days": 30,
       "annotation-queue-count": 1,
-      "model-based-evaluations-count-evaluators": 1,
+      "model-based-evaluations-count-evaluators": false,
       "prompt-management-count-prompts": false,
     },
   },
   "cloud:core": {
-    entitlements: [...cloudAllPlansEntitlements],
+    entitlements: [...cloudAllPlansEntitlements, "cloud-spend-alerts"],
     entitlementLimits: {
       "organization-member-count": false,
       "data-access-days": 90,
@@ -67,7 +72,7 @@ export const entitlementAccess: Record<
     },
   },
   "cloud:pro": {
-    entitlements: [...cloudAllPlansEntitlements],
+    entitlements: [...cloudAllPlansEntitlements, "cloud-spend-alerts"],
     entitlementLimits: {
       "annotation-queue-count": false,
       "organization-member-count": false,
@@ -85,6 +90,8 @@ export const entitlementAccess: Record<
       "cloud-multi-tenant-sso",
       "prompt-protected-labels",
       "admin-api",
+      "scheduled-blob-exports",
+      "cloud-spend-alerts",
     ],
     entitlementLimits: {
       "annotation-queue-count": false,
@@ -103,6 +110,8 @@ export const entitlementAccess: Record<
       "cloud-multi-tenant-sso",
       "prompt-protected-labels",
       "admin-api",
+      "scheduled-blob-exports",
+      "cloud-spend-alerts",
     ],
     entitlementLimits: {
       "annotation-queue-count": false,

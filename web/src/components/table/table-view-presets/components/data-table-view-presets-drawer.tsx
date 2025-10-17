@@ -235,13 +235,11 @@ export function TableViewPresetsDrawer({
   };
 
   const onSubmit = (id?: string) => (data: { name: string }) => {
-    console.log("submitting");
     if (id) {
       handleUpdateViewName({ id, name: data.name });
       setIsEditPopoverOpen(false);
       setDropdownId(null);
     } else {
-      console.log("Creating view");
       handleCreateView({ name: data.name });
     }
   };
@@ -292,8 +290,8 @@ export function TableViewPresetsDrawer({
         }}
       >
         <DrawerTrigger asChild>
-          <Button variant="outline" title={selectedViewName ?? "Table View"}>
-            <span>{selectedViewName ?? "Table View"}</span>
+          <Button variant="outline" title={selectedViewName ?? "Saved Views"}>
+            <span>{selectedViewName ?? "Saved Views"}</span>
             {selectedViewId ? (
               <ChevronDown className="ml-1 h-4 w-4" />
             ) : (
@@ -470,7 +468,7 @@ export function TableViewPresetsDrawer({
                                       <div className="flex w-full justify-end">
                                         <Button
                                           type="submit"
-                                          loading={updateNameMutation.isLoading}
+                                          loading={updateNameMutation.isPending}
                                           disabled={
                                             !!form.formState.errors.name
                                           }
@@ -493,7 +491,7 @@ export function TableViewPresetsDrawer({
                                   await handleDeleteView(view.id);
                                 }}
                                 isDeleteMutationLoading={
-                                  deleteMutation.isLoading
+                                  deleteMutation.isPending
                                 }
                                 invalidateFunc={() => {
                                   utils.TableViewPresets.invalidate();
@@ -614,13 +612,13 @@ export function TableViewPresetsDrawer({
                 <Button
                   type="submit"
                   disabled={
-                    createMutation.isLoading ||
+                    createMutation.isPending ||
                     !!form.formState.errors.name ||
                     !hasWriteAccess
                   }
                 >
                   {!hasWriteAccess && <Lock className="mr-2 h-4 w-4" />}
-                  {createMutation.isLoading ? "Saving..." : "Save View"}
+                  {createMutation.isPending ? "Saving..." : "Save View"}
                 </Button>
               </DialogFooter>
             </form>

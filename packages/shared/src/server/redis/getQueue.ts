@@ -2,11 +2,12 @@ import { Queue } from "bullmq";
 import { QueueName } from "../queues";
 import { BatchExportQueue } from "./batchExport";
 import { CloudUsageMeteringQueue } from "./cloudUsageMeteringQueue";
+import { CloudSpendAlertQueue } from "./cloudSpendAlertQueue";
+import { CloudFreeTierUsageThresholdQueue } from "./cloudFreeTierUsageThresholdQueue";
 import { DatasetRunItemUpsertQueue } from "./datasetRunItemUpsert";
 import { EvalExecutionQueue } from "./evalExecutionQueue";
 import { ExperimentCreateQueue } from "./experimentCreateQueue";
 import { SecondaryIngestionQueue } from "./ingestionQueue";
-import { TraceUpsertQueue } from "./traceUpsert";
 import { TraceDeleteQueue } from "./traceDelete";
 import { ProjectDeleteQueue } from "./projectDelete";
 import { PostHogIntegrationQueue } from "./postHogIntegrationQueue";
@@ -21,25 +22,38 @@ import { BatchActionQueue } from "./batchActionQueue";
 import { CreateEvalQueue } from "./createEvalQueue";
 import { ScoreDeleteQueue } from "./scoreDelete";
 import { DeadLetterRetryQueue } from "./dlqRetryQueue";
+import { WebhookQueue } from "./webhookQueue";
+import { EntityChangeQueue } from "./entityChangeQueue";
+import { DatasetDeleteQueue } from "./datasetDelete";
+import { EventPropagationQueue } from "./eventPropagationQueue";
 
-// IngestionQueue is sharded and requires a sharding key
-// Use IngestionQueue.getInstance({ shardName: queueName }) directly instead
+// IngestionQueue, OtelIngestionQueue, and TraceUpsert are sharded and require a sharding key
+// Use IngestionQueue.getInstance({ shardName: queueName }) or TraceUpsertQueue.getInstance({ shardName: queueName }) directly instead
 export function getQueue(
-  queueName: Exclude<QueueName, QueueName.IngestionQueue>,
+  queueName: Exclude<
+    QueueName,
+    | QueueName.IngestionQueue
+    | QueueName.TraceUpsert
+    | QueueName.OtelIngestionQueue
+  >,
 ): Queue | null {
   switch (queueName) {
     case QueueName.BatchExport:
       return BatchExportQueue.getInstance();
     case QueueName.CloudUsageMeteringQueue:
       return CloudUsageMeteringQueue.getInstance();
+    case QueueName.CloudSpendAlertQueue:
+      return CloudSpendAlertQueue.getInstance();
+    case QueueName.CloudFreeTierUsageThresholdQueue:
+      return CloudFreeTierUsageThresholdQueue.getInstance();
     case QueueName.DatasetRunItemUpsert:
       return DatasetRunItemUpsertQueue.getInstance();
+    case QueueName.DatasetDelete:
+      return DatasetDeleteQueue.getInstance();
     case QueueName.EvaluationExecution:
       return EvalExecutionQueue.getInstance();
     case QueueName.ExperimentCreate:
       return ExperimentCreateQueue.getInstance();
-    case QueueName.TraceUpsert:
-      return TraceUpsertQueue.getInstance();
     case QueueName.TraceDelete:
       return TraceDeleteQueue.getInstance();
     case QueueName.ProjectDelete:
@@ -70,8 +84,16 @@ export function getQueue(
       return ScoreDeleteQueue.getInstance();
     case QueueName.DeadLetterRetryQueue:
       return DeadLetterRetryQueue.getInstance();
-    default:
+    case QueueName.WebhookQueue:
+      return WebhookQueue.getInstance();
+    case QueueName.EntityChangeQueue:
+      return EntityChangeQueue.getInstance();
+    case QueueName.EventPropagationQueue:
+      return EventPropagationQueue.getInstance();
+    default: {
+      // eslint-disable-next-line no-case-declarations, no-unused-vars
       const exhaustiveCheckDefault: never = queueName;
       throw new Error(`Queue ${queueName} not found`);
+    }
   }
 }

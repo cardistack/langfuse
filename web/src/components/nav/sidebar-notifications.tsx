@@ -30,6 +30,15 @@ type SidebarNotification = {
 
 const notifications: SidebarNotification[] = [
   {
+    id: "js-sdk-v4",
+    title: "New JS/TS SDK v4",
+    description:
+      "With v4, the TypeScript SDK significantly improves DX, speed, and ecosystem integrations.",
+    link: "https://langfuse.com/docs/observability/sdk/typescript/overview",
+    linkTitle: "Learn more",
+    createdAt: "2025-09-09",
+  },
+  {
     id: "python-sdk-v3",
     title: "New Python SDK v3",
     description:
@@ -111,7 +120,7 @@ const notifications: SidebarNotification[] = [
     linkContent: (
       // eslint-disable-next-line @next/next/no-img-element
       <img
-        alt="Langfuse Github stars"
+        alt="Langfuse GitHub stars"
         src="https://img.shields.io/github/stars/langfuse/langfuse?label=langfuse&amp;style=social"
       />
     ),

@@ -7,7 +7,7 @@ import { ScoresTable } from "@/src/features/dashboard/components/ScoresTable";
 import { ModelUsageChart } from "@/src/features/dashboard/components/ModelUsageChart";
 import { TracesAndObservationsTimeSeriesChart } from "@/src/features/dashboard/components/TracesTimeSeriesChart";
 import { UserChart } from "@/src/features/dashboard/components/UserChart";
-import { DatePickerWithRange } from "@/src/components/date-picker";
+import { TimeRangePicker } from "@/src/components/date-picker";
 import { api } from "@/src/utils/api";
 import { FeedbackButtonWrapper } from "@/src/features/feedback/component/FeedbackButton";
 import { BarChart2 } from "lucide-react";
@@ -18,7 +18,12 @@ import { type ColumnDefinition } from "@langfuse/shared";
 import { useQueryFilterState } from "@/src/features/filters/hooks/useFilterState";
 import { LatencyTables } from "@/src/features/dashboard/components/LatencyTables";
 import { useMemo } from "react";
-import { findClosestDashboardInterval } from "@/src/utils/date-range-utils";
+import {
+  findClosestDashboardInterval,
+  DASHBOARD_AGGREGATION_OPTIONS,
+  toAbsoluteTimeRange,
+  type DashboardDateRangeAggregationOption,
+} from "@/src/utils/date-range-utils";
 import { useDashboardDateRange } from "@/src/hooks/useDashboardDateRange";
 import { useDebounce } from "@/src/hooks/useDebounce";
 import { ScoreAnalytics } from "@/src/features/dashboard/components/score-analytics/ScoreAnalytics";
@@ -35,8 +40,11 @@ import {
 export default function Dashboard() {
   const router = useRouter();
   const projectId = router.query.projectId as string;
-  const { selectedOption, dateRange, setDateRangeAndOption } =
-    useDashboardDateRange();
+  const { timeRange, setTimeRange } = useDashboardDateRange();
+  const absoluteTimeRange = useMemo(
+    () => toAbsoluteTimeRange(timeRange),
+    [timeRange],
+  );
 
   const uiCustomization = useUiCustomization();
 
@@ -67,7 +75,10 @@ export default function Dashboard() {
 
   const environmentFilterOptions =
     api.projects.environmentFilterOptions.useQuery(
-      { projectId },
+      {
+        projectId,
+        fromTimestamp: absoluteTimeRange?.from,
+      },
       {
         trpc: {
           context: {
@@ -125,18 +136,20 @@ export default function Dashboard() {
     },
   ];
 
-  const agg = useMemo(
-    () =>
-      dateRange
-        ? (findClosestDashboardInterval(dateRange) ?? "7 days")
-        : "7 days",
-    [dateRange],
-  );
+  const dashboardTimeRangePresets = DASHBOARD_AGGREGATION_OPTIONS;
 
-  const fromTimestamp = dateRange
-    ? dateRange.from
+  const agg = useMemo(() => {
+    if ("range" in timeRange) {
+      return timeRange.range as DashboardDateRangeAggregationOption;
+    }
+
+    return findClosestDashboardInterval(timeRange) ?? "last7Days";
+  }, [timeRange]);
+
+  const fromTimestamp = absoluteTimeRange?.from
+    ? absoluteTimeRange.from
     : new Date(new Date().getTime() - 1000);
-  const toTimestamp = dateRange ? dateRange.to : new Date();
+  const toTimestamp = absoluteTimeRange?.to ? absoluteTimeRange.to : new Date();
   const timeFilter = [
     {
       type: "datetime" as const,
@@ -174,10 +187,10 @@ export default function Dashboard() {
     >
       <div className="my-3 flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-col gap-2 lg:flex-row lg:gap-3">
-          <DatePickerWithRange
-            dateRange={dateRange}
-            setDateRangeAndOption={useDebounce(setDateRangeAndOption)}
-            selectedOption={selectedOption}
+          <TimeRangePicker
+            timeRange={timeRange}
+            onTimeRangeChange={setTimeRange}
+            timeRangePresets={dashboardTimeRangePresets}
             className="my-0 max-w-full overflow-x-auto"
             disabled={
               lookbackLimit
@@ -235,7 +248,7 @@ export default function Dashboard() {
           globalFilterState={[...userFilterState, ...environmentFilter]}
           fromTimestamp={fromTimestamp}
           toTimestamp={toTimestamp}
-          isLoading={environmentFilterOptions.isLoading}
+          isLoading={environmentFilterOptions.isPending}
         />
         <ModelCostTable
           className="col-span-1 xl:col-span-2"
@@ -243,13 +256,13 @@ export default function Dashboard() {
           globalFilterState={[...userFilterState, ...environmentFilter]}
           fromTimestamp={fromTimestamp}
           toTimestamp={toTimestamp}
-          isLoading={environmentFilterOptions.isLoading}
+          isLoading={environmentFilterOptions.isPending}
         />
         <ScoresTable
           className="col-span-1 xl:col-span-2"
           projectId={projectId}
           globalFilterState={mergedFilterState}
-          isLoading={environmentFilterOptions.isLoading}
+          isLoading={environmentFilterOptions.isPending}
         />
         <TracesAndObservationsTimeSeriesChart
           className="col-span-1 xl:col-span-3"
@@ -258,7 +271,7 @@ export default function Dashboard() {
           fromTimestamp={fromTimestamp}
           toTimestamp={toTimestamp}
           agg={agg}
-          isLoading={environmentFilterOptions.isLoading}
+          isLoading={environmentFilterOptions.isPending}
         />
         <ModelUsageChart
           className="col-span-1 min-h-24 xl:col-span-3"
@@ -268,7 +281,7 @@ export default function Dashboard() {
           toTimestamp={toTimestamp}
           userAndEnvFilterState={[...userFilterState, ...environmentFilter]}
           agg={agg}
-          isLoading={environmentFilterOptions.isLoading}
+          isLoading={environmentFilterOptions.isPending}
         />
         <UserChart
           className="col-span-1 xl:col-span-3"
@@ -276,7 +289,7 @@ export default function Dashboard() {
           globalFilterState={[...userFilterState, ...environmentFilter]}
           fromTimestamp={fromTimestamp}
           toTimestamp={toTimestamp}
-          isLoading={environmentFilterOptions.isLoading}
+          isLoading={environmentFilterOptions.isPending}
         />
         <ChartScores
           className="col-span-1 xl:col-span-3"
@@ -285,14 +298,14 @@ export default function Dashboard() {
           globalFilterState={[...userFilterState, ...environmentFilter]}
           fromTimestamp={fromTimestamp}
           toTimestamp={toTimestamp}
-          isLoading={environmentFilterOptions.isLoading}
+          isLoading={environmentFilterOptions.isPending}
         />
         <LatencyTables
           projectId={projectId}
           globalFilterState={[...userFilterState, ...environmentFilter]}
           fromTimestamp={fromTimestamp}
           toTimestamp={toTimestamp}
-          isLoading={environmentFilterOptions.isLoading}
+          isLoading={environmentFilterOptions.isPending}
         />
         <GenerationLatencyChart
           className="col-span-1 flex-auto justify-between lg:col-span-full"
@@ -301,7 +314,7 @@ export default function Dashboard() {
           globalFilterState={[...userFilterState, ...environmentFilter]}
           fromTimestamp={fromTimestamp}
           toTimestamp={toTimestamp}
-          isLoading={environmentFilterOptions.isLoading}
+          isLoading={environmentFilterOptions.isPending}
         />
         <ScoreAnalytics
           className="col-span-1 flex-auto justify-between lg:col-span-full"
@@ -310,7 +323,7 @@ export default function Dashboard() {
           globalFilterState={[...userFilterState, ...environmentFilter]}
           fromTimestamp={fromTimestamp}
           toTimestamp={toTimestamp}
-          isLoading={environmentFilterOptions.isLoading}
+          isLoading={environmentFilterOptions.isPending}
         />
       </div>
     </Page>

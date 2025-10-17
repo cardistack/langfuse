@@ -1,12 +1,15 @@
-import { convertApiProvidedFilterToClickhouseFilter } from "@/src/features/public-api/server/filter-builder";
 import {
   convertDateToClickhouseDateTime,
   queryClickhouse,
   TRACE_TO_OBSERVATIONS_INTERVAL,
+  DEFAULT_RENDERING_PROPS,
   orderByToClickhouseSql,
   type DateTimeFilter,
   convertClickhouseToDomain,
   type TraceRecordReadType,
+  measureAndReturn,
+  tracesTableUiColumnDefinitions,
+  deriveFilters,
 } from "@langfuse/shared/src/server";
 import { type OrderByState } from "@langfuse/shared";
 import { snakeCase } from "lodash";
@@ -14,6 +17,8 @@ import {
   TRACE_FIELD_GROUPS,
   type TraceFieldGroup,
 } from "@/src/features/public-api/types/traces";
+
+import type { FilterState } from "@langfuse/shared";
 
 export type TraceQueryType = {
   page: number;
@@ -35,9 +40,11 @@ export type TraceQueryType = {
 
 export const generateTracesForPublicApi = async ({
   props,
+  advancedFilters,
   orderBy,
 }: {
   props: TraceQueryType;
+  advancedFilters?: FilterState;
   orderBy: OrderByState;
 }) => {
   const requestedFields = props.fields ?? TRACE_FIELD_GROUPS;
@@ -46,9 +53,11 @@ export const generateTracesForPublicApi = async ({
   const includeObservations = requestedFields.includes("observations");
   const includeMetrics = requestedFields.includes("metrics");
 
-  const filter = convertApiProvidedFilterToClickhouseFilter(
+  let filter = deriveFilters(
     props,
     filterParams,
+    advancedFilters,
+    tracesTableUiColumnDefinitions,
   );
   const appliedFilter = filter.apply();
 
@@ -59,7 +68,13 @@ export const generateTracesForPublicApi = async ({
       (f.operator === ">=" || f.operator === ">"),
   ) as DateTimeFilter | undefined;
 
-  const environmentFilter = filter.filter((f) => f.field === "environment");
+  // We need to drop the clickhousePrefix here to make the filter work for the observations and scores tables.
+  const environmentFilter = filter
+    .filter((f) => f.field === "environment")
+    .map((f) => {
+      f.tablePrefix = undefined;
+      return f;
+    });
   const appliedEnvironmentFilter = environmentFilter.apply();
 
   // This _must_ be updated if we add a new skip index column to the traces table.
@@ -72,16 +87,6 @@ export const generateTracesForPublicApi = async ({
       ),
   );
 
-  // If user provides an order we prefer it or fallback to timestamp as the default.
-  // In both cases we append a t.event_ts desc order to pick the latest event in case of duplicates
-  // if we want to use a skip index.
-  // This may still return stale information if the orderBy key was updated between traces or if a filter
-  // applies only to a stale value.
-  const chOrderBy =
-    (orderByToClickhouseSql(orderBy || [], orderByColumns) ||
-      "ORDER BY t.timestamp desc") +
-    (shouldUseSkipIndexes ? ", t.event_ts desc" : "");
-
   // Build CTEs conditionally based on requested fields
   const ctes = [];
 
@@ -91,10 +96,9 @@ export const generateTracesForPublicApi = async ({
       SELECT
         trace_id,
         project_id,
-        sum(total_cost) as total_cost,
-        date_diff('millisecond', least(min(start_time), min(end_time)), greatest(max(start_time), max(end_time))) as latency_milliseconds,
-        groupArray(id) as observation_ids
-      FROM observations FINAL
+         ${includeMetrics ? "sum(total_cost) as total_cost, date_diff('millisecond', least(min(start_time), min(end_time)), greatest(max(start_time), max(end_time))) as latency_milliseconds, " : ""}
+        groupUniqArray(id) as observation_ids
+      FROM observations ${includeMetrics ? "FINAL" : ""}
       WHERE project_id = {projectId: String}
       ${timeFilter ? `AND start_time >= {cteTimeFilter: DateTime64(3)} - ${TRACE_TO_OBSERVATIONS_INTERVAL}` : ""}
       ${environmentFilter.length() > 0 ? `AND ${appliedEnvironmentFilter.query}` : ""}
@@ -121,80 +125,112 @@ export const generateTracesForPublicApi = async ({
 
   const withClause = ctes.length > 0 ? `WITH ${ctes.join(", ")}` : "";
 
-  const query = `
-    ${withClause}
+  const result = await measureAndReturn({
+    operationName: "getTracesForPublicApi",
+    projectId: props.projectId,
+    input: {
+      params: {
+        ...appliedEnvironmentFilter.params,
+        ...appliedFilter.params,
+        projectId: props.projectId,
+        ...(props.limit !== undefined ? { limit: props.limit } : {}),
+        ...(props.page !== undefined
+          ? { offset: (props.page - 1) * props.limit }
+          : {}),
+        ...(timeFilter
+          ? {
+              cteTimeFilter: convertDateToClickhouseDateTime(timeFilter.value),
+            }
+          : {}),
+      },
+      tags: {
+        feature: "tracing",
+        type: "trace",
+        kind: "public-api",
+        projectId: props.projectId,
+        operation_name: "getTracesForPublicApi",
+      },
+      fromTimestamp: timeFilter?.value ?? undefined,
+      preferredClickhouseService: "ReadOnly",
+    },
+    fn: (input) => {
+      // If user provides an order we prefer it or fallback to timestamp as the default.
+      // In both cases we append a t.event_ts desc order to pick the latest event in case of duplicates
+      // if we want to use a skip index.
+      // This may still return stale information if the orderBy key was updated between traces or if a filter
+      // applies only to a stale value.
+      const chOrderBy =
+        (orderByToClickhouseSql(orderBy || [], orderByColumns) ||
+          "ORDER BY t.timestamp desc") +
+        (shouldUseSkipIndexes ? ", t.event_ts desc" : "");
 
-    SELECT
-      -- Core fields (always included)
-      t.id as id,
-      CONCAT('/project/', t.project_id, '/traces/', t.id) as "htmlPath",
-      t.project_id as project_id,
-      t.timestamp as timestamp,
-      t.name as name,
-      t.environment as environment,
-      t.session_id as session_id,
-      t.user_id as user_id,
-      t.release as release,
-      t.version as version,
-      t.bookmarked as bookmarked,
-      t.public as public,
-      t.tags as tags,
-      t.created_at as created_at,
-      t.updated_at as updated_at
-      -- IO fields (conditional)
-      ${includeIO ? ", t.input as input, t.output as output, t.metadata as metadata" : ""}
-      -- Scores (conditional)
-      ${includeScores ? ", s.score_ids as scores" : ""}
-      -- Observations (conditional)
-      ${includeObservations ? ", o.observation_ids as observations" : ""}
-      -- Metrics (conditional)
-      ${includeMetrics ? ", COALESCE(o.latency_milliseconds / 1000, 0) as latency, COALESCE(o.total_cost, 0) as totalCost" : ""}
-    FROM traces t ${shouldUseSkipIndexes ? "" : "FINAL"}
-    ${includeObservations || includeMetrics ? "LEFT JOIN observation_stats o ON t.id = o.trace_id AND t.project_id = o.project_id" : ""}
-    ${includeScores ? "LEFT JOIN score_stats s ON t.id = s.trace_id AND t.project_id = s.project_id" : ""}
-    WHERE t.project_id = {projectId: String}
-    ${filter.length() > 0 ? `AND ${appliedFilter.query}` : ""}
-    ${chOrderBy}
-    ${shouldUseSkipIndexes ? "LIMIT 1 by t.id, t.project_id" : ""}
-    ${props.limit !== undefined && props.page !== undefined ? `LIMIT {limit: Int32} OFFSET {offset: Int32}` : ""}
-  `;
+      const query = `
+        ${withClause}
 
-  const result = await queryClickhouse<
-    TraceRecordReadType & {
-      observations?: string[];
-      scores?: string[];
-      totalCost?: number;
-      latency?: number;
-      htmlPath: string;
-    }
-  >({
-    query,
-    params: {
-      ...appliedEnvironmentFilter.params,
-      ...appliedFilter.params,
-      projectId: props.projectId,
-      ...(props.limit !== undefined ? { limit: props.limit } : {}),
-      ...(props.page !== undefined
-        ? { offset: (props.page - 1) * props.limit }
-        : {}),
-      ...(timeFilter
-        ? {
-            cteTimeFilter: convertDateToClickhouseDateTime(timeFilter.value),
-          }
-        : {}),
+        SELECT
+          -- Core fields (always included)
+          t.id as id,
+          CONCAT('/project/', t.project_id, '/traces/', t.id) as "htmlPath",
+          t.project_id as project_id,
+          t.timestamp as timestamp,
+          t.name as name,
+          t.environment as environment,
+          t.session_id as session_id,
+          t.user_id as user_id,
+          t.release as release,
+          t.version as version,
+          t.bookmarked as bookmarked,
+          t.public as public,
+          t.tags as tags,
+          t.created_at as created_at,
+          t.updated_at as updated_at
+          -- IO fields (conditional)
+          ${includeIO ? ", t.input as input, t.output as output, t.metadata as metadata" : ""}
+          -- Scores (conditional)
+          ${includeScores ? ", s.score_ids as scores" : ""}
+          -- Observations (conditional)
+          ${includeObservations ? ", o.observation_ids as observations" : ""}
+          -- Metrics (conditional)
+          ${includeMetrics ? ", COALESCE(o.latency_milliseconds / 1000, 0) as latency, COALESCE(o.total_cost, 0) as totalCost" : ""}
+        FROM traces t ${shouldUseSkipIndexes ? "" : "FINAL"}
+        ${includeObservations || includeMetrics ? "LEFT JOIN observation_stats o ON t.id = o.trace_id AND t.project_id = o.project_id" : ""}
+        ${includeScores ? "LEFT JOIN score_stats s ON t.id = s.trace_id AND t.project_id = s.project_id" : ""}
+        WHERE t.project_id = {projectId: String}
+        ${filter.length() > 0 ? `AND ${appliedFilter.query}` : ""}
+        ${chOrderBy}
+        ${shouldUseSkipIndexes ? "LIMIT 1 by t.id, t.project_id" : ""}
+        ${props.limit !== undefined && props.page !== undefined ? `LIMIT {limit: Int32} OFFSET {offset: Int32}` : ""}
+      `;
+
+      return queryClickhouse<
+        TraceRecordReadType & {
+          observations?: string[];
+          scores?: string[];
+          totalCost?: number;
+          latency?: number;
+          htmlPath: string;
+        }
+      >({
+        query,
+        params: input.params,
+        tags: input.tags,
+        preferredClickhouseService: "ReadOnly",
+      });
     },
   });
 
   return result.map((trace) => {
     return {
-      ...convertClickhouseToDomain(trace),
+      ...convertClickhouseToDomain(trace, DEFAULT_RENDERING_PROPS),
       // Conditionally include additional fields based on request
-      ...(includeObservations && { observations: trace.observations ?? null }),
-      ...(includeScores && { scores: trace.scores ?? null }),
-      ...(includeMetrics && {
-        totalCost: trace.totalCost ?? null,
-        latency: trace.latency ?? null,
-      }),
+      // We need to return empty list on excluded scores / observations
+      // and -1 on excluded metrics to not break the SDK API clients
+      // that expect those fields if they have not been excluded via 'fields' property
+      // See LFE-6361
+      observations: includeObservations ? trace.observations : [],
+      scores: includeScores ? trace.scores : [],
+      totalCost: includeMetrics ? trace.totalCost : -1,
+      latency: includeMetrics ? trace.latency : -1,
       htmlPath: trace.htmlPath,
     };
   });
@@ -202,27 +238,54 @@ export const generateTracesForPublicApi = async ({
 
 export const getTracesCountForPublicApi = async ({
   props,
+  advancedFilters,
 }: {
   props: TraceQueryType;
+  advancedFilters?: FilterState;
 }) => {
-  const filter = convertApiProvidedFilterToClickhouseFilter(
+  let filter = deriveFilters(
     props,
     filterParams,
+    advancedFilters,
+    tracesTableUiColumnDefinitions,
   );
   const appliedFilter = filter.apply();
 
   const query = `
     SELECT count() as count
-    FROM traces t
+    FROM __TRACE_TABLE__ t
     WHERE project_id = {projectId: String}
     ${filter.length() > 0 ? `AND ${appliedFilter.query}` : ""}
   `;
 
-  const records = await queryClickhouse<{ count: string }>({
-    query,
-    params: { ...appliedFilter.params, projectId: props.projectId },
+  const timestamp = props.fromTimestamp
+    ? new Date(props.fromTimestamp)
+    : undefined;
+
+  return measureAndReturn({
+    operationName: "getTracesCountForPublicApi",
+    projectId: props.projectId,
+    input: {
+      params: { ...appliedFilter.params, projectId: props.projectId },
+      tags: {
+        feature: "tracing",
+        type: "trace",
+        kind: "count",
+        projectId: props.projectId,
+        operation_name: "getTracesCountForPublicApi",
+      },
+      timestamp,
+    },
+    fn: async (input) => {
+      const records = await queryClickhouse<{ count: string }>({
+        query: query.replace("__TRACE_TABLE__", "traces"),
+        params: input.params,
+        tags: input.tags,
+        preferredClickhouseService: "ReadOnly",
+      });
+      return records.map((record) => Number(record.count)).shift();
+    },
   });
-  return records.map((record) => Number(record.count)).shift();
 };
 
 const orderByColumns = [
@@ -291,8 +354,7 @@ const filterParams = [
     clickhouseSelect: "environment",
     filterType: "StringOptionsFilter",
     clickhouseTable: "traces",
-    // Skip the clickhousePrefix as this makes it work for all tables.
-    // Risk: If there is a conflict we may have to start using separate filters for each table.
+    clickhousePrefix: "t",
   },
   {
     id: "fromTimestamp",

@@ -88,6 +88,14 @@ export type ObservationRecordInsertType = z.infer<
   typeof observationRecordInsertSchema
 >;
 
+export const observationBatchStagingRecordInsertSchema =
+  observationRecordInsertSchema.extend({
+    s3_first_seen_timestamp: z.number(),
+  });
+export type ObservationBatchStagingRecordInsertType = z.infer<
+  typeof observationBatchStagingRecordInsertSchema
+>;
+
 export const traceRecordBaseSchema = z.object({
   id: z.string(),
   name: z.string().nullish(),
@@ -122,6 +130,45 @@ export const traceRecordInsertSchema = traceRecordBaseSchema.extend({
 });
 export type TraceRecordInsertType = z.infer<typeof traceRecordInsertSchema>;
 
+export const traceNullRecordInsertSchema = z.object({
+  // Identifiers
+  project_id: z.string(),
+  id: z.string(),
+  start_time: z.number(),
+  end_time: z.number().nullish(),
+  name: z.string().nullish(),
+
+  // Metadata properties
+  metadata: z.record(z.string(), z.string()),
+  user_id: z.string().nullish(),
+  session_id: z.string().nullish(),
+  environment: z.string(),
+  tags: z.array(z.string()),
+  version: z.string().nullish(),
+  release: z.string().nullish(),
+
+  // UI properties - nullable to prevent absent values being interpreted as overwrites
+  bookmarked: z.boolean().nullish(),
+  public: z.boolean().nullish(),
+
+  // Aggregations
+  observation_ids: z.array(z.string()),
+  score_ids: z.array(z.string()),
+  cost_details: z.record(z.string(), z.number()),
+  usage_details: z.record(z.string(), z.number()),
+
+  // Input/Output
+  input: z.string(),
+  output: z.string(),
+
+  created_at: z.number(),
+  updated_at: z.number(),
+  event_ts: z.number(),
+});
+export type TraceNullRecordInsertType = z.infer<
+  typeof traceNullRecordInsertSchema
+>;
+
 export const scoreRecordBaseSchema = z.object({
   id: z.string(),
   project_id: z.string(),
@@ -140,6 +187,7 @@ export const scoreRecordBaseSchema = z.object({
   data_type: z.enum(["NUMERIC", "CATEGORICAL", "BOOLEAN"]).nullish(),
   string_value: z.string().nullish(),
   queue_id: z.string().nullish(),
+  execution_trace_id: z.string().nullish(),
   is_deleted: z.number(),
 });
 
@@ -158,6 +206,56 @@ export const scoreRecordInsertSchema = scoreRecordBaseSchema.extend({
   event_ts: z.number(),
 });
 export type ScoreRecordInsertType = z.infer<typeof scoreRecordInsertSchema>;
+
+const datasetRunItemRecordBaseSchema = z.object({
+  id: z.string(),
+  project_id: z.string(),
+  trace_id: z.string(),
+  observation_id: z.string().nullish(),
+  dataset_id: z.string(),
+  dataset_run_id: z.string(),
+  dataset_item_id: z.string(),
+  dataset_run_name: z.string(),
+  dataset_run_description: z.string().nullish(),
+  dataset_run_metadata: z.record(z.string(), z.string()),
+  dataset_item_input: z.string(),
+  dataset_item_expected_output: z.string(),
+  dataset_item_metadata: z.record(z.string(), z.string()),
+  is_deleted: z.number(),
+  error: z.string().nullish(),
+});
+
+const datasetRunItemRecordReadSchema = datasetRunItemRecordBaseSchema.extend({
+  dataset_run_created_at: clickhouseStringDateSchema,
+  created_at: clickhouseStringDateSchema,
+  updated_at: clickhouseStringDateSchema,
+  event_ts: clickhouseStringDateSchema,
+});
+export type DatasetRunItemRecordReadType = z.infer<
+  typeof datasetRunItemRecordReadSchema
+>;
+// Conditional type for dataset run item records with optional IO
+export type DatasetRunItemRecord<WithIO extends boolean = true> =
+  WithIO extends true
+    ? DatasetRunItemRecordReadType
+    : Omit<
+        DatasetRunItemRecordReadType,
+        | "dataset_run_metadata"
+        | "dataset_item_input"
+        | "dataset_item_expected_output"
+        | "dataset_item_metadata"
+      >;
+
+export const datasetRunItemRecordInsertSchema =
+  datasetRunItemRecordBaseSchema.extend({
+    created_at: z.number(),
+    updated_at: z.number(),
+    event_ts: z.number(),
+    dataset_run_created_at: z.number(),
+  });
+export type DatasetRunItemRecordInsertType = z.infer<
+  typeof datasetRunItemRecordInsertSchema
+>;
 
 export const blobStorageFileLogRecordBaseSchema = z.object({
   id: z.string(),
@@ -237,6 +335,68 @@ export const convertScoreReadToInsert = (
 };
 
 /**
+ * Converts a trace record to a staging observation record.
+ * The trace is treated as a synthetic "SPAN" where span_id = trace_id.
+ * This allows traces to flow through the same batch propagation pipeline as observations.
+ */
+export const convertTraceToStagingObservation = (
+  traceRecord: TraceRecordInsertType,
+  s3FirstSeenTimestamp: number,
+): ObservationBatchStagingRecordInsertType => {
+  return {
+    // Identity - trace acts as its own span
+    id: traceRecord.id,
+    trace_id: traceRecord.id,
+    project_id: traceRecord.project_id,
+
+    // Type: pretend trace is a SPAN
+    type: "SPAN",
+
+    // No parent since traces are root-level
+    parent_observation_id: undefined,
+
+    // Core fields from trace
+    name: traceRecord.name,
+    environment: traceRecord.environment,
+    version: traceRecord.version,
+    metadata: traceRecord.metadata,
+
+    // Timing: trace.timestamp -> start_time
+    start_time: traceRecord.timestamp,
+    end_time: undefined,
+    completion_start_time: undefined,
+
+    // IO fields
+    input: traceRecord.input,
+    output: traceRecord.output,
+
+    // Default values for observation-specific fields
+    level: "DEFAULT",
+    status_message: undefined,
+    provided_model_name: undefined,
+    internal_model_id: undefined,
+    model_parameters: undefined,
+    provided_usage_details: {},
+    usage_details: {},
+    provided_cost_details: {},
+    cost_details: {},
+    total_cost: undefined,
+    prompt_id: undefined,
+    prompt_name: undefined,
+    prompt_version: undefined,
+
+    // System fields
+    created_at: traceRecord.created_at,
+    updated_at: traceRecord.updated_at,
+    event_ts: traceRecord.event_ts,
+    is_deleted: traceRecord.is_deleted,
+
+    // Staging-specific field
+    s3_first_seen_timestamp: s3FirstSeenTimestamp,
+  };
+};
+
+/**
  * Expects a single record from a `select * from traces` query. Must be a raw query to keep original
  * column names, not the Prisma mapped names.
  */
@@ -267,6 +427,50 @@ export const convertPostgresTraceToInsert = (
     created_at: trace.created_at?.getTime(),
     updated_at: trace.updated_at?.getTime(),
     event_ts: trace.timestamp?.getTime(),
+    is_deleted: 0,
+  };
+};
+
+export const convertPostgresDatasetRunItemToInsert = (
+  datasetRunItem: Record<string, any>,
+): DatasetRunItemRecordInsertType => {
+  return {
+    id: datasetRunItem.id,
+    project_id: datasetRunItem.project_id,
+    dataset_run_id: datasetRunItem.dataset_run_id,
+    dataset_item_id: datasetRunItem.dataset_item_id,
+    dataset_id: datasetRunItem.dataset_id,
+    trace_id: datasetRunItem.trace_id,
+    observation_id: datasetRunItem.observation_id,
+    error: datasetRunItem.error,
+    created_at: datasetRunItem.created_at?.getTime(),
+    updated_at: datasetRunItem.updated_at?.getTime(),
+    // denormalized run data
+    dataset_run_name: datasetRunItem.dataset_run_name,
+    dataset_run_description: datasetRunItem.dataset_run_description,
+    dataset_run_metadata:
+      typeof datasetRunItem.dataset_run_metadata === "string" ||
+      typeof datasetRunItem.dataset_run_metadata === "number" ||
+      typeof datasetRunItem.dataset_run_metadata === "boolean"
+        ? { metadata: datasetRunItem.dataset_run_metadata }
+        : Array.isArray(datasetRunItem.dataset_run_metadata)
+          ? { metadata: datasetRunItem.dataset_run_metadata }
+          : (datasetRunItem.dataset_run_metadata ?? {}),
+    dataset_run_created_at: datasetRunItem.dataset_run_created_at?.getTime(),
+    // denormalized item data
+    dataset_item_input: JSON.stringify(datasetRunItem.dataset_item_input),
+    dataset_item_expected_output: JSON.stringify(
+      datasetRunItem.dataset_item_expected_output,
+    ),
+    dataset_item_metadata:
+      typeof datasetRunItem.dataset_item_metadata === "string" ||
+      typeof datasetRunItem.dataset_item_metadata === "number" ||
+      typeof datasetRunItem.dataset_item_metadata === "boolean"
+        ? { metadata: datasetRunItem.dataset_item_metadata }
+        : Array.isArray(datasetRunItem.dataset_item_metadata)
+          ? { metadata: datasetRunItem.dataset_item_metadata }
+          : (datasetRunItem.dataset_item_metadata ?? {}),
+    event_ts: datasetRunItem.created_at?.getTime(),
     is_deleted: 0,
   };
 };
@@ -368,9 +572,101 @@ export const convertPostgresScoreToInsert = (
     data_type: score.data_type,
     string_value: score.string_value,
     queue_id: score.queue_id,
+    execution_trace_id: null, // Postgres scores do not have eval execution traces
     created_at: score.created_at?.getTime(),
     updated_at: score.updated_at?.getTime(),
     event_ts: score.timestamp?.getTime(),
     is_deleted: 0,
   };
 };
+
+export const eventRecordBaseSchema = z.object({
+  // Identifiers
+  org_id: z.string().nullish(),
+  project_id: z.string(),
+  trace_id: z.string(),
+  span_id: z.string(),
+  // We mainly use the id for compatibility with old events that always had a `id` column.
+  id: z.string(), // same as span_id. Needs to be set manually.
+  parent_span_id: z.string().nullish(),
+
+  // Core properties
+  name: z.string(),
+  type: z.string(),
+  environment: z.string().default("default"),
+  version: z.string().nullish(),
+
+  user_id: z.string().nullish(),
+  session_id: z.string().nullish(),
+
+  level: z.string(),
+  status_message: z.string().nullish(),
+
+  // Prompt
+  prompt_id: z.string().nullish(),
+  prompt_name: z.string().nullish(),
+  prompt_version: z.string().nullish(),
+
+  // Model
+  model_id: z.string().nullish(),
+  provided_model_name: z.string().nullish(),
+  model_parameters: z.string().nullish(),
+
+  // Usage & Cost
+  provided_usage_details: UsageCostSchema,
+  usage_details: UsageCostSchema,
+  provided_cost_details: UsageCostSchema,
+  cost_details: UsageCostSchema,
+  total_cost: z.number().nullish(),
+
+  // I/O
+  input: z.string().nullish(),
+  output: z.string().nullish(),
+
+  // Metadata - multiple approaches supported
+  metadata: z.record(z.string(), z.string()),
+  metadata_names: z.array(z.string()).default([]),
+  metadata_values: z.array(z.any()).default([]),
+  metadata_string_names: z.array(z.string()).default([]),
+  metadata_string_values: z.array(z.string()).default([]),
+  metadata_number_names: z.array(z.string()).default([]),
+  metadata_number_values: z.array(z.number()).default([]),
+  metadata_bool_names: z.array(z.string()).default([]),
+  metadata_bool_values: z.array(z.number()).default([]),
+
+  // Source metadata (Instrumentation)
+  source: z.string(),
+  service_name: z.string().nullish(),
+  service_version: z.string().nullish(),
+  scope_name: z.string().nullish(),
+  scope_version: z.string().nullish(),
+  telemetry_sdk_language: z.string().nullish(),
+  telemetry_sdk_name: z.string().nullish(),
+  telemetry_sdk_version: z.string().nullish(),
+
+  // Generic props
+  blob_storage_file_path: z.string(),
+  event_raw: z.string(),
+  event_bytes: z.number(),
+  is_deleted: z.number(),
+});
+
+export const eventRecordReadSchema = eventRecordBaseSchema.extend({
+  start_time: clickhouseStringDateSchema,
+  end_time: clickhouseStringDateSchema.nullish(),
+  completion_start_time: clickhouseStringDateSchema.nullish(),
+  created_at: clickhouseStringDateSchema,
+  updated_at: clickhouseStringDateSchema,
+  event_ts: clickhouseStringDateSchema,
+});
+export type EventRecordReadType = z.infer<typeof eventRecordReadSchema>;
+
+export const eventRecordInsertSchema = eventRecordBaseSchema.extend({
+  start_time: z.number(),
+  end_time: z.number().nullish(),
+  completion_start_time: z.number().nullish(),
+  created_at: z.number(),
+  updated_at: z.number(),
+  event_ts: z.number(),
+});
+export type EventRecordInsertType = z.infer<typeof eventRecordInsertSchema>;

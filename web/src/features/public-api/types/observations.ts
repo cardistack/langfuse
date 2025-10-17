@@ -1,21 +1,35 @@
 import {
   type Observation,
+  ObservationLevel,
   paginationMetaResponseZod,
   publicApiPaginationZod,
+  singleFilter,
+  InvalidRequestError,
 } from "@langfuse/shared";
 
 import {
   reduceUsageOrCostDetails,
   stringDateTime,
+  type ObservationPriceFields,
 } from "@langfuse/shared/src/server";
-import type Decimal from "decimal.js";
 import { z } from "zod/v4";
 
 /**
  * Objects
  */
 
-const ObservationType = z.enum(["GENERATION", "SPAN", "EVENT"]);
+const ObservationType = z.enum([
+  "GENERATION",
+  "SPAN",
+  "EVENT",
+  "AGENT",
+  "TOOL",
+  "CHAIN",
+  "RETRIEVER",
+  "EVALUATOR",
+  "EMBEDDING",
+  "GUARDRAIL",
+]);
 
 export const APIObservation = z
   .object({
@@ -37,7 +51,6 @@ export const APIObservation = z
     level: z.enum(["DEBUG", "DEFAULT", "WARNING", "ERROR"]),
     statusMessage: z.string().nullable(),
 
-    // GENERATION only
     model: z.string().nullable(),
     modelParameters: z.any(),
     completionStartTime: z.coerce.date().nullable(),
@@ -90,11 +103,7 @@ export const APIObservation = z
  * @returns API Observation as defined in the public API
  */
 export const transformDbToApiObservation = (
-  observation: Observation & {
-    inputPrice: Decimal | null;
-    outputPrice: Decimal | null;
-    totalPrice: Decimal | null;
-  },
+  observation: Observation & ObservationPriceFields,
 ): z.infer<typeof APIObservation> => {
   const reducedUsageDetails = reduceUsageOrCostDetails(
     observation.usageDetails,
@@ -153,18 +162,39 @@ export const transformDbToApiObservation = (
  * Endpoints
  */
 
+const useEventsTableSchema = z
+  .union([z.literal("true"), z.literal("false"), z.boolean()])
+  .transform((val) => val === "true" || val === true)
+  .nullish();
+
 // GET /observations
 export const GetObservationsV1Query = z.object({
   ...publicApiPaginationZod,
   type: ObservationType.nullish(),
   name: z.string().nullish(),
   userId: z.string().nullish(),
+  level: z.enum(ObservationLevel).nullish(),
   traceId: z.string().nullish(),
   version: z.string().nullish(),
   parentObservationId: z.string().nullish(),
   environment: z.union([z.array(z.string()), z.string()]).nullish(),
   fromStartTime: stringDateTime,
   toStartTime: stringDateTime,
+  useEventsTable: useEventsTableSchema,
+  filter: z
+    .string()
+    .optional()
+    .transform((str) => {
+      if (!str) return undefined;
+      try {
+        const parsed = JSON.parse(str);
+        return parsed;
+      } catch (e) {
+        if (e instanceof InvalidRequestError) throw e;
+        throw new InvalidRequestError("Invalid JSON in filter parameter");
+      }
+    })
+    .pipe(z.array(singleFilter).optional()),
 });
 export const GetObservationsV1Response = z
   .object({
@@ -176,5 +206,6 @@ export const GetObservationsV1Response = z
 // GET /observations/{observationId}
 export const GetObservationV1Query = z.object({
   observationId: z.string(),
+  useEventsTable: useEventsTableSchema,
 });
 export const GetObservationV1Response = APIObservation;

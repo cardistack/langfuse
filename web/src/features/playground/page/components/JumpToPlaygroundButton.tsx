@@ -1,15 +1,22 @@
-import { Terminal } from "lucide-react";
+import { Terminal, ChevronDown } from "lucide-react";
 import { useEffect, useState, useMemo } from "react";
 import { useRouter } from "next/router";
 import { z } from "zod/v4";
+import { v4 as uuidv4 } from "uuid";
 
 import { createEmptyMessage } from "@/src/components/ChatMessages/utils/createEmptyMessage";
 import { Button } from "@/src/components/ui/button";
-import usePlaygroundCache from "@/src/features/playground/page/hooks/usePlaygroundCache";
 import {
-  type PlaygroundTool,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/src/components/ui/dropdown-menu";
+import { usePersistedWindowIds } from "@/src/features/playground/page/hooks/usePersistedWindowIds";
+import {
   type PlaygroundCache,
   type PlaygroundSchema,
+  type PlaygroundTool,
 } from "@/src/features/playground/page/types";
 import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePostHogClientCapture";
 import useProjectIdFromURL from "@/src/hooks/useProjectIdFromURL";
@@ -21,16 +28,19 @@ import {
   type UIModelParams,
   ZodModelConfig,
   ChatMessageType,
-  LLMToolCallSchema,
-  OpenAIToolCallSchema,
   OpenAIToolSchema,
   type ChatMessage,
   OpenAIResponseFormatSchema,
   type Prisma,
+  type PlaceholderMessage,
   PromptType,
+  isGenerationLike,
 } from "@langfuse/shared";
+import { normalizeInput, extractAdditionalInput } from "@/src/utils/chatml";
+import { convertChatMlToPlayground } from "@/src/utils/chatml/playgroundConverter";
 import { api } from "@/src/utils/api";
 import { cn } from "@/src/utils/tailwind";
+import usePlaygroundCache from "@/src/features/playground/page/hooks/usePlaygroundCache";
 
 type JumpToPlaygroundButtonProps = (
   | {
@@ -58,9 +68,20 @@ export const JumpToPlaygroundButton: React.FC<JumpToPlaygroundButtonProps> = (
   const router = useRouter();
   const capture = usePostHogClientCapture();
   const projectId = useProjectIdFromURL();
-  const { setPlaygroundCache } = usePlaygroundCache();
+  const { addWindowWithId, clearAllCache } = usePersistedWindowIds();
   const [capturedState, setCapturedState] = useState<PlaygroundCache>(null);
   const [isAvailable, setIsAvailable] = useState<boolean>(false);
+
+  // Generate a stable window ID based on the source data
+  const stableWindowId = useMemo(() => {
+    if (props.source === "prompt") {
+      return `playground-prompt-${props.prompt.id}`;
+    } else if (props.source === "generation") {
+      return `playground-generation-${props.generation.id}`;
+    }
+    return `playground-${uuidv4()}`;
+  }, [props]);
+  const { setPlaygroundCache } = usePlaygroundCache(stableWindowId);
 
   const apiKeys = api.llmApiKey.all.useQuery(
     {
@@ -89,13 +110,17 @@ export const JumpToPlaygroundButton: React.FC<JumpToPlaygroundButtonProps> = (
     return modelProviderMap;
   }, [apiKeys.data]);
 
+  const promptData = props.source === "prompt" ? props.prompt : null;
+  const generationData =
+    props.source === "generation" ? props.generation : null;
+
   useEffect(() => {
-    if (props.source === "prompt") {
-      setCapturedState(parsePrompt(props.prompt));
-    } else if (props.source === "generation") {
-      setCapturedState(parseGeneration(props.generation, modelToProviderMap));
+    if (promptData) {
+      setCapturedState(parsePrompt(promptData));
+    } else if (generationData) {
+      setCapturedState(parseGeneration(generationData, modelToProviderMap));
     }
-  }, [props, modelToProviderMap]);
+  }, [promptData, generationData, modelToProviderMap]);
 
   useEffect(() => {
     if (capturedState) {
@@ -105,141 +130,110 @@ export const JumpToPlaygroundButton: React.FC<JumpToPlaygroundButtonProps> = (
     }
   }, [capturedState, setIsAvailable]);
 
-  const handleClick = () => {
-    capture(props.analyticsEventName);
-    setPlaygroundCache(capturedState);
+  const handlePlaygroundAction = (useFreshPlayground: boolean) => {
+    capture(props.analyticsEventName, {
+      playgroundMode: useFreshPlayground ? "fresh" : "add_to_existing",
+    });
 
-    router.push(`/project/${projectId}/playground`);
+    // First, ensure we have state to save
+    if (!capturedState) {
+      console.warn("No captured state available for playground");
+      return;
+    }
+
+    if (useFreshPlayground) {
+      // Clear all existing playground data and reset to single window
+      clearAllCache(stableWindowId);
+    } else {
+      // Add to existing playground
+      const addedWindowId = addWindowWithId(stableWindowId);
+
+      if (!addedWindowId) {
+        console.warn(
+          "Failed to add window to existing playground, maximum windows reached",
+        );
+        return;
+      }
+    }
+
+    // Use requestAnimationFrame to ensure the state update has been processed
+    requestAnimationFrame(() => {
+      try {
+        setPlaygroundCache(capturedState);
+        console.log(
+          `Cache saved for existing playground window ${stableWindowId}`,
+        );
+
+        // Navigate after cache is successfully saved
+        router.push(`/project/${projectId}/playground`);
+      } catch (error) {
+        console.error("Failed to save playground cache:", error);
+        // Navigate anyway, but user might not see their data
+        router.push(`/project/${projectId}/playground`);
+      }
+    });
   };
 
+  const tooltipMessage = isAvailable
+    ? "Test in LLM playground"
+    : "Test in LLM playground is not available since messages are not in valid ChatML format or tool calls have been used. If you think this is not correct, please open a GitHub issue.";
+
   return (
-    <Button
-      variant={props.variant ?? "secondary"}
-      disabled={!isAvailable}
-      title={
-        isAvailable
-          ? "Test in LLM playground"
-          : "Test in LLM playground is not available since messages are not in valid ChatML format or tool calls have been used. If you think this is not correct, please open a Github issue."
-      }
-      onClick={handleClick}
-      asChild
-      className={
-        !isAvailable ? "cursor-not-allowed opacity-50" : "cursor-pointer"
-      }
-    >
-      <span>
-        <Terminal className="h-4 w-4" />
-        <span className={cn("hidden md:ml-2 md:inline", props.className)}>
-          Playground
-        </span>
-      </span>
-    </Button>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant={props.variant ?? "secondary"}
+          disabled={!isAvailable}
+          title={tooltipMessage}
+          className={cn(
+            "flex items-center gap-1",
+            !isAvailable ? "cursor-not-allowed opacity-50" : "cursor-pointer",
+          )}
+        >
+          <Terminal className="h-4 w-4" />
+          <span className={cn("hidden md:inline", props.className)}>
+            Playground
+          </span>
+          <ChevronDown className="h-3 w-3" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onClick={() => handlePlaygroundAction(true)}>
+          <Terminal className="mr-2 h-4 w-4" />
+          Fresh playground
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => handlePlaygroundAction(false)}>
+          <Terminal className="mr-2 h-4 w-4" />
+          Add to existing
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
-};
-
-const ParsedChatMessageListSchema = z.array(
-  z.object({
-    role: z.enum(ChatMessageRole),
-    content: z.union([
-      z.string(),
-      z
-        .array(
-          z
-            .object({
-              text: z.string(),
-            })
-            .transform((v) => v.text),
-        )
-        .transform((v) => v.join("")),
-      z.union([z.null(), z.undefined()]).transform((_) => ""),
-      z.any().transform((v) => JSON.stringify(v, null, 2)),
-    ]),
-    tool_calls: z
-      .union([z.array(LLMToolCallSchema), z.array(OpenAIToolCallSchema)])
-      .optional(),
-    tool_call_id: z.string().optional(),
-    additional_kwargs: z
-      .object({
-        tool_calls: z
-          .union([z.array(LLMToolCallSchema), z.array(OpenAIToolCallSchema)])
-          .optional(),
-      })
-      .optional(),
-  }),
-);
-
-// Langchain integration has the tool definition in a tool message
-// Those need to be filtered out in the chat messages and parsed when looking for tools
-const isLangchainToolDefinitionMessage = (
-  message: z.infer<typeof ParsedChatMessageListSchema>[0],
-): message is { content: string; role: ChatMessageRole } => {
-  try {
-    return OpenAIToolSchema.safeParse(JSON.parse(message.content)).success;
-  } catch {
-    return false;
-  }
-};
-
-const transformToPlaygroundMessage = (
-  message: z.infer<typeof ParsedChatMessageListSchema>[0],
-): ChatMessage => {
-  const { role, content } = message;
-
-  if (
-    message.role === "assistant" &&
-    (message.tool_calls || message.additional_kwargs?.tool_calls)
-  ) {
-    const toolCalls =
-      message.tool_calls ?? message.additional_kwargs?.tool_calls ?? [];
-
-    const playgroundMessage: ChatMessage = {
-      role: ChatMessageRole.Assistant,
-      content,
-      type: ChatMessageType.AssistantToolCall,
-      toolCalls: toolCalls.map((tc) => {
-        if ("function" in tc) {
-          return {
-            name: tc.function.name,
-            id: tc.id,
-            args: tc.function.arguments,
-          };
-        }
-
-        return tc;
-      }),
-    };
-
-    return playgroundMessage;
-  } else if (message.role === "tool") {
-    const playgroundMessage: ChatMessage = {
-      role: ChatMessageRole.Tool,
-      content,
-      type: ChatMessageType.ToolResult,
-      toolCallId: message.tool_call_id ?? "",
-    };
-
-    return playgroundMessage;
-  } else {
-    return {
-      role,
-      content,
-      type: ChatMessageType.PublicAPICreated,
-    };
-  }
 };
 
 const parsePrompt = (
   prompt: Prompt & { resolvedPrompt?: Prisma.JsonValue },
 ): PlaygroundCache => {
   if (prompt.type === PromptType.Chat) {
-    const parsedMessages = ParsedChatMessageListSchema.safeParse(
-      prompt.resolvedPrompt,
-    );
+    try {
+      const inResult = normalizeInput(prompt.resolvedPrompt);
 
-    return parsedMessages.success
-      ? { messages: parsedMessages.data.map(transformToPlaygroundMessage) }
-      : null;
+      const messages = inResult.success
+        ? inResult.data
+            .map(convertChatMlToPlayground)
+            .filter(
+              (msg): msg is ChatMessage | PlaceholderMessage => msg !== null,
+            )
+        : [];
+
+      if (messages.length === 0) return null;
+
+      return { messages };
+    } catch {
+      return null;
+    }
   } else {
+    // Text prompt
     const promptString = prompt.resolvedPrompt;
 
     return {
@@ -262,33 +256,42 @@ const parseGeneration = (
   },
   modelToProviderMap: Record<string, string>,
 ): PlaygroundCache => {
-  if (generation.type !== "GENERATION") return null;
+  if (!isGenerationLike(generation.type)) return null;
 
-  const modelParams = parseModelParams(generation, modelToProviderMap);
+  let modelParams = parseModelParams(generation, modelToProviderMap);
   const tools = parseTools(generation);
   const structuredOutputSchema = parseStructuredOutputSchema(generation);
+  const providerOptions = parseLitellmMetadataFromGeneration(generation);
+
+  if (modelParams && providerOptions) {
+    const existingProviderOptions =
+      modelParams.providerOptions?.value ??
+      ({} as UIModelParams["providerOptions"]["value"]);
+
+    const mergedProviderOptions = {
+      ...existingProviderOptions,
+      ...providerOptions,
+    } as UIModelParams["providerOptions"]["value"];
+
+    modelParams = {
+      ...modelParams,
+      providerOptions: {
+        value: mergedProviderOptions,
+        enabled: true,
+      },
+    };
+  }
 
   let input = generation.input?.valueOf();
 
+  if (!input) return null;
+
+  // parse string inputs as JSON or treat as text prompt
   if (typeof input === "string") {
     try {
       input = JSON.parse(input);
-
-      if (typeof input === "string") {
-        return {
-          messages: [
-            createEmptyMessage({
-              type: ChatMessageType.System,
-              role: ChatMessageRole.System,
-              content: input,
-            }),
-          ],
-          modelParams,
-          tools,
-          structuredOutputSchema,
-        };
-      }
-    } catch (err) {
+    } catch {
+      // Parse failed, treat as text prompt
       return {
         messages: [
           createEmptyMessage({
@@ -302,38 +305,55 @@ const parseGeneration = (
         structuredOutputSchema,
       };
     }
+
+    // After parsing, if still string, it's a text prompt
+    if (typeof input === "string") {
+      return {
+        messages: [
+          createEmptyMessage({
+            type: ChatMessageType.System,
+            role: ChatMessageRole.System,
+            content: input,
+          }),
+        ],
+        modelParams,
+        tools,
+        structuredOutputSchema,
+      };
+    }
   }
 
   if (typeof input === "object") {
-    const parsedMessages = ParsedChatMessageListSchema.safeParse(
-      "messages" in input ? input["messages"] : input,
-    );
+    try {
+      const ctx = {
+        metadata:
+          typeof generation.metadata === "string"
+            ? JSON.parse(generation.metadata)
+            : generation.metadata,
+        observationName: generation.name ?? undefined,
+      };
 
-    if (parsedMessages.success)
+      const inResult = normalizeInput(input, ctx);
+
+      const messages = inResult.success
+        ? inResult.data
+            .map(convertChatMlToPlayground)
+            .filter(
+              (msg): msg is ChatMessage | PlaceholderMessage => msg !== null,
+            )
+        : [];
+
+      if (messages.length === 0) return null;
+
       return {
-        messages: parsedMessages.data
-          .filter((m) => !isLangchainToolDefinitionMessage(m))
-          .map(transformToPlaygroundMessage),
+        messages,
         modelParams,
         tools,
         structuredOutputSchema,
       };
-  }
-
-  if (typeof input === "object" && "messages" in input) {
-    const parsedMessages = ParsedChatMessageListSchema.safeParse(
-      input["messages"],
-    );
-
-    if (parsedMessages.success)
-      return {
-        messages: parsedMessages.data
-          .filter((m) => !isLangchainToolDefinitionMessage(m))
-          .map(transformToPlaygroundMessage),
-        modelParams,
-        tools,
-        structuredOutputSchema,
-      };
+    } catch {
+      return null;
+    }
   }
 
   return null;
@@ -370,7 +390,7 @@ function parseModelParams(
           if (!modelParams) return;
 
           modelParams[key as keyof typeof parsedParams.data] = {
-            value,
+            value: value as any,
             enabled: true,
           };
         });
@@ -388,9 +408,21 @@ function parseTools(
     metadata: string | null;
   },
 ): PlaygroundTool[] {
-  // OpenAI Schema
   try {
     const input = JSON.parse(generation.input as string);
+
+    // Check additional.tools , langchain puts tools there
+    const additionalInput = extractAdditionalInput(input);
+    if (additionalInput?.tools && Array.isArray(additionalInput.tools)) {
+      return additionalInput.tools.map((tool: any) => ({
+        id: Math.random().toString(36).substring(2),
+        name: tool.name || tool.function?.name,
+        description: tool.description || tool.function?.description,
+        parameters: tool.parameters || tool.function?.parameters,
+      }));
+    }
+
+    // OpenAI format: tools in input.tools field
     if (typeof input === "object" && input !== null && "tools" in input) {
       const parsedTools = z.array(OpenAIToolSchema).safeParse(input["tools"]);
 
@@ -399,25 +431,6 @@ function parseTools(
           id: Math.random().toString(36).substring(2),
           ...tool.function,
         }));
-    }
-  } catch {}
-
-  // Langchain Schema
-  try {
-    const input = JSON.parse(generation.input as string);
-
-    if (typeof input === "object" && input !== null) {
-      const parsedMessages = ParsedChatMessageListSchema.safeParse(
-        "messages" in input ? input["messages"] : input,
-      );
-
-      if (parsedMessages.success)
-        return parsedMessages.data
-          .filter(isLangchainToolDefinitionMessage)
-          .map((tool) => ({
-            id: Math.random().toString(36).substring(2),
-            ...JSON.parse(tool.content).function,
-          }));
     }
   } catch {}
 
@@ -482,4 +495,60 @@ function parseStructuredOutputSchema(
     }
   } catch {}
   return null;
+}
+
+/**
+ * LiteLLM supports custom providers such as with its CustomLLM interface. Clients may
+ * send provider‑specific options in addition to standard parameters (e.g., temperature, top_p, max_tokens).
+ * LiteLLM records those extras on the generation as metadata.requester_metadata. When a user clicks
+ * “Open in Playground,” we lift requester_metadata into providerOptions so those custom options carry
+ * over for re‑run/compare/edit. This lets the Playground faithfully replay LiteLLM CustomLLM‑based
+ * workflows and preserves the original call’s intent.
+ *
+ * References:
+ * - https://docs.litellm.ai/docs/providers/custom_llm_server
+ * - https://docs.litellm.ai/docs/proxy/logging_spec#standardloggingmetadata
+ */
+function parseLitellmMetadataFromGeneration(
+  generation: Omit<Observation, "input" | "output" | "metadata"> & {
+    input: string | null;
+    output: string | null;
+    metadata: string | null;
+  },
+): UIModelParams["providerOptions"]["value"] | undefined {
+  let metadata: unknown = generation.metadata;
+
+  if (metadata === null || metadata === undefined) {
+    return undefined;
+  }
+
+  if (typeof metadata === "string") {
+    const trimmedMetadata = metadata.trim();
+
+    if (!trimmedMetadata) {
+      return undefined;
+    }
+
+    try {
+      metadata = JSON.parse(trimmedMetadata);
+    } catch {
+      return undefined;
+    }
+  }
+
+  if (typeof metadata !== "object" || metadata === null) {
+    return undefined;
+  }
+
+  const requesterMetadata = (metadata as Record<string, unknown>)[
+    "requester_metadata"
+  ];
+
+  if (typeof requesterMetadata !== "object" || requesterMetadata === null) {
+    return undefined;
+  }
+
+  return {
+    metadata: requesterMetadata,
+  } as UIModelParams["providerOptions"]["value"];
 }

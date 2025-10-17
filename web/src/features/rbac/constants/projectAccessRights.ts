@@ -20,6 +20,8 @@ const projectScopes = [
 
   "annotationQueues:read",
   "annotationQueues:CUD",
+  "annotationQueueAssignments:read",
+  "annotationQueueAssignments:CUD",
 
   "project:read",
   "project:update",
@@ -70,6 +72,9 @@ const projectScopes = [
 
   "TableViewPresets:CUD",
   "TableViewPresets:read",
+
+  "automations:CUD",
+  "automations:read",
 ] as const;
 
 // type string of all Resource:Action, e.g. "members:read"
@@ -118,6 +123,8 @@ export const projectRoleAccessRights: Record<Role, ProjectScope[]> = {
     "comments:read",
     "annotationQueues:read",
     "annotationQueues:CUD",
+    "annotationQueueAssignments:read",
+    "annotationQueueAssignments:CUD",
     "promptExperiments:CUD",
     "promptExperiments:read",
     "auditLogs:read",
@@ -125,6 +132,8 @@ export const projectRoleAccessRights: Record<Role, ProjectScope[]> = {
     "dashboards:CUD",
     "TableViewPresets:CUD",
     "TableViewPresets:read",
+    "automations:CUD",
+    "automations:read",
   ],
   ADMIN: [
     "project:read",
@@ -167,6 +176,8 @@ export const projectRoleAccessRights: Record<Role, ProjectScope[]> = {
     "comments:read",
     "annotationQueues:read",
     "annotationQueues:CUD",
+    "annotationQueueAssignments:read",
+    "annotationQueueAssignments:CUD",
     "promptExperiments:CUD",
     "promptExperiments:read",
     "auditLogs:read",
@@ -174,6 +185,8 @@ export const projectRoleAccessRights: Record<Role, ProjectScope[]> = {
     "dashboards:CUD",
     "TableViewPresets:CUD",
     "TableViewPresets:read",
+    "automations:CUD",
+    "automations:read",
   ],
   MEMBER: [
     "project:read",
@@ -204,12 +217,14 @@ export const projectRoleAccessRights: Record<Role, ProjectScope[]> = {
     "comments:read",
     "annotationQueues:read",
     "annotationQueues:CUD",
+    "annotationQueueAssignments:read",
     "promptExperiments:CUD",
     "promptExperiments:read",
     "dashboards:read",
     "dashboards:CUD",
     "TableViewPresets:CUD",
     "TableViewPresets:read",
+    "automations:read",
   ],
   VIEWER: [
     "project:read",
@@ -227,6 +242,7 @@ export const projectRoleAccessRights: Record<Role, ProjectScope[]> = {
     "promptExperiments:read",
     "dashboards:read",
     "TableViewPresets:read",
+    "automations:read",
   ],
   NONE: [],
 };

@@ -7,23 +7,25 @@ import { useRouter } from "next/router";
 import { api } from "@/src/utils/api";
 import { NumberParam, useQueryParams, withDefault } from "use-query-params";
 import { type RouterOutput } from "@/src/utils/types";
-import {
-  TabsBar,
-  TabsBarList,
-  TabsBarTrigger,
-} from "@/src/components/ui/tabs-bar";
-import Link from "next/link";
 import TableLink from "@/src/components/table/table-link";
 import { numberFormatter, usdFormatter } from "@/src/utils/numbers";
 import { formatIntervalSeconds } from "@/src/utils/dates";
 import useColumnVisibility from "@/src/features/column-visibility/hooks/useColumnVisibility";
 import { Skeleton } from "@/src/components/ui/skeleton";
-import { verifyAndPrefixScoreDataAgainstKeys } from "@/src/features/scores/components/ScoreDetailColumnHelpers";
 import { type ScoreAggregate } from "@langfuse/shared";
-import { useIndividualScoreColumns } from "@/src/features/scores/hooks/useIndividualScoreColumns";
 import useColumnOrder from "@/src/features/column-visibility/hooks/useColumnOrder";
 import Page from "@/src/components/layouts/page";
 import { DetailPageNav } from "@/src/features/navigate-detail-pages/DetailPageNav";
+import { TruncatedLabels } from "@/src/components/TruncatedLabels";
+import {
+  getPromptTabs,
+  PROMPT_TABS,
+} from "@/src/features/navigation/utils/prompt-tabs";
+import { useScoreColumns } from "@/src/features/scores/hooks/useScoreColumns";
+import {
+  scoreFilters,
+  addPrefixToScoreKeys,
+} from "@/src/features/scores/lib/scoreColumns";
 
 export type PromptVersionTableRow = {
   version: number;
@@ -77,14 +79,16 @@ function joinPromptCoreAndMetricData(
   return { status: "success", combinedData };
 }
 
-export default function PromptVersionTable({ promptName: promptNameProp }: { promptName?: string } = {}) {
+export default function PromptVersionTable({
+  promptName: promptNameProp,
+}: { promptName?: string } = {}) {
   const router = useRouter();
   const projectId = router.query.projectId as string;
-  const promptName = promptNameProp || (
-    router.query.promptName
+  const promptName =
+    promptNameProp ||
+    (router.query.promptName
       ? decodeURIComponent(router.query.promptName as string)
-      : ''
-  );
+      : "");
 
   const [paginationState, setPaginationState] = useQueryParams({
     pageIndex: withDefault(NumberParam, 0),
@@ -128,25 +132,22 @@ export default function PromptVersionTable({ promptName: promptNameProp }: { pro
     },
   );
 
-  const {
-    scoreColumns: traceScoreColumns,
-    scoreKeysAndProps,
-    isColumnLoading: isTraceColumnLoading,
-  } = useIndividualScoreColumns<PromptVersionTableRow>({
-    projectId,
-    scoreColumnPrefix: "Trace",
-    scoreColumnKey: "traceScores",
-    showAggregateViewOnly: true,
-  });
+  const { scoreColumns: traceScoreColumns, isLoading: isTraceColumnLoading } =
+    useScoreColumns<PromptVersionTableRow>({
+      scoreColumnKey: "traceScores",
+      projectId: projectId,
+      filter: scoreFilters.forTraces(),
+      prefix: "Trace",
+    });
 
   const {
     scoreColumns: generationScoreColumns,
-    isColumnLoading: isGenerationColumnLoading,
-  } = useIndividualScoreColumns<PromptVersionTableRow>({
-    projectId,
-    scoreColumnPrefix: "Generation",
+    isLoading: isGenerationColumnLoading,
+  } = useScoreColumns<PromptVersionTableRow>({
     scoreColumnKey: "generationScores",
-    showAggregateViewOnly: true,
+    projectId: projectId,
+    filter: scoreFilters.forObservations(),
+    prefix: "Generation",
   });
 
   const columns: LangfuseColumnDef<PromptVersionTableRow>[] = [
@@ -154,6 +155,7 @@ export default function PromptVersionTable({ promptName: promptNameProp }: { pro
       accessorKey: "version",
       id: "version",
       header: "Version",
+      isPinnedLeft: true,
       size: 80,
       cell: ({ row }) => {
         const version = row.getValue("version");
@@ -169,21 +171,18 @@ export default function PromptVersionTable({ promptName: promptNameProp }: { pro
       accessorKey: "labels",
       id: "labels",
       header: "Labels",
+      isPinnedLeft: true,
       size: 160,
       cell: ({ row }) => {
         const values: string[] = row.getValue("labels");
         return (
           values && (
-            <div className="-mr-8 flex max-h-full flex-wrap gap-1">
-              {values.map((value) => (
-                <div
-                  key={value}
-                  className="max-h-fit min-h-6 w-fit content-center rounded-sm bg-secondary px-1 text-left text-xs font-semibold text-secondary-foreground"
-                >
-                  {value}
-                </div>
-              ))}
-            </div>
+            <TruncatedLabels
+              labels={values}
+              maxVisibleLabels={3}
+              className="-mr-8 flex max-h-full flex-wrap gap-1"
+              showSimpleBadges={true}
+            />
           )
         );
       },
@@ -202,7 +201,8 @@ export default function PromptVersionTable({ promptName: promptNameProp }: { pro
         }
 
         return !!latency ? (
-          <span>{formatIntervalSeconds(latency, 3)}</span>
+          // latency is in milliseconds, divide by 1000 to get seconds
+          <span>{formatIntervalSeconds(latency / 1000, 3)}</span>
         ) : undefined;
       },
       enableHiding: true,
@@ -303,7 +303,7 @@ export default function PromptVersionTable({ promptName: promptNameProp }: { pro
       headerTooltip: {
         description:
           "The last time this prompt version was used in a generation. See docs for details on how to link generations/traces to prompt versions.",
-        href: "https://langfuse.com/docs/prompts",
+        href: "https://langfuse.com/docs/prompt-management/get-started",
       },
       cell: ({ row }) => {
         const value: number | undefined | null = row.getValue("lastUsed");
@@ -322,7 +322,7 @@ export default function PromptVersionTable({ promptName: promptNameProp }: { pro
       headerTooltip: {
         description:
           "The first time this prompt version was used in a generation. See docs for details on how to link generations/traces to prompt versions.",
-        href: "https://langfuse.com/docs/prompts",
+        href: "https://langfuse.com/docs/prompt-management/get-started",
       },
       cell: ({ row }) => {
         const value: number | undefined | null = row.getValue("firstUsed");
@@ -363,13 +363,11 @@ export default function PromptVersionTable({ promptName: promptNameProp }: { pro
             medianOutputTokens: prompt.medianOutputTokens,
             medianCost: prompt.medianTotalCost,
             generationCount: prompt.observationCount,
-            traceScores: verifyAndPrefixScoreDataAgainstKeys(
-              scoreKeysAndProps,
+            traceScores: addPrefixToScoreKeys(
               prompt.traceScores ?? {},
               "Trace",
             ),
-            generationScores: verifyAndPrefixScoreDataAgainstKeys(
-              scoreKeysAndProps,
+            generationScores: addPrefixToScoreKeys(
               prompt.observationScores ?? {},
               "Generation",
             ),
@@ -389,7 +387,7 @@ export default function PromptVersionTable({ promptName: promptNameProp }: { pro
         help: {
           description:
             "You can use this prompt within your application through the Langfuse SDKs and integrations. Refer to the documentation for more information.",
-          href: "https://langfuse.com/docs/prompts",
+          href: "https://langfuse.com/docs/prompt-management/get-started",
         },
         breadcrumb: [
           {
@@ -410,20 +408,10 @@ export default function PromptVersionTable({ promptName: promptNameProp }: { pro
             listKey="prompts"
           />
         ),
-        tabsComponent: (
-          <TabsBar value="metrics">
-            <TabsBarList>
-              <TabsBarTrigger value="versions" asChild>
-                <Link
-                  href={`/project/${projectId}/prompts/${encodeURIComponent(promptName)}`}
-                >
-                  Versions
-                </Link>
-              </TabsBarTrigger>
-              <TabsBarTrigger value="metrics">Metrics</TabsBarTrigger>
-            </TabsBarList>
-          </TabsBar>
-        ),
+        tabsProps: {
+          tabs: getPromptTabs(projectId, promptName),
+          activeTab: PROMPT_TABS.METRICS,
+        },
       }}
     >
       <div className="gap-3">
@@ -438,6 +426,7 @@ export default function PromptVersionTable({ promptName: promptNameProp }: { pro
         />
       </div>
       <DataTable
+        tableName={"promptVersions"}
         columns={columns}
         data={
           promptVersions.isLoading

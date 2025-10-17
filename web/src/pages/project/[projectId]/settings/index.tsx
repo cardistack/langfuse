@@ -13,7 +13,6 @@ import { MembersTable } from "@/src/features/rbac/components/MembersTable";
 import { JSONView } from "@/src/components/ui/CodeJsonViewer";
 import { PostHogLogo } from "@/src/components/PosthogLogo";
 import { Card } from "@/src/components/ui/card";
-import { ScoreConfigSettings } from "@/src/features/scores/components/ScoreConfigSettings";
 import { TransferProjectButton } from "@/src/features/projects/components/TransferProjectButton";
 import { useHasEntitlement } from "@/src/features/entitlements/hooks";
 import { useHasProjectAccess } from "@/src/features/rbac/utils/checkProjectAccess";
@@ -26,6 +25,9 @@ import { ModelsSettings } from "@/src/features/models/components/ModelSettings";
 import ConfigureRetention from "@/src/features/projects/components/ConfigureRetention";
 import ContainerPage from "@/src/components/layouts/container-page";
 import ProtectedLabelsSettings from "@/src/features/prompts/components/ProtectedLabelsSettings";
+import { Slack } from "lucide-react";
+import { ScoreConfigSettings } from "@/src/features/score-configs/components/ScoreConfigSettings";
+import { env } from "@/src/env.mjs";
 
 type ProjectSettingsPage = {
   title: string;
@@ -96,6 +98,9 @@ export const getProjectSettingsPages = ({
                 id: organization.id,
                 ...organization.metadata,
               },
+              ...(env.NEXT_PUBLIC_LANGFUSE_CLOUD_REGION && {
+                cloudRegion: env.NEXT_PUBLIC_LANGFUSE_CLOUD_REGION,
+              }),
             }}
           />
         </div>
@@ -247,6 +252,10 @@ const Integrations = (props: { projectId: string }) => {
     scope: "integrations:CRUD",
   });
 
+  const allowBlobStorageIntegration = useHasEntitlement(
+    "scheduled-blob-exports",
+  );
+
   return (
     <div>
       <Header title="Integrations" />
@@ -268,7 +277,7 @@ const Integrations = (props: { projectId: string }) => {
             </ActionButton>
             <Button asChild variant="ghost">
               <Link
-                href="https://langfuse.com/docs/analytics/posthog"
+                href="https://langfuse.com/integrations/analytics/posthog"
                 target="_blank"
               >
                 Integration Docs ↗
@@ -288,6 +297,7 @@ const Integrations = (props: { projectId: string }) => {
             <ActionButton
               variant="secondary"
               hasAccess={hasAccess}
+              hasEntitlement={allowBlobStorageIntegration}
               href={`/project/${props.projectId}/settings/integrations/blobstorage`}
             >
               Configure
@@ -300,6 +310,26 @@ const Integrations = (props: { projectId: string }) => {
                 Integration Docs ↗
               </Link>
             </Button>
+          </div>
+        </Card>
+
+        <Card className="p-3">
+          <div className="mb-4 flex items-center gap-2">
+            <Slack className="h-5 w-5 text-foreground" />
+            <span className="font-semibold">Slack</span>
+          </div>
+          <p className="mb-4 text-sm text-primary">
+            Connect a Slack workspace and create channel automations to receive
+            Langfuse alerts natively in Slack.
+          </p>
+          <div className="flex items-center gap-2">
+            <ActionButton
+              variant="secondary"
+              hasAccess={hasAccess}
+              href={`/project/${props.projectId}/settings/integrations/slack`}
+            >
+              Configure
+            </ActionButton>
           </div>
         </Card>
       </div>

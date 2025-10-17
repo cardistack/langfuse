@@ -21,11 +21,18 @@ import { createFilterFromFilterState } from "../queries/clickhouse-sql/factory";
 import {
   observationsTableTraceUiColumnDefinitions,
   observationsTableUiColumnDefinitions,
-} from "../../tableDefinitions";
+} from "../tableMappings";
 import { OrderByState } from "../../interfaces/orderBy";
 import { getTracesByIds } from "./traces";
-import { convertDateToClickhouseDateTime } from "../clickhouse/client";
-import { convertObservation } from "./observations_converters";
+import { measureAndReturn } from "../clickhouse/measureAndReturn";
+import {
+  convertDateToClickhouseDateTime,
+  PreferredClickhouseService,
+} from "../clickhouse/client";
+import {
+  convertObservation,
+  enrichObservationWithModelData,
+} from "./observations_converters";
 import { clickhouseSearchCondition } from "../queries/clickhouse-sql/search";
 import {
   OBSERVATIONS_TO_TRACE_INTERVAL,
@@ -36,6 +43,7 @@ import { TracingSearchType } from "../../interfaces/search";
 import { ClickHouseClientConfigOptions } from "@clickhouse/client";
 import { ObservationType } from "../../domain";
 import { recordDistribution } from "../instrumentation";
+import { DEFAULT_RENDERING_PROPS, RenderingProps } from "../utils/rendering";
 
 /**
  * Checks if observation exists in clickhouse.
@@ -118,12 +126,19 @@ export type GetObservationsForTraceOpts<IncludeIO extends boolean> = {
   projectId: string;
   timestamp?: Date;
   includeIO?: IncludeIO;
+  preferredClickhouseService?: PreferredClickhouseService;
 };
 
 export const getObservationsForTrace = async <IncludeIO extends boolean>(
   opts: GetObservationsForTraceOpts<IncludeIO>,
 ) => {
-  const { traceId, projectId, timestamp, includeIO = false } = opts;
+  const {
+    traceId,
+    projectId,
+    timestamp,
+    includeIO = false,
+    preferredClickhouseService,
+  } = opts;
 
   const query = `
   SELECT
@@ -155,7 +170,7 @@ export const getObservationsForTrace = async <IncludeIO extends boolean>(
     created_at,
     updated_at,
     event_ts
-  FROM observations 
+  FROM observations
   WHERE trace_id = {traceId: String}
   AND project_id = {projectId: String}
    ${timestamp ? `AND start_time >= {traceTimestamp: DateTime64(3)} - ${TRACE_TO_OBSERVATIONS_INTERVAL}` : ""}
@@ -176,6 +191,7 @@ export const getObservationsForTrace = async <IncludeIO extends boolean>(
       kind: "list",
       projectId,
     },
+    preferredClickhouseService,
   });
 
   // Large number of observations in trace with large input / output / metadata will lead to
@@ -225,13 +241,19 @@ export const getObservationsForTrace = async <IncludeIO extends boolean>(
   });
 };
 
-export const getObservationForTraceIdByName = async (
-  traceId: string,
-  projectId: string,
-  name: string,
-  timestamp?: Date,
-  fetchWithInputOutput: boolean = false,
-) => {
+export const getObservationForTraceIdByName = async ({
+  traceId,
+  projectId,
+  name,
+  timestamp,
+  fetchWithInputOutput = false,
+}: {
+  traceId: string;
+  projectId: string;
+  name: string;
+  timestamp?: Date;
+  fetchWithInputOutput?: boolean;
+}) => {
   const query = `
   SELECT
     id,
@@ -263,7 +285,7 @@ export const getObservationForTraceIdByName = async (
     created_at,
     updated_at,
     event_ts
-  FROM observations 
+  FROM observations
   WHERE trace_id = {traceId: String}
   AND project_id = {projectId: String}
   AND name = {name: String}
@@ -288,7 +310,7 @@ export const getObservationForTraceIdByName = async (
     },
   });
 
-  return records.map(convertObservation);
+  return records.map((record) => convertObservation(record));
 };
 
 export const getObservationById = async ({
@@ -298,6 +320,8 @@ export const getObservationById = async ({
   startTime,
   type,
   traceId,
+  renderingProps = DEFAULT_RENDERING_PROPS,
+  preferredClickhouseService,
 }: {
   id: string;
   projectId: string;
@@ -305,6 +329,8 @@ export const getObservationById = async ({
   startTime?: Date;
   type?: ObservationType;
   traceId?: string;
+  renderingProps?: RenderingProps;
+  preferredClickhouseService?: PreferredClickhouseService;
 }) => {
   const records = await getObservationByIdInternal({
     id,
@@ -313,8 +339,12 @@ export const getObservationById = async ({
     startTime,
     type,
     traceId,
+    renderingProps,
+    preferredClickhouseService,
   });
-  const mapped = records.map(convertObservation);
+  const mapped = records.map((record) =>
+    convertObservation(record, renderingProps),
+  );
 
   mapped.forEach((observation) => {
     recordDistribution(
@@ -384,7 +414,7 @@ export const getObservationsById = async (
     query,
     params: { ids, projectId },
   });
-  return records.map(convertObservation);
+  return records.map((record) => convertObservation(record));
 };
 
 const getObservationByIdInternal = async ({
@@ -394,6 +424,8 @@ const getObservationByIdInternal = async ({
   startTime,
   type,
   traceId,
+  renderingProps = DEFAULT_RENDERING_PROPS,
+  preferredClickhouseService,
 }: {
   id: string;
   projectId: string;
@@ -401,6 +433,8 @@ const getObservationByIdInternal = async ({
   startTime?: Date;
   type?: ObservationType;
   traceId?: string;
+  renderingProps?: RenderingProps;
+  preferredClickhouseService?: PreferredClickhouseService;
 }) => {
   const query = `
   SELECT
@@ -417,7 +451,7 @@ const getObservationByIdInternal = async ({
     level,
     status_message,
     version,
-    ${fetchWithInputOutput ? "input, output," : ""}
+    ${fetchWithInputOutput ? (renderingProps.truncated ? `leftUTF8(input, ${env.LANGFUSE_SERVER_SIDE_IO_CHAR_LIMIT}) as input, leftUTF8(output, ${env.LANGFUSE_SERVER_SIDE_IO_CHAR_LIMIT}) as output,` : "input, output,") : ""}
     provided_model_name,
     internal_model_id,
     model_parameters,
@@ -457,6 +491,7 @@ const getObservationByIdInternal = async ({
       kind: "byId",
       projectId,
     },
+    preferredClickhouseService,
   });
 };
 
@@ -551,13 +586,7 @@ export const getObservationsTableWithModelData = async (
       traceTags: trace?.tags ?? [],
       traceTimestamp: trace?.timestamp ?? null,
       userId: trace?.userId ?? null,
-      modelId: model?.id ?? null,
-      inputPrice:
-        model?.Price?.find((m) => m.usageType === "input")?.price ?? null,
-      outputPrice:
-        model?.Price?.find((m) => m.usageType === "output")?.price ?? null,
-      totalPrice:
-        model?.Price?.find((m) => m.usageType === "total")?.price ?? null,
+      ...enrichObservationWithModelData(model),
     };
   });
 };
@@ -612,11 +641,13 @@ const getObservationsTableInternal = async <T>(
   } = opts;
 
   const selectString = selectIOAndMetadata
-    ? `
-    ${select},
-    ${selectIOAndMetadata ? `o.input, o.output, o.metadata` : ""}
-  `
+    ? `${select}, o.input, o.output, o.metadata`
     : select;
+
+  const timeFilter = filter.find(
+    (f) =>
+      f.column === "Start Time" && (f.operator === ">=" || f.operator === ">"),
+  );
 
   const scoresFilter = new FilterList([
     new StringFilter({
@@ -627,33 +658,22 @@ const getObservationsTableInternal = async <T>(
     }),
   ]);
 
-  const timeFilter = opts.filter.find(
-    (f) =>
-      f.column === "Start Time" && (f.operator === ">=" || f.operator === ">"),
-  );
-
-  // query optimisation: joining traces onto observations is expensive. Hence, only join if the UI table contains filters on traces.
-  const traceTableFilter = opts.filter.filter(
-    (f) =>
-      observationsTableTraceUiColumnDefinitions
-        .map((c) => c.uiTableId)
-        .includes(f.column) ||
-      observationsTableTraceUiColumnDefinitions
-        .map((c) => c.uiTableName)
-        .includes(f.column),
-  );
-
   const hasScoresFilter = filter.some((f) =>
     f.column.toLowerCase().includes("scores"),
   );
 
-  const orderByTraces = opts.orderBy
-    ? observationsTableTraceUiColumnDefinitions
-        .map((c) => c.uiTableId)
-        .includes(opts.orderBy.column) ||
-      observationsTableTraceUiColumnDefinitions
-        .map((c) => c.uiTableName)
-        .includes(opts.orderBy.column)
+  // query optimisation: joining traces onto observations is expensive. Hence, only join if the UI table contains filters on traces.
+  const traceTableFilter = filter.filter((f) =>
+    observationsTableTraceUiColumnDefinitions.some(
+      (c) => c.uiTableId === f.column || c.uiTableName === f.column,
+    ),
+  );
+
+  const orderByTraces = orderBy
+    ? observationsTableTraceUiColumnDefinitions.some(
+        (c) =>
+          c.uiTableId === orderBy.column || c.uiTableName === orderBy.column,
+      )
     : undefined;
 
   timeFilter
@@ -687,7 +707,11 @@ const getObservationsTableInternal = async <T>(
   const appliedScoresFilter = scoresFilter.apply();
   const appliedObservationsFilter = observationsFilter.apply();
 
-  const search = clickhouseSearchCondition(opts.searchQuery, opts.searchType, "o");
+  const search = clickhouseSearchCondition(
+    opts.searchQuery,
+    opts.searchType,
+    "o",
+  );
 
   const scoresCte = `WITH scores_agg AS (
     SELECT
@@ -713,7 +737,7 @@ const getObservationsTableInternal = async <T>(
         data_type,
         comment
       FROM
-        scores final
+        scores FINAL
       WHERE ${appliedScoresFilter.query}
       GROUP BY
         trace_id,
@@ -726,7 +750,7 @@ const getObservationsTableInternal = async <T>(
         trace_id
       ) tmp
     GROUP BY
-      trace_id, 
+      trace_id,
       observation_id
   )`;
 
@@ -754,41 +778,51 @@ const getObservationsTableInternal = async <T>(
       ${scoresCte}
       SELECT
        ${selectString}
-      FROM observations o 
-        ${traceTableFilter.length > 0 || orderByTraces || search.query ? "LEFT JOIN traces t FINAL ON t.id = o.trace_id AND t.project_id = o.project_id" : ""}
+      FROM observations o
+        ${traceTableFilter.length > 0 || orderByTraces || search.query ? "LEFT JOIN __TRACE_TABLE__ t FINAL ON t.id = o.trace_id AND t.project_id = o.project_id" : ""}
         ${hasScoresFilter ? `LEFT JOIN scores_agg AS s ON s.trace_id = o.trace_id and s.observation_id = o.id` : ""}
       WHERE ${appliedObservationsFilter.query}
-        
+
         ${timeFilter && (traceTableFilter.length > 0 || orderByTraces) ? `AND t.timestamp > {tracesTimestampFilter: DateTime64(3)} - ${OBSERVATIONS_TO_TRACE_INTERVAL}` : ""}
         ${search.query}
       ${chOrderBy}
       ${opts.select === "rows" ? "LIMIT 1 BY o.id, o.project_id" : ""}
       ${limit !== undefined && offset !== undefined ? `LIMIT ${limit} OFFSET ${offset}` : ""};`;
 
-  const res = await queryClickhouse<T>({
-    query,
-    params: {
-      ...appliedScoresFilter.params,
-      ...appliedObservationsFilter.params,
-      ...(timeFilter
-        ? {
-            tracesTimestampFilter: convertDateToClickhouseDateTime(
-              timeFilter.value as Date,
-            ),
-          }
-        : {}),
-      ...search.params,
+  return measureAndReturn({
+    operationName: "getObservationsTableInternal",
+    projectId,
+    input: {
+      params: {
+        ...appliedScoresFilter.params,
+        ...appliedObservationsFilter.params,
+        ...(timeFilter
+          ? {
+              tracesTimestampFilter: convertDateToClickhouseDateTime(
+                timeFilter.value as Date,
+              ),
+            }
+          : {}),
+        ...search.params,
+      },
+      tags: {
+        ...(opts.tags ?? {}),
+        feature: "tracing",
+        type: "observation",
+        projectId,
+        kind: opts.select,
+        operation_name: "getObservationsTableInternal",
+      },
     },
-    tags: {
-      ...(opts.tags ?? {}),
-      feature: "tracing",
-      type: "observation",
-      projectId,
+    fn: async (input) => {
+      return queryClickhouse<T>({
+        query: query.replace("__TRACE_TABLE__", "traces"),
+        params: input.params,
+        tags: input.tags,
+        clickhouseConfigs,
+      });
     },
-    clickhouseConfigs,
   });
-
-  return res;
 };
 
 export const getObservationsGroupedByModel = async (
@@ -1132,8 +1166,8 @@ export const getObservationsWithPromptName = async (
   promptNames: string[],
 ) => {
   const query = `
-  SELECT count(*) as count, prompt_name
-  FROM observations FINAL
+  SELECT uniq(id) as count, prompt_name
+  FROM observations
   WHERE project_id = {projectId: String}
   AND prompt_name IN ({promptNames: Array(String)})
   AND prompt_name IS NOT NULL
@@ -1176,9 +1210,9 @@ export const getObservationMetricsForPrompts = async (
                   dateDiff('millisecond', start_time, end_time) AS latency_ms
               FROM observations
               FINAL
-              WHERE (type = 'GENERATION') 
-              AND (prompt_name IS NOT NULL) 
-              AND project_id={projectId: String} 
+              WHERE (type = 'GENERATION')
+              AND (prompt_name IS NOT NULL)
+              AND project_id={projectId: String}
               AND prompt_id IN ({promptIds: Array(String)})
           )
       SELECT
@@ -1244,9 +1278,9 @@ export const getLatencyAndTotalCostForObservations = async (
         id,
         cost_details['total'] AS total_cost,
         dateDiff('millisecond', start_time, end_time) AS latency_ms
-    FROM observations FINAL 
-    WHERE project_id = {projectId: String} 
-    AND id IN ({observationIds: Array(String)}) 
+    FROM observations FINAL
+    WHERE project_id = {projectId: String}
+    AND id IN ({observationIds: Array(String)})
     ${timestamp ? `AND start_time >= {timestamp: DateTime64(3)}` : ""}
 `;
   const rows = await queryClickhouse<{
@@ -1288,7 +1322,7 @@ export const getLatencyAndTotalCostForObservationsByTraces = async (
         sumMap(cost_details)['total'] AS total_cost,
         dateDiff('millisecond', min(start_time), max(end_time)) AS latency_ms
     FROM observations FINAL
-    WHERE project_id = {projectId: String} 
+    WHERE project_id = {projectId: String}
     AND trace_id IN ({traceIds: Array(String)})
     ${timestamp ? `AND start_time >= {timestamp: DateTime64(3)}` : ""}
     GROUP BY trace_id
@@ -1329,7 +1363,7 @@ export const getObservationCountsByProjectInCreationInterval = async ({
   end: Date;
 }) => {
   const query = `
-    SELECT 
+    SELECT
       project_id,
       count(*) as count
     FROM observations
@@ -1365,7 +1399,7 @@ export const getObservationCountOfProjectsSinceCreationDate = async ({
   start: Date;
 }) => {
   const query = `
-    SELECT 
+    SELECT
       count(*) as count
     FROM observations
     WHERE project_id IN ({projectIds: Array(String)})
@@ -1393,7 +1427,7 @@ export const getTraceIdsForObservations = async (
   observationIds: string[],
 ) => {
   const query = `
-    SELECT 
+    SELECT
       trace_id,
       id
     FROM observations
@@ -1469,6 +1503,9 @@ export const getObservationsForBlobStorageExport = function (
       kind: "analytic",
       projectId,
     },
+    clickhouseConfigs: {
+      request_timeout: env.LANGFUSE_CLICKHOUSE_DATA_EXPORT_REQUEST_TIMEOUT_MS,
+    },
   });
 
   return records;
@@ -1479,6 +1516,8 @@ export const getGenerationsForPostHog = async function* (
   minTimestamp: Date,
   maxTimestamp: Date,
 ) {
+  const traceTable = "traces";
+
   const query = `
     SELECT
       o.name as name,
@@ -1494,6 +1533,7 @@ export const getGenerationsForPostHog = async function* (
       o.provided_model_name as model,
       o.level as level,
       o.version as version,
+      o.environment as environment,
       t.id as trace_id,
       t.name as trace_name,
       t.session_id as trace_session_id,
@@ -1502,7 +1542,7 @@ export const getGenerationsForPostHog = async function* (
       t.tags as trace_tags,
       t.metadata['$posthog_session_id'] as posthog_session_id
     FROM observations o FINAL
-    LEFT JOIN traces t FINAL ON o.trace_id = t.id AND o.project_id = t.project_id
+    LEFT JOIN ${traceTable} t FINAL ON o.trace_id = t.id AND o.project_id = t.project_id
     WHERE o.project_id = {projectId: String}
     AND t.project_id = {projectId: String}
     AND o.start_time >= {minTimestamp: DateTime64(3)}
@@ -1526,7 +1566,7 @@ export const getGenerationsForPostHog = async function* (
       projectId,
     },
     clickhouseConfigs: {
-      request_timeout: 300_000, // 5 minutes
+      request_timeout: env.LANGFUSE_CLICKHOUSE_DATA_EXPORT_REQUEST_TIMEOUT_MS,
       clickhouse_settings: {
         join_algorithm: "grace_hash",
         grace_hash_join_initial_buckets: "32",
@@ -1540,6 +1580,7 @@ export const getGenerationsForPostHog = async function* (
       timestamp: record.start_time,
       langfuse_generation_name: record.name,
       langfuse_trace_name: record.trace_name,
+      langfuse_trace_id: record.trace_id,
       langfuse_url: `${baseUrl}/project/${projectId}/traces/${encodeURIComponent(record.trace_id as string)}?observation=${encodeURIComponent(record.id as string)}`,
       langfuse_id: record.id,
       langfuse_cost_usd: record.total_cost,
@@ -1548,7 +1589,7 @@ export const getGenerationsForPostHog = async function* (
       langfuse_total_units: record.total_tokens,
       langfuse_session_id: record.trace_session_id,
       langfuse_project_id: projectId,
-      langfuse_user_id: record.trace_user_id || "langfuse_unknown_user",
+      langfuse_user_id: record.trace_user_id || null,
       langfuse_latency: record.latency,
       langfuse_time_to_first_token: record.time_to_first_token,
       langfuse_release: record.trace_release,
@@ -1556,13 +1597,81 @@ export const getGenerationsForPostHog = async function* (
       langfuse_model: record.model,
       langfuse_level: record.level,
       langfuse_tags: record.trace_tags,
+      langfuse_environment: record.environment,
       langfuse_event_version: "1.0.0",
       $session_id: record.posthog_session_id ?? null,
-      $set: {
-        langfuse_user_url: record.user_id
-          ? `${baseUrl}/project/${projectId}/users/${encodeURIComponent(record.user_id as string)}`
-          : null,
-      },
+      ...(record.trace_user_id
+        ? {
+            $set: {
+              langfuse_user_url: `${baseUrl}/project/${projectId}/users/${encodeURIComponent(record.trace_user_id as string)}`,
+            },
+          }
+        : // Capture as anonymous PostHog event (cheaper/faster)
+          // https://posthog.com/docs/data/anonymous-vs-identified-events?tab=Backend
+          { $process_person_profile: false }),
     };
   }
+};
+
+/**
+ * Get observation counts grouped by project and day within a date range.
+ *
+ * Returns one row per project per day with the count of observations started on that day.
+ * Uses half-open interval [startDate, endDate) for filtering based on start_time.
+ *
+ * @param startDate - Start of date range (inclusive)
+ * @param endDate - End of date range (exclusive)
+ * @returns Array of { count, projectId, date } objects
+ *
+ * @example
+ * // Get observation counts for March 1-2, 2024
+ * const counts = await getObservationCountsByProjectAndDay({
+ *   startDate: new Date('2024-03-01T00:00:00Z'),
+ *   endDate: new Date('2024-03-03T00:00:00Z')
+ * });
+ *
+ * Note: Skips using FINAL (double counting risk) for faster and cheaper
+ * queries against clickhouse. Generous 4x overcompensation before blocking allows
+ * for usage aggregation to be meaningful.
+ */
+export const getObservationCountsByProjectAndDay = async ({
+  startDate,
+  endDate,
+}: {
+  startDate: Date;
+  endDate: Date;
+}) => {
+  const query = `
+    SELECT
+      count(*) as count,
+      project_id,
+      toDate(start_time) as date
+    FROM observations
+    WHERE start_time >= {startDate: DateTime64(3)}
+    AND start_time < {endDate: DateTime64(3)}
+    GROUP BY project_id, toDate(start_time)
+  `;
+
+  const rows = await queryClickhouse<{
+    count: string;
+    project_id: string;
+    date: string;
+  }>({
+    query,
+    params: {
+      startDate: convertDateToClickhouseDateTime(startDate),
+      endDate: convertDateToClickhouseDateTime(endDate),
+    },
+    tags: {
+      feature: "tracing",
+      type: "observation",
+      kind: "analytic",
+    },
+  });
+
+  return rows.map((row) => ({
+    count: Number(row.count),
+    projectId: row.project_id,
+    date: row.date,
+  }));
 };

@@ -11,7 +11,10 @@ import {
   createTracesCh,
   createOrgProjectAndApiKey,
 } from "@langfuse/shared/src/server";
-import { makeZodVerifiedAPICall } from "@/src/__tests__/test-utils";
+import {
+  makeAPICall,
+  makeZodVerifiedAPICall,
+} from "@/src/__tests__/test-utils";
 import {
   DeleteScoreResponseV1,
   GetScoreResponseV1,
@@ -242,6 +245,70 @@ describe("/api/public/scores API Endpoint", () => {
       expect(fetchedScore.body?.environment).toBe("production");
       expect(fetchedScore.body?.metadata).toEqual({
         "test-key": "test-value-updated",
+      });
+    });
+
+    it("should post score with score config and queue id if in valid range", async () => {
+      const configId = v4();
+      const traceId = v4();
+      const scoreId = v4();
+      const queueId = v4();
+
+      const { projectId: projectId, auth } = await createOrgProjectAndApiKey();
+
+      const config = await prisma.scoreConfig.create({
+        data: {
+          name: "score-name",
+          id: configId,
+          dataType: "NUMERIC",
+          maxValue: 100,
+          projectId: projectId,
+        },
+      });
+
+      const trace = createTrace({
+        id: traceId,
+        project_id: projectId,
+      });
+      await createTracesCh([trace]);
+
+      const score = createTraceScore({
+        id: scoreId,
+        project_id: projectId,
+        trace_id: traceId,
+        name: "score-name",
+        value: 100,
+        source: "API",
+        comment: "comment",
+        metadata: { "test-key": "test-value" },
+        observation_id: null,
+        environment: "production",
+        config_id: config.id,
+        queue_id: queueId,
+      });
+      await createScoresCh([score]);
+
+      const fetchedScore = await makeZodVerifiedAPICall(
+        GetScoreResponseV1,
+        "GET",
+        `/api/public/scores/${scoreId}`,
+        undefined,
+        auth,
+      );
+
+      expect(fetchedScore.body?.id).toBe(scoreId);
+      expect(fetchedScore.body?.traceId).toBe(traceId);
+      expect(fetchedScore.body?.name).toBe("score-name");
+      expect(fetchedScore.body?.value).toBe(100);
+      expect(fetchedScore.body?.configId).toBe(configId);
+      expect(fetchedScore.body?.observationId).toBeNull();
+      expect(fetchedScore.body?.comment).toBe("comment");
+      expect(fetchedScore.body?.source).toBe("API");
+      expect(fetchedScore.body?.projectId).toBe(projectId);
+      expect(fetchedScore.body?.environment).toBe("production");
+      expect(fetchedScore.body?.queueId).toBe(queueId);
+      expect(fetchedScore.body?.metadata).toEqual({
+        "test-key": "test-value",
       });
     });
   });
@@ -580,10 +647,9 @@ describe("/api/public/scores API Endpoint", () => {
           totalPages: 1,
         });
         for (const val of getAllScore.body.data) {
-          expect(val).toMatchObject({
-            traceId: traceId,
-            trace: { tags: ["prod", "test"], userId: "user-name" },
-          });
+          expect(val.traceId).toBe(traceId);
+          expect(val.trace?.tags?.sort()).toEqual(["prod", "test"].sort());
+          expect(val.trace?.userId).toBe("user-name");
         }
       });
 
@@ -970,6 +1036,21 @@ describe("/api/public/scores API Endpoint", () => {
             }),
           ]),
         );
+      });
+
+      it("should reject session ID filtering", async () => {
+        try {
+          await makeAPICall(
+            "GET",
+            `/api/public/scores?sessionId=${sessionId}`,
+            undefined,
+            authentication,
+          );
+        } catch (error) {
+          expect((error as Error).message).toContain(
+            "API call did not return 200, returned status 400",
+          );
+        }
       });
     });
   });

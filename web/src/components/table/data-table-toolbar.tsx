@@ -23,10 +23,10 @@ import {
 } from "@/src/components/table/data-table-row-height-switch";
 import { Search, ChevronDown } from "lucide-react";
 import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePostHogClientCapture";
-import { TableDateRangeDropdown } from "@/src/components/date-range-dropdowns";
+import { TimeRangePicker } from "@/src/components/date-picker";
 import {
-  type TableDateRange,
-  type TableDateRangeOptions,
+  type TimeRange,
+  TABLE_AGGREGATION_OPTIONS,
 } from "@/src/utils/date-range-utils";
 import { DataTableSelectAllBanner } from "@/src/components/table/data-table-multi-select-actions/data-table-select-all-banner";
 import { MultiSelect } from "@/src/features/filters/components/multi-select";
@@ -58,6 +58,11 @@ interface SearchConfig {
   tableAllowsFullTextSearch?: boolean;
   setSearchType: ((newSearchType: TracingSearchType[]) => void) | undefined;
   searchType: TracingSearchType[] | undefined;
+  customDropdownLabels?: {
+    metadata: string;
+    fullText: string;
+  };
+  hidePerformanceWarning?: boolean;
 }
 
 interface TableViewControllers {
@@ -88,11 +93,8 @@ interface DataTableToolbarProps<TData, TValue> {
   rowHeight?: RowHeight;
   setRowHeight?: Dispatch<SetStateAction<RowHeight>>;
   columnsWithCustomSelect?: string[];
-  selectedOption?: TableDateRangeOptions;
-  setDateRangeAndOption?: (
-    option: TableDateRangeOptions,
-    date?: TableDateRange,
-  ) => void;
+  timeRange?: TimeRange;
+  setTimeRange?: (timeRange: TimeRange) => void;
   multiSelect?: MultiSelect;
   environmentFilter?: {
     values: string[];
@@ -101,6 +103,7 @@ interface DataTableToolbarProps<TData, TValue> {
   };
   orderByState?: OrderByState;
   viewConfig?: TableViewConfig;
+  filterWithAI?: boolean;
   className?: string;
 }
 
@@ -118,13 +121,14 @@ export function DataTableToolbar<TData, TValue>({
   rowHeight,
   setRowHeight,
   columnsWithCustomSelect,
-  selectedOption,
-  setDateRangeAndOption,
+  timeRange,
+  setTimeRange,
   multiSelect,
   environmentFilter,
   className,
   orderByState,
   viewConfig,
+  filterWithAI = false,
 }: DataTableToolbarProps<TData, TValue>) {
   const [searchString, setSearchString] = useState(
     searchConfig?.currentQuery ?? "",
@@ -185,8 +189,10 @@ export function DataTableToolbar<TData, TValue>({
                     <span className="flex items-center gap-1 truncate">
                       {searchConfig.tableAllowsFullTextSearch &&
                       (searchConfig.searchType ?? []).includes("content")
-                        ? "Full Text"
-                        : "IDs / Names"}
+                        ? (searchConfig.customDropdownLabels?.fullText ??
+                          "Full Text")
+                        : (searchConfig.customDropdownLabels?.metadata ??
+                          "IDs / Names")}
                       <DocPopup
                         description={
                           searchConfig.tableAllowsFullTextSearch &&
@@ -196,8 +202,8 @@ export function DataTableToolbar<TData, TValue>({
                             <p className="text-xs font-normal text-primary">
                               Searches in Input/Output and{" "}
                               {searchConfig.metadataSearchFields.join(", ")}.
-                              For improved performance, please filter the table
-                              down.
+                              {!searchConfig.hidePerformanceWarning &&
+                                " For improved performance, please filter the table down."}
                             </p>
                           ) : (
                             <p className="text-xs font-normal text-primary">
@@ -234,13 +240,15 @@ export function DataTableToolbar<TData, TValue>({
                     }}
                   >
                     <DropdownMenuRadioItem value="metadata">
-                      IDs / Names
+                      {searchConfig.customDropdownLabels?.metadata ??
+                        "IDs / Names"}
                     </DropdownMenuRadioItem>
                     <DropdownMenuRadioItem
                       value="metadata_fulltext"
                       disabled={!searchConfig.tableAllowsFullTextSearch}
                     >
-                      Full Text
+                      {searchConfig.customDropdownLabels?.fullText ??
+                        "Full Text"}
                     </DropdownMenuRadioItem>
                   </DropdownMenuRadioGroup>
                 </DropdownMenuContent>
@@ -248,10 +256,12 @@ export function DataTableToolbar<TData, TValue>({
             )}
           </div>
         )}
-        {selectedOption && setDateRangeAndOption && (
-          <TableDateRangeDropdown
-            selectedOption={selectedOption}
-            setDateRangeAndOption={setDateRangeAndOption}
+        {timeRange && setTimeRange && (
+          <TimeRangePicker
+            timeRange={timeRange}
+            onTimeRangeChange={setTimeRange}
+            timeRangePresets={TABLE_AGGREGATION_OPTIONS}
+            className="my-0 max-w-full overflow-x-auto"
           />
         )}
         {environmentFilter && (
@@ -270,6 +280,7 @@ export function DataTableToolbar<TData, TValue>({
             filterState={filterState}
             onChange={setFilterState}
             columnsWithCustomSelect={columnsWithCustomSelect}
+            filterWithAI={filterWithAI}
           />
         )}
 
