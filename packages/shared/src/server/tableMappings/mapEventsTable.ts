@@ -202,13 +202,13 @@ export const eventsTableUiColumnDefinitions: UiColumnMappings = [
   },
   {
     uiTableName: "Scores (numeric)",
-    uiTableId: "scores",
+    uiTableId: "scores_avg",
     clickhouseTableName: "scores",
     clickhouseSelect: "s.scores_avg",
   },
   {
     uiTableName: "Scores (categorical)",
-    uiTableId: "scores",
+    uiTableId: "score_categories",
     clickhouseTableName: "scores",
     clickhouseSelect: "s.score_categories",
   },
@@ -222,12 +222,12 @@ export const eventsTableUiColumnDefinitions: UiColumnMappings = [
     uiTableName: "Prompt Name",
     uiTableId: "promptName",
     clickhouseTableName: "events",
-    clickhouseSelect: "o.prompt_name",
+    clickhouseSelect: "e.prompt_name",
   },
   {
     uiTableName: "Prompt Version",
     uiTableId: "promptVersion",
     clickhouseTableName: "events",
-    clickhouseSelect: "o.prompt_version",
+    clickhouseSelect: "e.prompt_version",
   },
 ];
