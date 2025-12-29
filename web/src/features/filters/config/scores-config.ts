@@ -13,11 +13,16 @@ export const scoreFilterConfig: FilterConfig = {
 
   columnDefinitions: scoresTableCols,
 
-  defaultExpanded: ["name"],
+  defaultExpanded: ["environment", "name"],
 
   defaultSidebarCollapsed: true,
 
   facets: [
+    {
+      type: "categorical" as const,
+      column: "environment",
+      label: "Environment",
+    },
     {
       type: "categorical" as const,
       column: "name",
@@ -37,13 +42,24 @@ export const scoreFilterConfig: FilterConfig = {
       type: "numeric" as const,
       column: "value",
       label: "Value",
-      min: -100,
-      max: 100,
+      min: 0,
+      max: 1,
+      step: 0.01,
+    },
+    {
+      type: "categorical" as const,
+      column: "stringValue",
+      label: "String Value",
     },
     {
       type: "string" as const,
       column: "traceId",
       label: "Trace ID",
+    },
+    {
+      type: "string" as const,
+      column: "sessionId",
+      label: "Session ID",
     },
     {
       type: "categorical" as const,

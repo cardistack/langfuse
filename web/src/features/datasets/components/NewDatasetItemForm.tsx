@@ -45,7 +45,7 @@ const formSchema = z.object({
       try {
         JSON.parse(value);
         return true;
-      } catch (error) {
+      } catch (_error) {
         return false;
       }
     },
@@ -60,7 +60,7 @@ const formSchema = z.object({
       try {
         JSON.parse(value);
         return true;
-      } catch (error) {
+      } catch (_error) {
         return false;
       }
     },
@@ -75,7 +75,7 @@ const formSchema = z.object({
       try {
         JSON.parse(value);
         return true;
-      } catch (error) {
+      } catch (_error) {
         return false;
       }
     },
@@ -214,7 +214,15 @@ export const NewDatasetItemForm = (props: {
   const createManyDatasetItemsMutation =
     api.datasets.createManyDatasetItems.useMutation({
       onSuccess: () => utils.datasets.invalidate(),
-      onError: (error) => setFormError(error.message),
+      onError: (error) => {
+        if (error.message.includes("Body exc")) {
+          setFormError(
+            "Data exceeds maximum size (4.5MB). Please attempt to create dataset item programmatically.",
+          );
+        } else {
+          setFormError(error.message);
+        }
+      },
     });
 
   function onSubmit(values: z.infer<typeof formSchema>) {
@@ -291,7 +299,10 @@ export const NewDatasetItemForm = (props: {
                     </PopoverTrigger>
                     <PopoverContent className="p-0">
                       <InputCommand>
-                        <InputCommandInput placeholder="Search datasets..." />
+                        <InputCommandInput
+                          placeholder="Search datasets..."
+                          variant="bottom"
+                        />
                         <InputCommandEmpty>
                           No datasets found.
                         </InputCommandEmpty>

@@ -21,6 +21,8 @@ const EVENTS_FIELDS = {
   version: "e.version as version",
   bookmarked: "e.bookmarked as bookmarked",
   public: "e.public as public",
+  userId: 'e.user_id as "user_id"',
+  sessionId: 'e.session_id as "session_id"',
 
   // Time fields
   startTime: 'e.start_time as "start_time"',
@@ -47,6 +49,11 @@ const EVENTS_FIELDS = {
   promptName: 'e.prompt_name as "prompt_name"',
   promptVersion: 'e.prompt_version as "prompt_version"',
 
+  // Tool fields
+  toolDefinitions: 'e.tool_definitions as "tool_definitions"',
+  toolCalls: 'e.tool_calls as "tool_calls"',
+  toolCallNames: 'e.tool_call_names as "tool_call_names"',
+
   // I/O & metadata fields
   input: "e.input",
   output: "e.output",
@@ -54,9 +61,9 @@ const EVENTS_FIELDS = {
 
   // Calculated fields
   latency:
-    "if(isNull(end_time), NULL, date_diff('millisecond', start_time, end_time)) as latency",
+    "if(isNull(e.end_time), NULL, date_diff('millisecond', e.start_time, e.end_time)) as latency",
   timeToFirstToken:
-    "if(isNull(completion_start_time), NULL, date_diff('millisecond', start_time, completion_start_time)) as \"time_to_first_token\"",
+    "if(isNull(e.completion_start_time), NULL, date_diff('millisecond', e.start_time, e.completion_start_time)) as \"time_to_first_token\"",
 } as const;
 
 /**
@@ -95,10 +102,16 @@ const FIELD_SETS = {
     "promptName",
     "promptVersion",
     "internalModelId",
+    "userId",
+    "sessionId",
+    "toolDefinitions",
+    "toolCalls",
+    "toolCallNames",
   ],
   calculated: ["latency", "timeToFirstToken"],
   io: ["input", "output"],
   metadata: ["metadata"],
+  tools: ["toolDefinitions", "toolCalls", "toolCallNames"],
   eventTs: ["eventTs"],
 
   // getById field sets (reuse the same fields - all queries use `FROM events e`)
@@ -116,6 +129,9 @@ const FIELD_SETS = {
     "level",
     "statusMessage",
     "version",
+    "toolDefinitions",
+    "toolCalls",
+    "toolCallNames",
   ],
   byIdModel: [
     "providedModelName",
@@ -130,7 +146,36 @@ const FIELD_SETS = {
   ],
   byIdPrompt: ["promptId", "promptName", "promptVersion"],
   byIdTimestamps: ["createdAt", "updatedAt", "eventTs"],
+
+  // Public API v2 field sets (field groups for selective fetching)
+  core: [
+    "id",
+    "traceId",
+    "startTime",
+    "endTime",
+    "projectId",
+    "parentObservationId",
+    "type",
+  ],
+  basic: [
+    "name",
+    "level",
+    "statusMessage",
+    "version",
+    "environment",
+    "bookmarked",
+    "public",
+    "userId",
+    "sessionId",
+  ],
+  time: ["completionStartTime", "createdAt", "updatedAt"],
+  model: ["providedModelName", "internalModelId", "modelParameters"],
+  usage: ["usageDetails", "costDetails", "totalCost"],
+  prompt: ["promptId", "promptName", "promptVersion"],
+  metrics: ["latency", "timeToFirstToken"],
 } as const;
+
+export type FieldSetName = keyof typeof FIELD_SETS;
 
 /**
  * Aggregation fields for trace-level queries
@@ -142,7 +187,7 @@ const EVENTS_AGGREGATION_FIELDS = {
   projectId: "project_id",
 
   // Aggregated fields
-  name: "argMaxIf(name, event_ts, parent_span_id = '') AS name",
+  name: "argMaxIf(trace_name, event_ts, trace_name <> '') AS name",
   timestamp: "min(start_time) as timestamp",
   environment:
     "argMaxIf(environment, event_ts, environment <> '') AS environment",
@@ -168,9 +213,19 @@ const EVENTS_AGGREGATION_FIELDS = {
   bookmarked:
     "argMaxIf(bookmarked, event_ts, parent_span_id = '') AS bookmarked",
   public: "max(public) AS public",
-  // Legacy fields for backward compatibility
-  tags: "array() AS tags",
-  release: "'' AS release",
+
+  // Observation-level aggregations for filtering support
+  usage_details: "sumMap(usage_details) as usage_details",
+  cost_details: "sumMap(cost_details) as cost_details",
+  aggregated_level:
+    "multiIf(arrayExists(x -> x = 'ERROR', groupArray(level)), 'ERROR', arrayExists(x -> x = 'WARNING', groupArray(level)), 'WARNING', arrayExists(x -> x = 'DEFAULT', groupArray(level)), 'DEFAULT', 'DEBUG') AS aggregated_level",
+  warning_count: "countIf(level = 'WARNING') as warning_count",
+  error_count: "countIf(level = 'ERROR') as error_count",
+  default_count: "countIf(level = 'DEFAULT') as default_count",
+  debug_count: "countIf(level = 'DEBUG') as debug_count",
+
+  tags: "argMaxIf(tags, event_ts, notEmpty(tags)) AS tags",
+  release: "argMaxIf(release, event_ts, release <> '') AS release",
 } as const;
 
 /**
@@ -245,10 +300,13 @@ abstract class AbstractQueryBuilder {
    * Add LIMIT and OFFSET
    */
   limit(limit?: number, offset?: number): this {
-    if (limit !== undefined && offset !== undefined) {
+    if (limit !== undefined && offset !== undefined && offset > 0) {
       this.limitClause = "LIMIT {limit: Int32} OFFSET {offset: Int32}";
       this.params.limit = limit;
       this.params.offset = offset;
+    } else if (limit !== undefined) {
+      this.limitClause = "LIMIT {limit: Int32}";
+      this.params.limit = limit;
     } else {
       this.limitClause = "";
     }
@@ -465,7 +523,7 @@ export class EventsQueryBuilder extends BaseEventsQueryBuilder<
   /**
    * Add SELECT fields from predefined field sets
    */
-  selectFieldSet(...setNames: Array<keyof typeof FIELD_SETS>): this {
+  selectFieldSet(...setNames: Array<FieldSetName>): this {
     setNames
       .flatMap((s) => {
         return FIELD_SETS[s];

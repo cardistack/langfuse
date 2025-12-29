@@ -1,14 +1,15 @@
-import type { ChatMlMessageSchema } from "@/src/components/schemas/ChatMlSchema";
-import {
-  isOpenAITextContentPart,
-  isOpenAIImageContentPart,
-} from "@/src/components/schemas/ChatMlSchema";
+import { type z } from "zod/v4";
+import { type ChatMlMessageSchema } from "@langfuse/shared";
 import {
   ChatMessageRole,
   ChatMessageType,
+  isOpenAITextContentPart,
+  isOpenAIImageContentPart,
   type ChatMessage,
   type PlaceholderMessage,
 } from "@langfuse/shared";
+
+type ChatMlMessage = z.infer<typeof ChatMlMessageSchema>;
 
 // convert content to string format expected by playground
 function contentToString(content: unknown): string {
@@ -49,7 +50,7 @@ function contentToString(content: unknown): string {
 }
 
 export function convertChatMlToPlayground(
-  msg: ChatMlMessageSchema,
+  msg: ChatMlMessage,
 ): ChatMessage | PlaceholderMessage | null {
   // Handle placeholder messages
   if (msg.type === "placeholder") {
@@ -114,9 +115,17 @@ export function convertChatMlToPlayground(
   const toolCallId =
     msg.tool_call_id || jsonData?.tool_call_id || jsonData?.toolCallId;
   if (toolCallId) {
+    // If content is undefined but we have rich data in json.json (spread tool result),
+    // use that for playground display
+    // this happens if for complex tool calls isRichToolResult applies
+    const toolContent =
+      msg.content !== undefined && msg.content !== null
+        ? msg.content
+        : jsonData;
+
     return {
       role: ChatMessageRole.Tool,
-      content: contentToString(msg.content),
+      content: contentToString(toolContent),
       type: ChatMessageType.ToolResult,
       toolCallId: toolCallId as string,
     };

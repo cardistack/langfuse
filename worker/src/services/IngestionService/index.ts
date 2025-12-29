@@ -1,9 +1,9 @@
 import { Cluster, Redis } from "ioredis";
 import { v4 } from "uuid";
+import { Decimal } from "decimal.js";
 import {
   Model,
   ObservationLevel,
-  Price,
   PrismaClient,
   Prompt,
 } from "@langfuse/shared";
@@ -38,12 +38,17 @@ import {
   TraceUpsertQueue,
   UsageCostType,
   findModel,
+  matchPricingTier,
   validateAndInflateScore,
   DatasetRunItemRecordInsertType,
   EventRecordInsertType,
   hasNoJobConfigsCache,
   traceException,
   flattenJsonToPathArrays,
+  getDatasetItemById,
+  extractToolsFromObservation,
+  convertDefinitionsToMap,
+  convertCallsToArrays,
 } from "@langfuse/shared/src/server";
 
 import { tokenCountAsync } from "../../features/tokenisation/async-usage";
@@ -116,6 +121,11 @@ export type EventInput = {
   providedCostDetails?: Record<string, number>;
   costDetails?: Record<string, number>;
 
+  // Tool Calls
+  toolDefinitions?: Record<string, string>;
+  toolCalls?: string[];
+  toolCallNames?: string[];
+
   // I/O
   input?: string;
   output?: string;
@@ -147,6 +157,7 @@ export type EventInput = {
   experimentDescription?: string;
   experimentDatasetId?: string;
   experimentItemId?: string;
+  experimentItemVersion?: string;
   experimentItemRootSpanId?: string;
   experimentItemExpectedOutput?: string;
   experimentItemMetadataNames?: string[];
@@ -383,6 +394,14 @@ export class IngestionService {
       cost_details:
         generationUsage?.cost_details ?? eventData.costDetails ?? {},
 
+      usage_pricing_tier_id: generationUsage?.usage_pricing_tier_id,
+      usage_pricing_tier_name: generationUsage?.usage_pricing_tier_name,
+
+      // Tool Calls
+      tool_definitions: eventData.toolDefinitions ?? {},
+      tool_calls: eventData.toolCalls ?? [],
+      tool_call_names: eventData.toolCallNames ?? [],
+
       // I/O
       input: eventData.input,
       output: eventData.output,
@@ -414,6 +433,7 @@ export class IngestionService {
       experiment_description: eventData.experimentDescription,
       experiment_dataset_id: eventData.experimentDatasetId,
       experiment_item_id: eventData.experimentItemId,
+      experiment_item_version: eventData.experimentItemVersion,
       experiment_item_root_span_id: eventData.experimentItemRootSpanId,
       experiment_item_expected_output: eventData.experimentItemExpectedOutput,
       experiment_item_metadata_names:
@@ -461,18 +481,11 @@ export class IngestionService {
                   createdAt: true,
                 },
               }),
-              this.prisma.datasetItem.findFirst({
-                where: {
-                  datasetId: event.body.datasetId,
-                  projectId,
-                  id: event.body.datasetItemId,
-                  status: "ACTIVE",
-                },
-                select: {
-                  input: true,
-                  expectedOutput: true,
-                  metadata: true,
-                },
+              await getDatasetItemById({
+                projectId,
+                datasetItemId: event.body.datasetItemId,
+                datasetId: event.body.datasetId,
+                status: "ACTIVE",
               }),
             ]);
 
@@ -481,6 +494,10 @@ export class IngestionService {
             const timestamp = event.body.createdAt
               ? new Date(event.body.createdAt).getTime()
               : new Date().getTime();
+
+            const datasetItemVersion = itemData.validFrom
+              ? itemData.validFrom.getTime()
+              : null;
 
             return [
               {
@@ -504,6 +521,7 @@ export class IngestionService {
                   : {},
                 dataset_run_created_at: runData.createdAt.getTime(),
                 // enriched with item data
+                dataset_item_version: datasetItemVersion,
                 dataset_item_input: JSON.stringify(itemData.input),
                 dataset_item_expected_output: JSON.stringify(
                   itemData.expectedOutput,
@@ -586,6 +604,7 @@ export class IngestionService {
                 ? convertJsonSchemaToRecord(scoreEvent.body.metadata)
                 : {},
               string_value: validatedScore.stringValue,
+              long_string_value: validatedScore.longStringValue,
               execution_trace_id: validatedScore.executionTraceId,
               queue_id: validatedScore.queueId ?? null,
               created_at: Date.now(),
@@ -850,6 +869,35 @@ export class IngestionService {
         clickhouseObservationRecord?.output,
     );
 
+    // Extract tool definitions and calls from raw input/output
+    try {
+      const rawInput = reversedRawRecords.find((record) => record?.body?.input)
+        ?.body?.input;
+      const rawOutput = reversedRawRecords.find(
+        (record) => record?.body?.output,
+      )?.body?.output;
+
+      const { toolDefinitions, toolArguments } = extractToolsFromObservation(
+        rawInput,
+        rawOutput,
+      );
+
+      if (toolDefinitions.length > 0) {
+        mergedObservationRecord.tool_definitions =
+          convertDefinitionsToMap(toolDefinitions);
+      }
+
+      if (toolArguments.length > 0) {
+        const { tool_calls, tool_call_names } =
+          convertCallsToArrays(toolArguments);
+        mergedObservationRecord.tool_calls = tool_calls;
+        mergedObservationRecord.tool_call_names = tool_call_names;
+      }
+    } catch (error) {
+      logger.error("Tool extraction failed", { error, projectId, entityId });
+      // Don't fail ingestion - just skip tool data
+    }
+
     const generationUsage = await this.getGenerationUsage({
       projectId,
       observationRecord: mergedObservationRecord,
@@ -1080,22 +1128,52 @@ export class IngestionService {
   }): Promise<
     Pick<
       ObservationRecordInsertType,
-      "usage_details" | "cost_details" | "total_cost" | "internal_model_id"
+      | "usage_details"
+      | "cost_details"
+      | "total_cost"
+      | "internal_model_id"
+      | "usage_pricing_tier_id"
+      | "usage_pricing_tier_name"
     >
   > {
     const { projectId, observationRecord } = params;
-    const { model: internalModel, prices: modelPrices } =
+    const { model: internalModel, pricingTiers } =
       observationRecord.provided_model_name
         ? await findModel({
             projectId,
             model: observationRecord.provided_model_name,
           })
-        : { model: null, prices: [] };
+        : { model: null, pricingTiers: [] };
 
     const final_usage_details = await this.getUsageUnits(
       observationRecord,
       internalModel,
     );
+
+    // Match pricing tier based on usage_details
+    let modelPrices: Array<{ usageType: string; price: Decimal }> = [];
+    let usage_pricing_tier_id: string | null = null;
+    let usage_pricing_tier_name: string | null = null;
+
+    if (pricingTiers.length > 0 && final_usage_details.usage_details) {
+      const matchedTier = matchPricingTier(
+        pricingTiers,
+        final_usage_details.usage_details,
+      );
+
+      if (matchedTier) {
+        usage_pricing_tier_id = matchedTier.pricingTierId;
+        usage_pricing_tier_name = matchedTier.pricingTierName;
+
+        // Convert matched tier prices to simple format for calculateUsageCosts
+        modelPrices = Object.entries(matchedTier.prices).map(
+          ([usageType, price]) => ({
+            usageType,
+            price,
+          }),
+        );
+      }
+    }
 
     const final_cost_details = IngestionService.calculateUsageCosts(
       modelPrices,
@@ -1108,6 +1186,7 @@ export class IngestionService {
       {
         cost: final_cost_details.cost_details,
         usage: final_usage_details.usage_details,
+        pricingTier: usage_pricing_tier_name,
       },
     );
 
@@ -1115,6 +1194,8 @@ export class IngestionService {
       ...final_usage_details,
       ...final_cost_details,
       internal_model_id: internalModel?.id,
+      usage_pricing_tier_id,
+      usage_pricing_tier_name,
     };
   }
 
@@ -1249,7 +1330,10 @@ export class IngestionService {
   }
 
   static calculateUsageCosts(
-    modelPrices: Price[] | null | undefined,
+    modelPrices:
+      | Array<{ usageType: string; price: Decimal }>
+      | null
+      | undefined,
     observationRecord: Pick<
       ObservationRecordInsertType,
       "provided_cost_details"

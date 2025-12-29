@@ -3,6 +3,7 @@ import { traceRouter } from "./routers/traces";
 import { generationsRouter } from "./routers/generations";
 import { eventsRouter } from "@/src/features/events/server/eventsRouter";
 import { scoresRouter } from "./routers/scores";
+import { scoreAnalyticsRouter } from "@/src/features/score-analytics/server/scoreAnalyticsRouter";
 import { dashboardRouter } from "@/src/features/dashboard/server/dashboard-router";
 import { projectsRouter } from "@/src/features/projects/server/projectsRouter";
 import { projectApiKeysRouter } from "@/src/features/public-api/server/projectApiKeyRouter";
@@ -40,6 +41,7 @@ import { mediaRouter } from "@/src/server/api/routers/media";
 import { backgroundMigrationsRouter } from "@/src/features/background-migrations/server/background-migrations-router";
 import { auditLogsRouter } from "./routers/auditLogs";
 import { tableRouter } from "@/src/features/table/server/tableRouter";
+import { batchActionRouter } from "@/src/features/batch-actions/server/batchActionRouter";
 import { cloudStatusRouter } from "@/src/features/cloud-status-notification/server/cloud-status-router";
 import { dashboardWidgetRouter } from "./routers/dashboardWidgets";
 import { TableViewPresetsRouter } from "@/src/server/api/routers/tableViewPresets";
@@ -67,6 +69,7 @@ export const appRouter = createTRPCRouter({
   generations: generationsRouter,
   events: eventsRouter,
   scores: scoresRouter,
+  scoreAnalytics: scoreAnalyticsRouter,
   scoreConfigs: scoreConfigsRouter,
   dashboard: dashboardRouter,
   organizations: organizationsRouter,
@@ -101,6 +104,7 @@ export const appRouter = createTRPCRouter({
   backgroundMigrations: backgroundMigrationsRouter,
   auditLogs: auditLogsRouter,
   table: tableRouter,
+  batchAction: batchActionRouter,
   cloudStatus: cloudStatusRouter,
   dashboardWidgets: dashboardWidgetRouter,
   TableViewPresets: TableViewPresetsRouter,
