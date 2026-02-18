@@ -1,13 +1,12 @@
 import { api } from "@/src/utils/api";
 import { useMemo } from "react";
-import {
-  type FilterState,
-  AnnotationQueueObjectType,
-  type EventsObservation,
-} from "@langfuse/shared";
+import { type FilterState, AnnotationQueueObjectType } from "@langfuse/shared";
+import { type FullEventsObservations } from "@langfuse/shared/src/server";
 import { showSuccessToast } from "@/src/features/notifications/showSuccessToast";
 import { joinTableCoreAndMetrics } from "@/src/components/table/utils/joinTableCoreAndMetrics";
 import { type EventBatchIOOutput } from "@/src/features/events/server/eventsRouter";
+
+type FullEventsObservation = FullEventsObservations[number];
 
 type UseEventsTableDataParams = {
   projectId: string;
@@ -67,7 +66,6 @@ export function useEventsTableData({
     ],
   );
 
-  // Fetch observations
   const observations = api.events.all.useQuery(getAllPayload, {
     refetchOnWindowFocus: true,
   });
@@ -111,7 +109,7 @@ export function useEventsTableData({
   // Include ioDataQuery.isSuccess to ensure re-render when I/O loads
   const joinedData = useMemo(
     () =>
-      joinTableCoreAndMetrics<EventsObservation, EventBatchIOOutput>(
+      joinTableCoreAndMetrics<FullEventsObservation, EventBatchIOOutput>(
         observations.data?.observations,
         ioDataQuery.data,
       ),

@@ -141,23 +141,42 @@ export function DataTableControls({
     >
       <div className="sticky top-0 z-20 mb-1 flex h-10 shrink-0 items-center justify-between border-b bg-background px-3">
         <span className="text-sm font-medium">Filters</span>
-        {filterWithAI && isLangfuseCloud && (
-          <Popover open={aiPopoverOpen} onOpenChange={setAiPopoverOpen}>
+        <div className="flex items-center gap-1">
+          {queryFilter.isFiltered && (
             <Tooltip>
               <TooltipTrigger asChild>
-                <PopoverTrigger asChild>
-                  <Button variant="ghost" size="icon" className="h-8 w-8">
-                    <WandSparkles className="h-4 w-4" />
-                  </Button>
-                </PopoverTrigger>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => queryFilter.clearAll()}
+                  className="h-7 px-2 text-xs"
+                >
+                  Clear all
+                </Button>
               </TooltipTrigger>
-              <TooltipContent>Filter with AI</TooltipContent>
+              <TooltipContent>Clear all filters</TooltipContent>
             </Tooltip>
-            <PopoverContent align="center" className="w-[400px]">
-              <DataTableAIFilters onFiltersGenerated={handleFiltersGenerated} />
-            </PopoverContent>
-          </Popover>
-        )}
+          )}
+          {filterWithAI && isLangfuseCloud && (
+            <Popover open={aiPopoverOpen} onOpenChange={setAiPopoverOpen}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <PopoverTrigger asChild>
+                    <Button variant="ghost" size="icon" className="h-8 w-8">
+                      <WandSparkles className="h-4 w-4" />
+                    </Button>
+                  </PopoverTrigger>
+                </TooltipTrigger>
+                <TooltipContent>Filter with AI</TooltipContent>
+              </Tooltip>
+              <PopoverContent align="center" className="w-[400px]">
+                <DataTableAIFilters
+                  onFiltersGenerated={handleFiltersGenerated}
+                />
+              </PopoverContent>
+            </Popover>
+          )}
+        </div>
       </div>
       <div className="pb-10">
         <Accordion
@@ -589,8 +608,40 @@ export function CategoricalFacet({
                 ))}
               </>
             ) : options.length === 0 ? (
-              <div className="py-1 text-center text-xs text-muted-foreground">
-                No options found
+              <div className="py-1 text-xs text-muted-foreground">
+                {filterKey === "sessionId" ? (
+                  <span>
+                    Sessions group traces together, which is useful for tracing
+                    multi-step workflows.{" "}
+                    <a
+                      href="https://langfuse.com/docs/observability/features/sessions"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="underline hover:text-foreground"
+                    >
+                      See docs
+                    </a>{" "}
+                    to learn how to add sessions to your traces.
+                  </span>
+                ) : filterKey === "name" ? (
+                  <span>No trace names found in the given time range.</span>
+                ) : filterKey === "tags" ? (
+                  <span>
+                    Tags let you filter traces according to custom categories
+                    (e.g. feature flags).{" "}
+                    <a
+                      href="https://langfuse.com/docs/observability/features/tags"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="underline hover:text-foreground"
+                    >
+                      See docs
+                    </a>{" "}
+                    to learn how to add tags to your traces.
+                  </span>
+                ) : (
+                  "No options found"
+                )}
               </div>
             ) : (
               <>
@@ -649,6 +700,23 @@ export function CategoricalFacet({
                     )}
                   </>
                 )}
+                {filterKey === "environment" &&
+                options.length === 1 &&
+                options[0]?.toLowerCase() === "default" ? (
+                  <div className="mt-2 px-2 text-xs text-muted-foreground">
+                    Environments help you separate traces from different
+                    contexts (e.g. production, staging).{" "}
+                    <a
+                      href="https://langfuse.com/docs/observability/features/environments"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="underline hover:text-foreground"
+                    >
+                      See docs
+                    </a>{" "}
+                    on how to add environments to your traces.
+                  </div>
+                ) : null}
               </>
             )}
           </div>

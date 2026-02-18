@@ -1182,13 +1182,7 @@ export const deleteScoresByTraceIds = async (
   const query = `
     DELETE FROM scores
     WHERE project_id = {projectId: String}
-    AND trace_id IN ({traceIds: Array(String)})
-    AND (project_id, timestamp, name) IN (
-      SELECT project_id, timestamp, name
-      FROM scores
-      WHERE project_id = {projectId: String}
-      AND trace_id IN ({traceIds: Array(String)})
-    );
+    AND trace_id IN ({traceIds: Array(String)});
   `;
   await commandClickhouse({
     query: query,
@@ -1208,32 +1202,75 @@ export const deleteScoresByTraceIds = async (
   });
 };
 
-export const deleteScoresByProjectId = async (projectId: string) => {
+export const deleteScoresByProjectId = async (
+  projectId: string,
+): Promise<boolean> => {
+  const hasData = await hasAnyScore(projectId);
+  if (!hasData) {
+    return false;
+  }
+
   const query = `
     DELETE FROM scores
     WHERE project_id = {projectId: String};
   `;
+  const tags = {
+    feature: "tracing",
+    type: "score",
+    kind: "delete",
+    projectId,
+  };
+
   await commandClickhouse({
-    query: query,
-    params: {
-      projectId,
-    },
+    query,
+    params: { projectId },
     clickhouseConfigs: {
       request_timeout: env.LANGFUSE_CLICKHOUSE_DELETION_TIMEOUT_MS,
+    },
+    tags,
+  });
+
+  return true;
+};
+
+export const hasAnyScoreOlderThan = async (
+  projectId: string,
+  beforeDate: Date,
+) => {
+  const query = `
+    SELECT 1
+    FROM scores
+    WHERE project_id = {projectId: String}
+    AND timestamp < {cutoffDate: DateTime64(3)}
+    LIMIT 1
+  `;
+
+  const rows = await queryClickhouse<{ 1: number }>({
+    query,
+    params: {
+      projectId,
+      cutoffDate: convertDateToClickhouseDateTime(beforeDate),
     },
     tags: {
       feature: "tracing",
       type: "score",
-      kind: "delete",
+      kind: "hasAnyOlderThan",
       projectId,
     },
   });
+
+  return rows.length > 0;
 };
 
 export const deleteScoresOlderThanDays = async (
   projectId: string,
   beforeDate: Date,
-) => {
+): Promise<boolean> => {
+  const hasData = await hasAnyScoreOlderThan(projectId, beforeDate);
+  if (!hasData) {
+    return false;
+  }
+
   const query = `
     DELETE FROM scores
     WHERE project_id = {projectId: String}
@@ -1255,6 +1292,8 @@ export const deleteScoresOlderThanDays = async (
       projectId,
     },
   });
+
+  return true;
 };
 
 export const getNumericScoreHistogram = async (
@@ -1536,6 +1575,7 @@ export const getScoresForBlobStorageExport = function (
 
 export const getScoresForAnalyticsIntegrations = async function* (
   projectId: string,
+  projectName: string,
   minTimestamp: Date,
   maxTimestamp: Date,
 ) {
@@ -1632,6 +1672,7 @@ export const getScoresForAnalyticsIntegrations = async function* (
       langfuse_id: record.id,
       langfuse_session_id: effectiveSessionId,
       langfuse_project_id: projectId,
+      langfuse_project_name: projectName,
       langfuse_user_id: record.trace_user_id || null,
       langfuse_release: record.trace_release,
       langfuse_tags: record.trace_tags,

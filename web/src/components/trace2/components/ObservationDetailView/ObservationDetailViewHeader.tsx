@@ -15,6 +15,7 @@ import {
   AnnotationQueueObjectType,
   isGenerationLike,
 } from "@langfuse/shared";
+import { type SelectionData } from "@/src/features/comments/contexts/InlineCommentSelectionContext";
 import { type ObservationReturnTypeWithMetadata } from "@/src/server/api/routers/traces";
 import { ItemBadge } from "@/src/components/ItemBadge";
 import { LocalIsoDate } from "@/src/components/LocalIsoDate";
@@ -33,6 +34,10 @@ import {
   LevelBadge,
   StatusMessageBadge,
 } from "./ObservationMetadataBadgesSimple";
+import {
+  SessionBadge,
+  UserIdBadge,
+} from "../TraceDetailView/TraceMetadataBadges";
 import { CostBadge, UsageBadge } from "./ObservationMetadataBadgesTooltip";
 import { ModelBadge } from "./ObservationMetadataBadgeModel";
 import { ModelParametersBadges } from "./ObservationMetadataBadgeModelParameters";
@@ -41,6 +46,8 @@ import {
   type MetadataDomainClient,
 } from "@/src/utils/clientSideDomainTypes";
 import { type ScoreDomain } from "@langfuse/shared";
+import { type AggregatedTraceMetrics } from "@/src/components/trace2/lib/trace-aggregation";
+import type Decimal from "decimal.js";
 
 export interface ObservationDetailViewHeaderProps {
   observation: ObservationReturnTypeWithMetadata;
@@ -57,6 +64,13 @@ export interface ObservationDetailViewHeaderProps {
   latencySeconds: number | null;
   observationScores: WithStringifiedMetadata<ScoreDomain>[];
   commentCount: number | undefined;
+  // Inline comment props
+  pendingSelection?: SelectionData | null;
+  onSelectionUsed?: () => void;
+  isCommentDrawerOpen?: boolean;
+  onCommentDrawerOpenChange?: (open: boolean) => void;
+  subtreeMetrics?: AggregatedTraceMetrics | null;
+  treeNodeTotalCost?: Decimal;
 }
 
 export const ObservationDetailViewHeader = memo(
@@ -68,6 +82,12 @@ export const ObservationDetailViewHeader = memo(
     latencySeconds,
     observationScores,
     commentCount,
+    pendingSelection,
+    onSelectionUsed,
+    isCommentDrawerOpen,
+    onCommentDrawerOpenChange,
+    subtreeMetrics,
+    treeNodeTotalCost,
   }: ObservationDetailViewHeaderProps) {
     // Format cost and usage values
     const totalCost = observation.totalCost;
@@ -144,6 +164,10 @@ export const ObservationDetailViewHeader = memo(
               objectType="OBSERVATION"
               count={commentCount}
               size="sm"
+              pendingSelection={pendingSelection}
+              onSelectionUsed={onSelectionUsed}
+              isOpen={isCommentDrawerOpen}
+              onOpenChange={onCommentDrawerOpenChange}
             />
           </div>
         </div>
@@ -165,18 +189,45 @@ export const ObservationDetailViewHeader = memo(
             <TimeToFirstTokenBadge
               timeToFirstToken={observation.timeToFirstToken}
             />
+            <SessionBadge
+              sessionId={observation.sessionId ?? null}
+              projectId={projectId}
+            />
+            <UserIdBadge
+              userId={observation.userId ?? null}
+              projectId={projectId}
+            />
             <EnvironmentBadge environment={observation.environment} />
             <CostBadge
-              totalCost={totalCost}
-              costDetails={observation.costDetails}
+              totalCost={
+                subtreeMetrics
+                  ? (treeNodeTotalCost?.toNumber() ?? subtreeMetrics.totalCost)
+                  : totalCost
+              }
+              costDetails={
+                subtreeMetrics?.costDetails ?? observation.costDetails
+              }
             />
-            <UsageBadge
-              type={observation.type}
-              inputUsage={inputUsage}
-              outputUsage={outputUsage}
-              totalUsage={totalUsage}
-              usageDetails={observation.usageDetails}
-            />
+            {subtreeMetrics ? (
+              subtreeMetrics.hasGenerationLike &&
+              subtreeMetrics.usageDetails && (
+                <UsageBadge
+                  type="GENERATION"
+                  inputUsage={subtreeMetrics.inputUsage}
+                  outputUsage={subtreeMetrics.outputUsage}
+                  totalUsage={subtreeMetrics.totalUsage}
+                  usageDetails={subtreeMetrics.usageDetails}
+                />
+              )
+            ) : (
+              <UsageBadge
+                type={observation.type}
+                inputUsage={inputUsage}
+                outputUsage={outputUsage}
+                totalUsage={totalUsage}
+                usageDetails={observation.usageDetails}
+              />
+            )}
             <VersionBadge version={observation.version} />
             <ModelBadge
               model={observation.model}

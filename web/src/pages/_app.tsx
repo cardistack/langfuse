@@ -100,6 +100,7 @@ if (
     },
     autocapture: false,
     enable_heatmaps: false,
+    persistence: "cookie",
   });
 }
 
@@ -125,7 +126,10 @@ const MyApp: AppType<{ session: Session | null }> = ({
   }, []);
 
   return (
-    <QueryParamProvider adapter={NextAdapterPages}>
+    <QueryParamProvider
+      adapter={NextAdapterPages}
+      options={{ enableBatching: true }}
+    >
       <TooltipProvider>
         <CommandMenuProvider>
           <PostHogProvider client={posthog}>
@@ -150,7 +154,6 @@ const MyApp: AppType<{ session: Session | null }> = ({
                             <UserTracking />
                           </AppLayout>
                         </SupportDrawerProvider>
-                        <BetterStackUptimeStatusMessage />
                       </CorrectionCacheProvider>
                     </ScoreCacheProvider>
                   </ThemeProvider>
@@ -204,10 +207,6 @@ function UserTracking() {
       });
     } else if (session.status === "unauthenticated") {
       lastIdentifiedUser.current = null;
-      // PostHog
-      if (env.NEXT_PUBLIC_POSTHOG_KEY && env.NEXT_PUBLIC_POSTHOG_HOST) {
-        posthog.reset();
-      }
       // Sentry
       setUser(null);
     }
@@ -239,17 +238,4 @@ if (
     console.log("Signal: ", signal);
     return await shutdown(signal);
   });
-}
-
-function BetterStackUptimeStatusMessage() {
-  const { isLangfuseCloud } = useLangfuseCloudRegion();
-  if (!isLangfuseCloud) return null;
-  return (
-    <script
-      src="https://uptime.betterstack.com/widgets/announcement.js"
-      data-id="189328"
-      async={true}
-      type="text/javascript"
-    ></script>
-  );
 }

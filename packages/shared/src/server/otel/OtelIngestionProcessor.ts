@@ -18,6 +18,9 @@ import {
   instrumentSync,
   recordDistribution,
   UsageDetails,
+  extractToolsFromObservation,
+  convertDefinitionsToMap,
+  convertCallsToArrays,
 } from "../";
 
 import { LangfuseOtelSpanAttributes } from "./attributes";
@@ -35,6 +38,11 @@ interface TraceState {
 export interface OtelIngestionProcessorConfig {
   projectId: string;
   publicKey?: string;
+  orgId?: string;
+  propagatedHeaders?: Record<string, string>;
+  sdkName?: string;
+  sdkVersion?: string;
+  ingestionVersion?: string;
 }
 
 interface CreateTraceEventParams {
@@ -111,10 +119,20 @@ export class OtelIngestionProcessor {
   };
   private readonly projectId: string;
   private readonly publicKey?: string;
+  private readonly orgId?: string;
+  private readonly propagatedHeaders?: Record<string, string>;
+  private readonly sdkName?: string;
+  private readonly sdkVersion?: string;
+  private readonly ingestionVersion?: string;
 
   constructor(config: OtelIngestionProcessorConfig) {
     this.projectId = config.projectId;
     this.publicKey = config.publicKey;
+    this.orgId = config.orgId;
+    this.propagatedHeaders = config.propagatedHeaders;
+    this.sdkName = config.sdkName;
+    this.sdkVersion = config.sdkVersion;
+    this.ingestionVersion = config.ingestionVersion;
   }
 
   /**
@@ -154,8 +172,13 @@ export class OtelIngestionProcessor {
               scope: {
                 projectId: this.projectId,
                 accessLevel: "project" as const,
+                orgId: this.orgId,
               },
             },
+            propagatedHeaders: this.propagatedHeaders,
+            sdkName: this.sdkName,
+            sdkVersion: this.sdkVersion,
+            ingestionVersion: this.ingestionVersion,
           },
         })
       : Promise.reject("Failed to instantiate otel ingestion queue");
@@ -194,7 +217,12 @@ export class OtelIngestionProcessor {
               const scopeAttributes = this.extractScopeAttributes(scopeSpan);
               for (const span of scopeSpan?.spans ?? []) {
                 const spanAttributes = this.extractSpanAttributes(span);
-                const traceId = this.parseId(span.traceId);
+                // For LiteLLM spans, use langfuse.trace.id from attributes if provided
+                const isLiteLLMSpan = scopeSpan?.scope?.name === "litellm";
+                const traceId =
+                  isLiteLLMSpan && spanAttributes["langfuse.trace.id"]
+                    ? (spanAttributes["langfuse.trace.id"] as string)
+                    : this.parseId(span.traceId);
                 const spanId = this.parseId(span.spanId);
                 const parentSpanId = span?.parentSpanId
                   ? this.parseId(span.parentSpanId)
@@ -282,6 +310,24 @@ export class OtelIngestionProcessor {
                   );
                 }
 
+                let toolDefinitions = undefined;
+                let toolCalls = undefined;
+                let toolCallNames = undefined;
+
+                const { toolDefinitions: rawToolDefinitions, toolArguments } =
+                  extractToolsFromObservation(input, output);
+
+                if (rawToolDefinitions.length > 0) {
+                  toolDefinitions = convertDefinitionsToMap(rawToolDefinitions);
+                }
+
+                if (toolArguments.length > 0) {
+                  const { tool_calls, tool_call_names } =
+                    convertCallsToArrays(toolArguments);
+                  toolCalls = tool_calls;
+                  toolCallNames = tool_call_names;
+                }
+
                 events.push({
                   projectId: this.projectId,
                   traceId,
@@ -355,8 +401,17 @@ export class OtelIngestionProcessor {
                   // Properties
                   tags: this.extractTags(spanAttributes),
                   public: this.extractPublic(spanAttributes),
+                  traceName:
+                    spanAttributes?.[LangfuseOtelSpanAttributes.TRACE_NAME] ??
+                    null,
                   userId: this.extractUserId(spanAttributes),
                   sessionId: this.extractSessionId(spanAttributes),
+                  release:
+                    (spanAttributes?.[
+                      LangfuseOtelSpanAttributes.RELEASE
+                    ] as string) ??
+                    resourceAttributes?.[LangfuseOtelSpanAttributes.RELEASE] ??
+                    null,
 
                   input,
                   output,
@@ -380,6 +435,11 @@ export class OtelIngestionProcessor {
 
                   // Experiment fields
                   ...experimentFields,
+
+                  // Tool calling
+                  toolDefinitions,
+                  toolCalls,
+                  toolCallNames,
                 });
               }
             }
@@ -629,7 +689,12 @@ export class OtelIngestionProcessor {
     const events: IngestionEventType[] = [];
     const attributes = this.extractSpanAttributes(span);
 
-    const traceId = this.parseId(span.traceId?.data ?? span.traceId);
+    // For LiteLLM spans, use langfuse.trace.id from attributes if provided
+    const isLiteLLMSpan = scopeSpan?.scope?.name === "litellm";
+    const traceId =
+      isLiteLLMSpan && attributes["langfuse.trace.id"]
+        ? (attributes["langfuse.trace.id"] as string)
+        : this.parseId(span.traceId?.data ?? span.traceId);
     const parentObservationId = span?.parentSpanId
       ? this.parseId(span.parentSpanId?.data ?? span.parentSpanId)
       : null;
@@ -1382,7 +1447,7 @@ export class OtelIngestionProcessor {
       if (typeof eventsArray === "string") {
         try {
           events = JSON.parse(eventsArray);
-        } catch (e) {
+        } catch {
           events = [];
         }
       }
@@ -1593,7 +1658,7 @@ export class OtelIngestionProcessor {
             unknown
           >;
         }
-      } catch (e) {
+      } catch {
         // Continue with nested metadata extraction
       }
     }
@@ -1744,7 +1809,7 @@ export class OtelIngestionProcessor {
         return this.sanitizeModelParams(
           JSON.parse(attributes["llm.invocation_parameters"] as string),
         );
-      } catch (e) {
+      } catch {
         // fallthrough
       }
     }
@@ -1754,7 +1819,7 @@ export class OtelIngestionProcessor {
         return this.sanitizeModelParams(
           JSON.parse(attributes["model_config"] as string),
         );
-      } catch (e) {
+      } catch {
         // fallthrough
       }
     }
@@ -1879,34 +1944,38 @@ export class OtelIngestionProcessor {
             usageDetails["output_reasoning_tokens"] =
               typeof parsed === "number" ? parsed : JSON.parse(value).intValue;
           }
-        } else if (providerMetadata) {
-          // Fall back to providerMetadata
+        }
+
+        // Add additional usage details from provider metadata
+        if (providerMetadata) {
           const parsed = JSON.parse(providerMetadata as string);
 
           if ("openai" in parsed) {
             const openaiMetadata = parsed["openai"] as Record<string, number>;
 
-            usageDetails["input_cached_tokens"] =
+            usageDetails["input_cached_tokens"] ??=
               openaiMetadata["cachedPromptTokens"];
-            usageDetails["accepted_prediction_tokens"] =
+            usageDetails["accepted_prediction_tokens"] ??=
               openaiMetadata["acceptedPredictionTokens"];
-            usageDetails["rejected_prediction_tokens"] =
+            usageDetails["rejected_prediction_tokens"] ??=
               openaiMetadata["rejectedPredictionTokens"];
-            usageDetails["output_reasoning_tokens"] =
+            usageDetails["output_reasoning_tokens"] ??=
               openaiMetadata["reasoningTokens"];
           }
-          // "ai.response.providerMetadata": "{\"anthropic\":{\"cacheCreationInputTokens\":0,\"cacheReadInputTokens\":0}}"
-          if ("anthropic" in parsed) {
-            const openaiMetadata = parsed["anthropic"] as Record<
+
+          // "ai.response.providerMetadata": {"anthropic":{"usage":{"input_tokens":7,"cache_creation_input_tokens":2089,"cache_read_input_tokens":16399,"cache_creation":{"ephemeral_5m_input_tokens":2089,"ephemeral_1h_input_tokens":0},"output_tokens":445,"service_tier":"standard"},"cacheCreationInputTokens":2089,"stopSequence":null,"container":null,"contextManagement":null}}
+          if ("anthropic" in parsed && "usage" in parsed["anthropic"]) {
+            const anthropicMetadata = parsed["anthropic"]["usage"] as Record<
               string,
               number
             >;
 
-            usageDetails["input_cache_creation"] =
-              openaiMetadata["cacheCreationInputTokens"];
-            usageDetails["input_cache_read"] =
-              openaiMetadata["cacheReadInputTokens"];
+            usageDetails["input_cache_creation"] ??=
+              anthropicMetadata["cache_creation_input_tokens"];
+            usageDetails["input_cached_tokens"] ??=
+              anthropicMetadata["cache_read_input_tokens"];
           }
+
           // Bedrock provider metadata extraction
           // "ai.response.providerMetadata": "{\"bedrock\":{\"usage\":{\"cacheReadInputTokens\":4482,\"cacheWriteInputTokens\":0,\"cacheCreationInputTokens\":0}}}"
           if ("bedrock" in parsed) {
@@ -1916,15 +1985,15 @@ export class OtelIngestionProcessor {
               const usage = bedrockMetadata["usage"] as Record<string, number>;
 
               if (usage["cacheReadInputTokens"] !== undefined) {
-                usageDetails["input_cache_read"] =
+                usageDetails["input_cache_read"] ??=
                   usage["cacheReadInputTokens"];
               }
               if (usage["cacheWriteInputTokens"] !== undefined) {
-                usageDetails["input_cache_write"] =
+                usageDetails["input_cache_write"] ??=
                   usage["cacheWriteInputTokens"];
               }
               if (usage["cacheCreationInputTokens"] !== undefined) {
-                usageDetails["input_cache_creation"] =
+                usageDetails["input_cache_creation"] ??=
                   usage["cacheCreationInputTokens"];
               }
             }
@@ -2086,7 +2155,7 @@ export class OtelIngestionProcessor {
         if (Array.isArray(parsedTags)) {
           return parsedTags.map((tag) => String(tag));
         }
-      } catch (e) {
+      } catch {
         // Continue with other methods
       }
     }
@@ -2145,7 +2214,7 @@ export class OtelIngestionProcessor {
     if (experimentMetadataStr && typeof experimentMetadataStr === "string") {
       try {
         experimentMetadata = JSON.parse(experimentMetadataStr);
-      } catch (e) {
+      } catch {
         // If parsing fails, treat as empty
       }
     }
@@ -2162,7 +2231,7 @@ export class OtelIngestionProcessor {
     ) {
       try {
         experimentItemMetadata = JSON.parse(experimentItemMetadataStr);
-      } catch (e) {
+      } catch {
         // If parsing fails, treat as empty
       }
     }

@@ -136,6 +136,13 @@ export const BlobStorageExportMode = {
 } as const;
 export type BlobStorageExportMode =
   (typeof BlobStorageExportMode)[keyof typeof BlobStorageExportMode];
+export const AnalyticsIntegrationExportSource = {
+  TRACES_OBSERVATIONS: "TRACES_OBSERVATIONS",
+  TRACES_OBSERVATIONS_EVENTS: "TRACES_OBSERVATIONS_EVENTS",
+  EVENTS: "EVENTS",
+} as const;
+export type AnalyticsIntegrationExportSource =
+  (typeof AnalyticsIntegrationExportSource)[keyof typeof AnalyticsIntegrationExportSource];
 export const DashboardWidgetViews = {
   TRACES: "TRACES",
   OBSERVATIONS: "OBSERVATIONS",
@@ -146,6 +153,7 @@ export type DashboardWidgetViews =
   (typeof DashboardWidgetViews)[keyof typeof DashboardWidgetViews];
 export const DashboardWidgetChartType = {
   LINE_TIME_SERIES: "LINE_TIME_SERIES",
+  AREA_TIME_SERIES: "AREA_TIME_SERIES",
   BAR_TIME_SERIES: "BAR_TIME_SERIES",
   HORIZONTAL_BAR: "HORIZONTAL_BAR",
   VERTICAL_BAR: "VERTICAL_BAR",
@@ -359,6 +367,7 @@ export type BlobStorageIntegration = {
   file_type: Generated<BlobStorageIntegrationFileType>;
   export_mode: Generated<BlobStorageExportMode>;
   export_start_date: Timestamp | null;
+  export_source: Generated<AnalyticsIntegrationExportSource>;
   created_at: Generated<Timestamp>;
   updated_at: Generated<Timestamp>;
 };
@@ -380,6 +389,10 @@ export type Comment = {
   updated_at: Generated<Timestamp>;
   content: string;
   author_user_id: string | null;
+  data_field: string | null;
+  path: Generated<string[]>;
+  range_start: Generated<number[]>;
+  range_end: Generated<number[]>;
 };
 export type CommentReaction = {
   id: string;
@@ -448,24 +461,9 @@ export type DatasetItem = {
   dataset_id: string;
   created_at: Generated<Timestamp>;
   updated_at: Generated<Timestamp>;
-  sys_id: Generated<string | null>;
   valid_from: Generated<Timestamp>;
   valid_to: Timestamp | null;
   is_deleted: Generated<boolean>;
-};
-export type DatasetItemEvent = {
-  id: string;
-  item_id: string;
-  project_id: string;
-  dataset_id: string;
-  status: DatasetStatus | null;
-  input: unknown | null;
-  expected_output: unknown | null;
-  metadata: unknown | null;
-  source_trace_id: string | null;
-  source_observation_id: string | null;
-  created_at: Timestamp | null;
-  deleted_at: Timestamp | null;
 };
 export type DatasetRunItems = {
   id: string;
@@ -497,6 +495,15 @@ export type DefaultLlmModel = {
   adapter: string;
   model: string;
   model_params: unknown | null;
+};
+export type DefaultView = {
+  id: string;
+  created_at: Generated<Timestamp>;
+  updated_at: Generated<Timestamp>;
+  project_id: string;
+  user_id: string | null;
+  view_name: string;
+  view_id: string;
 };
 export type EvalTemplate = {
   id: string;
@@ -544,6 +551,7 @@ export type JobExecution = {
   job_input_trace_timestamp: Timestamp | null;
   job_input_observation_id: string | null;
   job_input_dataset_item_id: string | null;
+  job_input_dataset_item_valid_from: Timestamp | null;
   job_output_score_id: string | null;
   execution_trace_id: string | null;
 };
@@ -684,6 +692,7 @@ export type MixpanelIntegration = {
   last_sync_at: Timestamp | null;
   enabled: boolean;
   created_at: Generated<Timestamp>;
+  export_source: Generated<AnalyticsIntegrationExportSource>;
 };
 export type Model = {
   id: string;
@@ -757,6 +766,7 @@ export type PosthogIntegration = {
   last_sync_at: Timestamp | null;
   enabled: boolean;
   created_at: Generated<Timestamp>;
+  export_source: Generated<AnalyticsIntegrationExportSource>;
 };
 export type Price = {
   id: string;
@@ -786,6 +796,7 @@ export type Project = {
   deleted_at: Timestamp | null;
   name: string;
   retention_days: number | null;
+  has_traces: Generated<boolean>;
   metadata: unknown | null;
 };
 export type ProjectMembership = {
@@ -925,6 +936,7 @@ export type User = {
   password: string | null;
   image: string | null;
   admin: Generated<boolean>;
+  v4_beta_enabled: Generated<boolean>;
   created_at: Generated<Timestamp>;
   updated_at: Generated<Timestamp>;
   feature_flags: Generated<string[]>;
@@ -955,12 +967,12 @@ export type DB = {
   cron_jobs: CronJobs;
   dashboard_widgets: DashboardWidget;
   dashboards: Dashboard;
-  dataset_item_events: DatasetItemEvent;
   dataset_items: DatasetItem;
   dataset_run_items: DatasetRunItems;
   dataset_runs: DatasetRuns;
   datasets: Dataset;
   default_llm_models: DefaultLlmModel;
+  default_views: DefaultView;
   eval_templates: EvalTemplate;
   job_configurations: JobConfiguration;
   job_executions: JobExecution;

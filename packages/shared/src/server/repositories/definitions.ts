@@ -1,4 +1,5 @@
 import z from "zod/v4";
+import { DEFAULT_TRACE_ENVIRONMENT } from "../ingestion/types";
 
 export const clickhouseStringDateSchema = z
   .string()
@@ -113,6 +114,7 @@ export const eventsObservationRecordReadSchema =
   observationRecordReadSchema.extend({
     user_id: z.string().nullish(),
     session_id: z.string().nullish(),
+    trace_name: z.string().nullish(),
   });
 export type EventsObservationRecordReadType = z.infer<
   typeof eventsObservationRecordReadSchema
@@ -258,7 +260,7 @@ const datasetRunItemRecordBaseSchema = z.object({
   error: z.string().nullish(),
 });
 
-const datasetRunItemRecordReadSchema = datasetRunItemRecordBaseSchema.extend({
+const _datasetRunItemRecordReadSchema = datasetRunItemRecordBaseSchema.extend({
   dataset_run_created_at: clickhouseStringDateSchema,
   dataset_item_version: clickhouseStringDateSchema.nullish(),
   created_at: clickhouseStringDateSchema,
@@ -266,7 +268,7 @@ const datasetRunItemRecordReadSchema = datasetRunItemRecordBaseSchema.extend({
   event_ts: clickhouseStringDateSchema,
 });
 export type DatasetRunItemRecordReadType = z.infer<
-  typeof datasetRunItemRecordReadSchema
+  typeof _datasetRunItemRecordReadSchema
 >;
 // Conditional type for dataset run item records with optional IO
 export type DatasetRunItemRecord<WithIO extends boolean = true> =
@@ -638,7 +640,7 @@ export const eventRecordBaseSchema = z.object({
   // Core properties
   name: z.string(),
   type: z.string(),
-  environment: z.string().default("default"),
+  environment: z.string().default(DEFAULT_TRACE_ENVIRONMENT),
   version: z.string().nullish(),
   release: z.string().nullish(),
 
@@ -716,8 +718,11 @@ export const eventRecordBaseSchema = z.object({
   is_deleted: z.number(),
 });
 
+// Base type for event records - used by converters that work with both Insert and Read types
+export type EventRecordBaseType = z.infer<typeof eventRecordBaseSchema>;
+
 export const eventRecordReadSchema = eventRecordBaseSchema.extend({
-  metadata_prefixes: z.array(z.string()).default([]),
+  metadata_values: z.array(z.string()).default([]),
   metadata_hashes: z.array(z.number().int()).default([]),
   metadata_long_values: z.record(z.number().int(), z.string()).default({}),
   total_cost: z.number().nullish(),

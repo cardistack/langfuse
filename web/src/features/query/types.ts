@@ -22,6 +22,7 @@ export const viewDeclaration = z.object({
       unit: z.string().optional(),
       aggregationFunction: z.string().optional(),
       highCardinality: z.boolean().optional(),
+      explodeArray: z.boolean().optional(),
     }),
   ),
   measures: z.record(
@@ -47,6 +48,7 @@ export const viewDeclaration = z.object({
   // Segments are used to apply "constant" filters to the query. For example, if we only want one type of observations.
   segments: z.array(singleFilter),
   timeDimension: z.string(),
+  timeDimensionAggregation: z.string().optional(),
 });
 
 export const stringDateTime = z.string().datetime({ offset: true });

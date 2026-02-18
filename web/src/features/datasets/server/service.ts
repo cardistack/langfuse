@@ -20,7 +20,7 @@ import {
   getDatasetItemsCount,
 } from "@langfuse/shared/src/server";
 import Decimal from "decimal.js";
-import { groupBy } from "lodash";
+import groupBy from "lodash/groupBy";
 import { aggregateScores } from "@/src/features/scores/lib/aggregateScores";
 import { calculateRecursiveMetricsForRunItems } from "./utils";
 
@@ -186,6 +186,7 @@ export const getRunItemsByRunIdOrItemId = async <WithIO extends boolean = true>(
       id: ri.id,
       createdAt: ri.createdAt,
       datasetItemId: ri.datasetItemId,
+      datasetItemVersion: ri.datasetItemVersion ?? undefined,
       datasetRunId: ri.datasetRunId,
       datasetRunName: ri.datasetRunName,
       observation,
@@ -204,7 +205,6 @@ export const enrichAndMapToDatasetItemId = async (
 
   // Step 2: Parallel enrichment per run (with timestamp)
   const enrichmentPromises = Object.entries(runItemsByRunId).map(
-    // eslint-disable-next-line no-unused-vars
     async ([_runId, items]) => {
       const timestamp = items[0].datasetRunCreatedAt;
       const enriched = await getRunItemsByRunIdOrItemId<false>(

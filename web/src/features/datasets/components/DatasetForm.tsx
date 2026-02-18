@@ -101,7 +101,7 @@ export const jsonSchemaStringValidator = z.string().refine(
       const parsed = JSON.parse(value);
 
       return isValidJSONSchema(parsed);
-    } catch (_error) {
+    } catch {
       return false;
     }
   },
@@ -120,7 +120,7 @@ const formSchema = z.object({
         JSON.parse(value);
 
         return true;
-      } catch (_error) {
+      } catch {
         return false;
       }
     },
@@ -429,7 +429,6 @@ export const DatasetForm = forwardRef<DatasetFormRef, DatasetFormProps>(
                           onChange={(v) => {
                             field.onChange(v);
                           }}
-                          minHeight="none"
                         />
                       </FormControl>
                       <FormMessage />

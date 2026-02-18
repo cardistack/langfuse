@@ -23,6 +23,10 @@ export default withMiddlewares({
         );
       }
 
+      // Extract field groups and metadata expansion keys
+      const fieldGroups = query.fields ?? undefined;
+      const expandMetadataKeys = query.expandMetadata ?? undefined;
+
       const filterProps = {
         projectId: auth.scope.projectId,
         page: 0, // v2 doesn't use page-based pagination
@@ -38,9 +42,9 @@ export default withMiddlewares({
         toStartTime: query.toStartTime ?? undefined,
         version: query.version ?? undefined,
         advancedFilters: query.filter,
-        parseIoAsJson: query.parseIoAsJson ?? false,
         cursor: query.cursor ?? undefined,
-        fields: query.fields ?? undefined,
+        fields: fieldGroups,
+        expandMetadataKeys,
       };
 
       // Fetch observations from events table with field groups applied at query time
