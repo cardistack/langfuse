@@ -1,5 +1,5 @@
-import { type z } from "zod/v4";
-import { z as zodSchema } from "zod/v4";
+import { type z } from "zod";
+import { z as zodSchema } from "zod";
 import {
   createTRPCRouter,
   protectedProjectProcedure,
@@ -7,6 +7,7 @@ import {
 import {
   type Observation,
   type OrderByState,
+  normalizeOrderByForTable,
   paginationZod,
   timeFilter,
 } from "@langfuse/shared";
@@ -24,6 +25,7 @@ import {
   getAgentGraphDataFromEventsTable,
   getObservationsForTraceFromEventsTable,
   MAX_OBSERVATIONS_PER_TRACE,
+  applyCommentFilters,
 } from "@langfuse/shared/src/server";
 
 import {
@@ -71,19 +73,34 @@ export const eventsRouter = createTRPCRouter({
   all: protectedProjectProcedure
     .input(GetAllEventsInput)
     .query(async ({ input, ctx }) => {
+      const { filterState, hasNoMatches } = await applyCommentFilters({
+        filterState: input.filter ?? [],
+        prisma: ctx.prisma,
+        projectId: ctx.session.projectId,
+        objectType: "OBSERVATION",
+      });
+
+      if (hasNoMatches) {
+        return { observations: [] };
+      }
+
       return instrumentAsync(
         {
           name: "get-event-list-trpc",
         },
         async (span) => {
-          addAttributesToSpan({ span, input, orderBy: input.orderBy });
+          const normalizedOrderBy = normalizeOrderByForTable({
+            orderBy: input.orderBy,
+            expectedTimeColumn: "startTime",
+          });
+          addAttributesToSpan({ span, input, orderBy: normalizedOrderBy });
 
           return getEventList({
             projectId: ctx.session.projectId,
-            filter: input.filter ?? [],
+            filter: filterState,
             searchQuery: input.searchQuery ?? undefined,
             searchType: input.searchType,
-            orderBy: input.orderBy,
+            orderBy: normalizedOrderBy,
             page: input.page,
             limit: input.limit,
           });
@@ -93,18 +110,33 @@ export const eventsRouter = createTRPCRouter({
   countAll: protectedProjectProcedure
     .input(GetAllEventsInput)
     .query(async ({ input, ctx }) => {
+      const { filterState, hasNoMatches } = await applyCommentFilters({
+        filterState: input.filter ?? [],
+        prisma: ctx.prisma,
+        projectId: ctx.session.projectId,
+        objectType: "OBSERVATION",
+      });
+
+      if (hasNoMatches) {
+        return { totalCount: 0 };
+      }
+
       return instrumentAsync(
         {
           name: "get-event-count-trpc",
         },
         async (span) => {
-          addAttributesToSpan({ span, input, orderBy: input.orderBy });
+          const normalizedOrderBy = normalizeOrderByForTable({
+            orderBy: input.orderBy,
+            expectedTimeColumn: "startTime",
+          });
+          addAttributesToSpan({ span, input, orderBy: normalizedOrderBy });
           return getEventCount({
             projectId: ctx.session.projectId,
-            filter: input.filter ?? [],
+            filter: filterState,
             searchQuery: input.searchQuery ?? undefined,
             searchType: input.searchType,
-            orderBy: input.orderBy,
+            orderBy: normalizedOrderBy,
           });
         },
       );

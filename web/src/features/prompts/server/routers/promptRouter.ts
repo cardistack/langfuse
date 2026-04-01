@@ -1,4 +1,4 @@
-import { z } from "zod/v4";
+import { z } from "zod";
 
 import { auditLog } from "@/src/features/audit-logs/auditLog";
 import { throwIfNoProjectAccess } from "@/src/features/rbac/utils/checkProjectAccess";
@@ -8,7 +8,11 @@ import {
   protectedProjectProcedure,
 } from "@/src/server/api/trpc";
 import { type Prompt, Prisma } from "@langfuse/shared/src/db";
-import { createPrompt, duplicatePrompt } from "../actions/createPrompt";
+import {
+  createPrompt,
+  duplicatePrompt,
+  duplicateFolder,
+} from "../actions/createPrompt";
 import { checkHasProtectedLabels } from "../utils/checkHasProtectedLabels";
 import {
   CreatePromptTRPCSchema,
@@ -302,6 +306,11 @@ export const promptRouter = createTRPCRouter({
         ...input,
         prisma: ctx.prisma,
         createdBy: ctx.session.user.id,
+        user: {
+          id: ctx.session.user.id,
+          name: ctx.session.user.name ?? null,
+          email: ctx.session.user.email ?? null,
+        },
       });
 
       if (!prompt) {
@@ -344,6 +353,11 @@ export const promptRouter = createTRPCRouter({
         isSingleVersion: input.isSingleVersion,
         createdBy: ctx.session.user.id,
         prisma: ctx.prisma,
+        user: {
+          id: ctx.session.user.id,
+          name: ctx.session.user.name ?? null,
+          email: ctx.session.user.email ?? null,
+        },
       });
 
       if (!prompt) {
@@ -362,6 +376,56 @@ export const promptRouter = createTRPCRouter({
       );
 
       return prompt;
+    }),
+  duplicateFolder: protectedProjectProcedure
+    .input(
+      z.object({
+        projectId: z.string(),
+        sourcePath: StringNoHTMLNonEmpty,
+        targetPath: StringNoHTMLNonEmpty,
+        isSingleVersion: z.boolean(),
+        rewritePromptReferences: z.boolean().optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      throwIfNoProjectAccess({
+        session: ctx.session,
+        projectId: input.projectId,
+        scope: "prompts:CUD",
+      });
+
+      // TODO: Decide product behavior for protected labels on duplication.
+      // We currently preserve labels here to match duplicatePrompt, which also
+      // duplicates protected labels without a separate promptProtectedLabels:CUD
+      // check. If duplicates should be treated as factually new prompts, strip
+      // protected labels in both duplication flows instead of diverging here.
+      const result = await duplicateFolder({
+        projectId: input.projectId,
+        sourcePath: input.sourcePath,
+        targetPath: input.targetPath,
+        isSingleVersion: input.isSingleVersion,
+        rewritePromptReferences: input.rewritePromptReferences,
+        createdBy: ctx.session.user.id,
+        prisma: ctx.prisma,
+        user: {
+          id: ctx.session.user.id,
+          name: ctx.session.user.name ?? null,
+          email: ctx.session.user.email ?? null,
+        },
+      });
+
+      await auditLog(
+        {
+          session: ctx.session,
+          resourceType: "prompt",
+          resourceId: input.targetPath,
+          action: "create",
+          after: result,
+        },
+        ctx.prisma,
+      );
+
+      return result;
     }),
   filterOptions: protectedProjectProcedure
     .input(z.object({ projectId: z.string() }))
@@ -526,14 +590,8 @@ export const promptRouter = createTRPCRouter({
           );
         }
 
-        // Lock and invalidate cache for all prompts
         const promptService = new PromptService(ctx.prisma, redis);
         const promptNames = [...new Set(prompts.map((p) => p.name))];
-
-        for (const name of promptNames) {
-          await promptService.lockCache({ projectId, promptName: name });
-          await promptService.invalidateCache({ projectId, promptName: name });
-        }
 
         // Delete all prompts with the given id
         await ctx.prisma.prompt.deleteMany({
@@ -545,10 +603,7 @@ export const promptRouter = createTRPCRouter({
           },
         });
 
-        // Unlock cache
-        for (const name of promptNames) {
-          await promptService.unlockCache({ projectId, promptName: name });
-        }
+        promptService.invalidateCache({ projectId });
 
         // Trigger webhooks for prompt deletion
         await Promise.all(
@@ -556,6 +611,11 @@ export const promptRouter = createTRPCRouter({
             promptChangeEventSourcing(
               await promptService.resolvePrompt(prompt),
               "deleted",
+              {
+                id: ctx.session.user.id,
+                name: ctx.session.user.name ?? null,
+                email: ctx.session.user.email ?? null,
+              },
             ),
           ),
         );
@@ -699,21 +759,22 @@ export const promptRouter = createTRPCRouter({
           }
         }
 
-        // Lock and invalidate cache for _all_ versions and labels of the prompt
         const promptService = new PromptService(ctx.prisma, redis);
-        await promptService.lockCache({ projectId, promptName });
-        await promptService.invalidateCache({ projectId, promptName });
 
         // Execute transaction
         await ctx.prisma.$transaction(transaction);
-
-        // Unlock cache
-        await promptService.unlockCache({ projectId, promptName });
+        // Rotate cache epoch only after successful commit.
+        await promptService.invalidateCache({ projectId });
 
         // Trigger webhooks for prompt version deletion
         await promptChangeEventSourcing(
           await promptService.resolvePrompt(promptVersion),
           "deleted",
+          {
+            id: ctx.session.user.id,
+            name: ctx.session.user.name ?? null,
+            email: ctx.session.user.email ?? null,
+          },
         );
       } catch (e) {
         logger.error(e);
@@ -881,16 +942,12 @@ export const promptRouter = createTRPCRouter({
           );
         });
 
-        // Lock and invalidate cache for _all_ versions and labels of the prompt
         const promptService = new PromptService(ctx.prisma, redis);
-        await promptService.lockCache({ projectId, promptName });
-        await promptService.invalidateCache({ projectId, promptName });
 
         // Execute transaction
         await ctx.prisma.$transaction(toBeExecuted);
-
-        // Unlock cache
-        await promptService.unlockCache({ projectId, promptName });
+        // Rotate cache epoch only after successful commit.
+        await promptService.invalidateCache({ projectId });
 
         // Trigger webhooks for prompt label update
         const updatedPrompts = await ctx.prisma.prompt.findMany({
@@ -906,6 +963,11 @@ export const promptRouter = createTRPCRouter({
             promptChangeEventSourcing(
               await promptService.resolvePrompt(prompt),
               "updated",
+              {
+                id: ctx.session.user.id,
+                name: ctx.session.user.name ?? null,
+                email: ctx.session.user.email ?? null,
+              },
             ),
           ),
         );
@@ -1023,10 +1085,7 @@ export const promptRouter = createTRPCRouter({
           after: input.tags,
         });
 
-        // Lock and invalidate cache for _all_ versions and labels of the prompt
         const promptService = new PromptService(ctx.prisma, redis);
-        await promptService.lockCache({ projectId, promptName });
-        await promptService.invalidateCache({ projectId, promptName });
 
         await ctx.prisma.prompt.updateMany({
           where: {
@@ -1040,8 +1099,8 @@ export const promptRouter = createTRPCRouter({
           },
         });
 
-        // Unlock cache
-        await promptService.unlockCache({ projectId, promptName });
+        // Rotate cache epoch only after successful commit.
+        await promptService.invalidateCache({ projectId });
 
         // Trigger webhooks for prompt tag update
 
@@ -1054,6 +1113,11 @@ export const promptRouter = createTRPCRouter({
             promptChangeEventSourcing(
               await promptService.resolvePrompt(prompt),
               "updated",
+              {
+                id: ctx.session.user.id,
+                name: ctx.session.user.name ?? null,
+                email: ctx.session.user.email ?? null,
+              },
             ),
           ),
         );

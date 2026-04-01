@@ -1,5 +1,5 @@
 import { Alert, AlertDescription } from "@/src/components/ui/alert";
-import { Info } from "lucide-react";
+import { AlertTriangle } from "lucide-react";
 import { type EvalCapabilities } from "@/src/features/evals/hooks/useEvalCapabilities";
 import {
   isTraceTarget,
@@ -33,17 +33,17 @@ const getCalloutContent = (
 
     return {
       visible: true,
-      title: "Please check your SDK version",
+      title: "Please verify your SDK version",
       description: (
         <>
-          This evaluator targets live observations, which require JS SDK v4+ or
+          This evaluator targets observations, which require JS SDK v4+ or
           Python SDK v3+. You can still configure this evaluator now—it will
           start running once you upgrade.{" "}
           <a
-            href="https://langfuse.com/docs/tracing/overview#langfuse-tracing-vs-opentelemetry"
+            href="https://langfuse.com/docs/observability/sdk/upgrade-path"
             target="_blank"
             rel="noopener noreferrer"
-            className="font-medium text-dark-blue hover:opacity-80"
+            className="text-dark-blue font-medium hover:opacity-80"
           >
             Learn more
           </a>
@@ -68,7 +68,7 @@ const getCalloutContent = (
               href="https://langfuse.com/docs/evaluation/experiments/experiments-via-sdk#experiment-runner-sdk"
               target="_blank"
               rel="noopener noreferrer"
-              className="font-medium text-dark-blue hover:opacity-80"
+              className="text-dark-blue font-medium hover:opacity-80"
             >
               Learn more about the Experiment Runner SDK.
             </a>
@@ -96,7 +96,7 @@ const getCalloutContent = (
             href="https://langfuse.com/docs/evaluation/experiments/experiments-via-sdk#experiment-runner-sdk"
             target="_blank"
             rel="noopener noreferrer"
-            className="font-medium text-dark-blue hover:opacity-80"
+            className="text-dark-blue font-medium hover:opacity-80"
           >
             Learn more
           </a>
@@ -110,17 +110,16 @@ const getCalloutContent = (
   if (isTraceTarget(targetObject)) {
     return {
       visible: true,
-      title: "Consider upgrading to live observations evaluators",
+      title: "Consider upgrading to observation evaluators",
       description: (
         <>
-          Live observations evaluators provide more granular control and an
-          easier workflow. We strongly recommend upgrading to live observations
-          evaluators.{" "}
+          Observation evaluators provide more granular control and an easier
+          workflow. We strongly recommend upgrading to observation evaluators.{" "}
           <a
             href="https://langfuse.com/faq/all/llm-as-a-judge-migration"
             target="_blank"
             rel="noopener noreferrer"
-            className="font-medium text-dark-blue hover:opacity-80"
+            className="text-dark-blue font-medium hover:opacity-80"
           >
             Learn more
           </a>
@@ -144,13 +143,16 @@ export function EvalVersionCallout({
   }
 
   return (
-    <Alert variant="default" className="mt-2 border-light-blue bg-light-blue">
-      <Info className="h-4 w-4 text-dark-blue dark:text-dark-blue" />
+    <Alert
+      variant="default"
+      className="border-dark-yellow bg-light-yellow mt-2 max-w-4xl"
+    >
+      <AlertTriangle className="text-dark-yellow h-4 w-4" />
       <AlertDescription>
         <div className="flex flex-col gap-2">
           <div className="flex flex-col gap-1">
-            <span className="font-medium text-foreground">{content.title}</span>
-            <span className="text-sm text-foreground">
+            <span className="text-foreground font-medium">{content.title}</span>
+            <span className="text-foreground text-sm">
               {content.description}
             </span>
           </div>

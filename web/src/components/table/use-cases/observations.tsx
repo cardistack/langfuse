@@ -15,6 +15,7 @@ import {
   observationFilterConfig,
   OBSERVATION_COLUMN_TO_BACKEND_KEY,
 } from "@/src/features/filters/config/observations-config";
+import { DEFAULT_SIDEBAR_IMPLICIT_ENVIRONMENT_CONFIG } from "@/src/features/filters/constants/internal-environments";
 import { transformFiltersForBackend } from "@/src/features/filters/lib/filter-transform";
 import { formatIntervalSeconds } from "@/src/utils/dates";
 import useColumnVisibility from "@/src/features/column-visibility/hooks/useColumnVisibility";
@@ -68,11 +69,16 @@ import { useSelectAll } from "@/src/features/table/hooks/useSelectAll";
 import { showSuccessToast } from "@/src/features/notifications/showSuccessToast";
 import { TableActionMenu } from "@/src/features/table/components/TableActionMenu";
 import { type TableAction } from "@/src/features/table/types";
-import { type DataTablePeekViewProps } from "@/src/components/table/peek";
+import {
+  type DataTablePeekViewProps,
+  TablePeekView,
+} from "@/src/components/table/peek";
 import { useScoreColumns } from "@/src/features/scores/hooks/useScoreColumns";
 import { scoreFilters } from "@/src/features/scores/lib/scoreColumns";
 import { AddObservationsToDatasetDialog } from "@/src/features/batch-actions/components/AddObservationsToDatasetDialog/index";
 import useSessionStorage from "@/src/components/useSessionStorage";
+import { buildTraceDetailPath } from "@/src/utils/navigation";
+import { getSafeRedirectPath } from "@/src/utils/redirect";
 import {
   type RefreshInterval,
   REFRESH_INTERVALS,
@@ -431,9 +437,13 @@ export default function ObservationsTable({
   const queryFilter = useSidebarFilterState(
     observationFilterConfig,
     newFilterOptions,
-    projectId,
-    filterOptions.isPending || environmentFilterOptions.isPending,
-    hideControls, // Disable URL persistence for embedded preview tables
+    {
+      loading: filterOptions.isPending || environmentFilterOptions.isPending,
+      disableUrlPersistence: hideControls, // Disable URL persistence for embedded preview tables
+      sessionFilterContextId: projectId,
+      // Sidebar-only implicit environment defaults
+      implicitDefaultConfig: DEFAULT_SIDEBAR_IMPLICIT_ENVIRONMENT_CONFIG,
+    },
   );
 
   // Create ref-based wrapper to avoid stale closure when queryFilter updates
@@ -445,7 +455,7 @@ export default function ObservationsTable({
     [],
   );
 
-  const combinedFilterState = queryFilter.filterState.concat(
+  const combinedFilterState = queryFilter.effectiveFilterState.concat(
     dateRangeFilter,
     promptNameFilter,
     promptVersionFilter,
@@ -1216,7 +1226,8 @@ export default function ObservationsTable({
       columns,
       filterColumnDefinition: observationFilterConfig.columnDefinitions,
     },
-    currentFilterState: queryFilter.filterState,
+    currentFilterState: queryFilter.explicitFilterState,
+    disabled: hideControls,
   });
 
   const peekConfig: DataTablePeekViewProps | undefined = useMemo(() => {
@@ -1226,10 +1237,9 @@ export default function ObservationsTable({
       customTitlePrefix: "Observation ID:",
       detailNavigationKey: "observations",
       children: <PeekViewObservationDetail projectId={projectId} />,
-      tableDataUpdatedAt: generations.dataUpdatedAt,
       ...peekNavigationProps,
     };
-  }, [projectId, generations.dataUpdatedAt, peekNavigationProps, hideControls]);
+  }, [projectId, peekNavigationProps, hideControls]);
 
   const rows: ObservationsTableRow[] = useMemo(() => {
     return generations.isSuccess
@@ -1277,13 +1287,13 @@ export default function ObservationsTable({
   }, [generations]);
 
   return (
-    <DataTableControlsProvider>
+    <DataTableControlsProvider tableName={observationFilterConfig.tableName}>
       <div className="flex h-full w-full flex-col">
         {/* Toolbar spanning full width */}
         {!hideControls && (
           <DataTableToolbar
             columns={columns}
-            filterState={queryFilter.filterState}
+            filterState={queryFilter.explicitFilterState}
             searchConfig={{
               metadataSearchFields: ["ID", "Name", "Trace Name", "Model"],
               updateQuery: setSearchQuery,
@@ -1418,18 +1428,18 @@ export default function ObservationsTable({
                   const timestamp = row.timestamp;
 
                   if (traceId) {
-                    let observationUrl = `/project/${projectId}/traces/${encodeURIComponent(traceId)}`;
+                    const observationUrl = buildTraceDetailPath({
+                      projectId,
+                      traceId,
+                      observationId,
+                      timestamp,
+                    });
 
-                    const params = new URLSearchParams();
-                    params.set("observation", observationId);
-                    if (timestamp) {
-                      params.set("timestamp", timestamp.toISOString());
-                    }
-
-                    observationUrl += `?${params.toString()}`;
-
-                    const fullUrl = `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}${observationUrl}`;
-                    window.open(fullUrl, "_blank");
+                    window.open(
+                      getSafeRedirectPath(observationUrl),
+                      "_blank",
+                      "noopener,noreferrer",
+                    );
                   }
                 }
                 // For normal clicks, let the data-table handle opening the peek view
@@ -1437,6 +1447,7 @@ export default function ObservationsTable({
             />
           </div>
         </ResizableFilterLayout>
+        {peekConfig && <TablePeekView peekView={peekConfig} />}
       </div>
 
       {/* Add to Dataset Dialog */}

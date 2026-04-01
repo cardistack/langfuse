@@ -40,6 +40,7 @@ import {
 } from "./constants";
 import { env } from "../../env";
 import { TracingSearchType } from "../../interfaces/search";
+import { observationsTableCols } from "../../observationsTable";
 import { ClickHouseClientConfigOptions } from "@clickhouse/client";
 import type { AnalyticsGenerationEvent } from "../analytics-integrations/types";
 import { ObservationType } from "../../domain";
@@ -742,6 +743,7 @@ const getObservationsTableInternal = async <T>(
     ...createFilterFromFilterState(
       filter,
       observationsTableUiColumnDefinitions,
+      observationsTableCols,
     ),
   );
 
@@ -884,6 +886,7 @@ export const getObservationsGroupedByModel = async (
     ...createFilterFromFilterState(
       filter,
       observationsTableUiColumnDefinitions,
+      observationsTableCols,
     ),
   );
 
@@ -934,6 +937,7 @@ export const getObservationsGroupedByModelId = async (
     ...createFilterFromFilterState(
       filter,
       observationsTableUiColumnDefinitions,
+      observationsTableCols,
     ),
   );
 
@@ -985,6 +989,7 @@ export const getObservationsGroupedByName = async (
     ...createFilterFromFilterState(
       filter,
       observationsTableUiColumnDefinitions,
+      observationsTableCols,
     ),
   );
 
@@ -1036,6 +1041,7 @@ export const getObservationsGroupedByToolName = async (
     ...createFilterFromFilterState(
       filter,
       observationsTableUiColumnDefinitions,
+      observationsTableCols,
     ),
   );
 
@@ -1084,6 +1090,7 @@ export const getObservationsGroupedByCalledToolName = async (
     ...createFilterFromFilterState(
       filter,
       observationsTableUiColumnDefinitions,
+      observationsTableCols,
     ),
   );
 
@@ -1132,6 +1139,7 @@ export const getObservationsGroupedByPromptName = async (
     ...createFilterFromFilterState(
       filter,
       observationsTableUiColumnDefinitions,
+      observationsTableCols,
     ),
   );
 
@@ -1687,6 +1695,9 @@ export const getObservationCountsByProjectInCreationInterval = async ({
       start: convertDateToClickhouseDateTime(start),
       end: convertDateToClickhouseDateTime(end),
     },
+    clickhouseConfigs: {
+      request_timeout: 120000, // 2 minutes timeout
+    },
     tags: {
       feature: "tracing",
       type: "observation",
@@ -1792,7 +1803,18 @@ export const getObservationsForBlobStorageExport = function (
       cost_details,
       completion_start_time,
       prompt_name,
-      prompt_version
+      prompt_version,
+      total_cost,
+      if(isNull(end_time), NULL, date_diff('millisecond', start_time, end_time) / 1000) as latency,
+      if(isNull(completion_start_time), NULL, date_diff('millisecond', start_time, completion_start_time) / 1000) as time_to_first_token,
+      internal_model_id as model_id,
+      created_at,
+      updated_at,
+      prompt_id,
+      tool_calls,
+      tool_call_names,
+      tool_definitions,
+      usage_pricing_tier_name
     FROM observations FINAL
     WHERE project_id = {projectId: String}
     AND start_time >= {minTimestamp: DateTime64(3)}
