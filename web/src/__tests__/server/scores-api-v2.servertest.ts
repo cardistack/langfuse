@@ -17,6 +17,17 @@ import { prisma } from "@langfuse/shared/src/db";
 import { v4 } from "uuid";
 import { z } from "zod";
 
+// GetScoresResponseV2 rows are a union where only the trace-enriched branch
+// carries `trace`; narrow to that branch for assertions on trace fields.
+type ScoreV2WithTrace = z.infer<typeof GetScoresResponseV2>["data"][number] & {
+  trace?: {
+    userId?: string | null;
+    tags?: string[] | null;
+    environment?: string | null;
+    sessionId?: string | null;
+  } | null;
+};
+
 describe("/api/public/v2/scores API Endpoint", () => {
   describe("GET /api/public/v2/scores/:scoreId", () => {
     let auth: string;
@@ -625,9 +636,10 @@ describe("/api/public/v2/scores API Endpoint", () => {
           totalPages: 1,
         });
         for (const val of getAllScore.body.data) {
-          expect(val.traceId).toBe(traceId);
-          expect(val.trace?.tags?.sort()).toEqual(["prod", "test"].sort());
-          expect(val.trace?.userId).toBe("user-name");
+          const score = val as ScoreV2WithTrace;
+          expect(score.traceId).toBe(traceId);
+          expect(score.trace?.tags?.sort()).toEqual(["prod", "test"].sort());
+          expect(score.trace?.userId).toBe("user-name");
         }
       });
 
@@ -1162,6 +1174,91 @@ describe("/api/public/v2/scores API Endpoint", () => {
             expect((error as Error).message).toBe(
               'API call did not return 200, returned status 400, body {"message":"Invalid request data","error":[{"expected":"number","code":"invalid_type","received":"NaN","path":["value"],"message":"Invalid input: expected number, received NaN"}]}',
             );
+          }
+        });
+
+        // Regression tests for #8630: the value operator must not override
+        // the fixed >= / < operators of the fromTimestamp/toTimestamp filters.
+        describe("operator combined with timestamp window", () => {
+          const fromTimestamp = new Date(
+            Date.now() - 24 * 60 * 60 * 1000,
+          ).toISOString();
+          const toTimestamp = new Date(
+            Date.now() + 24 * 60 * 60 * 1000,
+          ).toISOString();
+          const timestampWindow = `fromTimestamp=${fromTimestamp}&toTimestamp=${toTimestamp}`;
+
+          it("test operator > with timestamp window", async () => {
+            const getScore = await makeZodVerifiedAPICall(
+              GetScoresResponseV2,
+              "GET",
+              `/api/public/v2/scores?${queryUserName}&operator=>&value=100&${timestampWindow}`,
+              undefined,
+              authentication,
+            );
+            expect(getScore.status).toBe(200);
+            expect(getScore.body.meta).toMatchObject({
+              page: 1,
+              limit: 50,
+              totalItems: 1,
+              totalPages: 1,
+            });
+            expect(getScore.body.data).toMatchObject([
+              {
+                id: scoreId_3,
+                name: scoreName,
+                value: 100.8,
+              },
+            ]);
+          });
+
+          it("test operator < with timestamp window", async () => {
+            const getScore = await makeZodVerifiedAPICall(
+              GetScoresResponseV2,
+              "GET",
+              `/api/public/v2/scores?${queryUserName}&operator=<&value=50&${timestampWindow}`,
+              undefined,
+              authentication,
+            );
+            expect(getScore.status).toBe(200);
+            expect(getScore.body.meta).toMatchObject({
+              page: 1,
+              limit: 50,
+              totalItems: 1,
+              totalPages: 1,
+            });
+            expect(getScore.body.data).toMatchObject([
+              {
+                id: scoreId_1,
+                name: scoreName,
+                value: 10.5,
+              },
+            ]);
+          });
+        });
+      });
+
+      describe("should validate pagination", () => {
+        it("rejects limit > 100 with HTTP 400", async () => {
+          expect.assertions(5);
+          try {
+            await makeZodVerifiedAPICall(
+              z.object({
+                message: z.string(),
+                error: z.array(z.object({})),
+              }),
+              "GET",
+              `/api/public/v2/scores?limit=101`,
+              undefined,
+              authentication,
+            );
+          } catch (error) {
+            const msg = (error as Error).message;
+            expect(msg).toContain("status 400");
+            expect(msg).toContain('"message":"Invalid request data"');
+            expect(msg).toContain('"path":["limit"]');
+            expect(msg).toContain('"code":"too_big"');
+            expect(msg).toContain('"maximum":100');
           }
         });
       });
@@ -1757,7 +1854,7 @@ describe("/api/public/v2/scores API Endpoint", () => {
         expect(getScores.body.data).toHaveLength(3);
         // All scores should have trace as null
         for (const score of getScores.body.data) {
-          expect(score.trace).toBeNull();
+          expect((score as ScoreV2WithTrace).trace).toBeNull();
         }
       });
     });

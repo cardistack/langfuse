@@ -70,9 +70,7 @@ export function PromptTable() {
     fromTimestamp.setDate(fromTimestamp.getDate() - 7);
     fromTimestamp.setHours(0, 0, 0, 0);
 
-    const toTimestamp = new Date(today);
-    toTimestamp.setHours(0, 0, 0, 0);
-    toTimestamp.setMilliseconds(toTimestamp.getMilliseconds() - 1);
+    const toTimestamp = today;
 
     return { fromTimestamp, toTimestamp };
   }, []);
@@ -447,7 +445,7 @@ export function PromptTable() {
 
           <div className="flex flex-1 flex-col overflow-hidden">
             <DataTable
-              tableName={"prompts"}
+              tableName="prompts"
               columns={promptColumns}
               data={
                 prompts.isLoading
@@ -481,6 +479,7 @@ export function PromptTable() {
                 onChange: setPaginationAndFolderState,
                 state: paginationState,
               }}
+              cellPadding="comfortable"
             />
           </div>
         </ResizableFilterLayout>

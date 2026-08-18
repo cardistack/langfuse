@@ -1,11 +1,14 @@
+import { vi } from "vitest";
 import {
   OrgEnrichedApiKey,
+  createAndAddApiKeysToDb,
   createBasicAuthHeader,
   createOrgProjectAndApiKey,
   createShaHash,
   generateKeySet,
   getDisplaySecretKey,
   hashSecretKey,
+  logger,
 } from "@langfuse/shared/src/server";
 import { Prisma, type PrismaClient, prisma } from "@langfuse/shared/src/db";
 import { env } from "@/src/env.mjs";
@@ -284,6 +287,108 @@ describe("Authenticate API calls", () => {
       expect(apiKey).not.toBeNull();
       expect(apiKey?.fastHashedSecretKey).toBeNull();
     });
+
+    it("rejects in-app agent API keys by default", async () => {
+      const apiKey = await createAndAddApiKeysToDb({
+        prisma,
+        entityId: testApiKey.projectId,
+        scope: "PROJECT",
+        isInAppAgentKey: true,
+      });
+
+      const auth = await new ApiAuthService(
+        prisma,
+        null,
+      ).verifyAuthHeaderAndReturnScope(
+        createBasicAuthHeader(apiKey.publicKey, apiKey.secretKey),
+      );
+
+      expect(auth).toEqual({
+        validKey: false,
+        error:
+          "Access denied - in-app agent keys are not allowed for this endpoint",
+      });
+    });
+
+    it("allows in-app agent API keys when explicitly enabled", async () => {
+      const apiKey = await createAndAddApiKeysToDb({
+        prisma,
+        entityId: testApiKey.projectId,
+        scope: "PROJECT",
+        isInAppAgentKey: true,
+      });
+
+      const auth = await new ApiAuthService(
+        prisma,
+        null,
+      ).verifyAuthHeaderAndReturnScope(
+        createBasicAuthHeader(apiKey.publicKey, apiKey.secretKey),
+        { allowInAppAgentKey: true },
+      );
+
+      expect(auth.validKey).toBe(true);
+      if (auth.validKey) {
+        expect(auth.scope.isInAppAgentKey).toBe(true);
+      }
+    });
+
+    it("returns the API key's actual public key in scope and warns when the submitted public key does not match", async () => {
+      // first use sets fastHashedSecretKey so the secret-hash lookup path is taken
+      await new ApiAuthService(prisma, null).verifyAuthHeaderAndReturnScope(
+        getValidAuthHeader(),
+      );
+
+      const warnSpy = vi.spyOn(logger, "warn");
+      const submittedPublicKey = `pk-lf-mismatch-${v4()}`;
+
+      const auth = await new ApiAuthService(
+        prisma,
+        null,
+      ).verifyAuthHeaderAndReturnScope(
+        createBasicAuthHeader(submittedPublicKey, testApiKey.secretKey),
+      );
+
+      expect(auth.validKey).toBe(true);
+      if (auth.validKey) {
+        expect(auth.scope.publicKey).toBe(testApiKey.publicKey);
+        expect(auth.scope.projectId).toBe(testApiKey.projectId);
+      }
+
+      const mismatchWarning = warnSpy.mock.calls
+        .map((call) => String(call[0]))
+        .find((message) => message.includes("Public key mismatch"));
+      expect(mismatchWarning).toBeDefined();
+      expect(mismatchWarning).toContain(submittedPublicKey);
+      expect(mismatchWarning).toContain(testApiKey.publicKey);
+      expect(mismatchWarning).toContain(testApiKey.projectId);
+
+      warnSpy.mockRestore();
+    });
+
+    it("does not warn when the submitted public key matches", async () => {
+      await new ApiAuthService(prisma, null).verifyAuthHeaderAndReturnScope(
+        getValidAuthHeader(),
+      );
+
+      const warnSpy = vi.spyOn(logger, "warn");
+
+      const auth = await new ApiAuthService(
+        prisma,
+        null,
+      ).verifyAuthHeaderAndReturnScope(getValidAuthHeader());
+
+      expect(auth.validKey).toBe(true);
+      if (auth.validKey) {
+        expect(auth.scope.publicKey).toBe(testApiKey.publicKey);
+      }
+      expect(
+        warnSpy.mock.calls.filter((call) =>
+          String(call[0]).includes("Public key mismatch"),
+        ),
+      ).toHaveLength(0);
+
+      warnSpy.mockRestore();
+    });
   });
 
   describe("validates with redis", () => {
@@ -315,7 +420,7 @@ describe("Authenticate API calls", () => {
     }, 20_000);
 
     it("should create new api key and read from cache", async () => {
-      const legacySecretKey = ["legacy", "secret", "key"].join("-");
+      const legacySecretKey = ["legacy", "secret", "key", v4()].join("-");
       const legacyPublicKey = `legacy-public-key-${v4()}`;
       const legacyAuth = createBasicAuthHeader(
         legacyPublicKey,
@@ -637,6 +742,9 @@ describe("Authenticate API calls", () => {
         lastUsedAt: null,
         expiresAt: null,
         isIngestionSuspended: expect.anything(),
+        isInAppAgentKey: false,
+        createdByUserId: null,
+        createdByApiKeyId: null,
         projectId: expect.any(String),
         orgId: testApiKey.orgId,
         plan: "cloud:hobby",

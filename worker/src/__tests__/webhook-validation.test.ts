@@ -1,19 +1,5 @@
-import { beforeEach, describe, it, expect, vi } from "vitest";
-
-const { resolve4Mock, resolve6Mock } = vi.hoisted(() => ({
-  resolve4Mock: vi.fn<(hostname: string) => Promise<string[]>>(),
-  resolve6Mock: vi.fn<(hostname: string) => Promise<string[]>>(),
-}));
-
-vi.mock("node:dns/promises", () => ({
-  default: {
-    resolve4: resolve4Mock,
-    resolve6: resolve6Mock,
-  },
-  resolve4: resolve4Mock,
-  resolve6: resolve6Mock,
-}));
-
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
+import dns from "node:dns/promises";
 import { validateWebhookURL } from "../../../packages/shared/src/server/webhooks/validation";
 
 const nonexistentDomain = "this-domain-definitely-does-not-exist-12345.com";
@@ -22,16 +8,27 @@ const dnsError = (code: string, hostname: string) =>
   Object.assign(new Error(`queryA ${code} ${hostname}`), { code });
 
 beforeEach(() => {
-  vi.clearAllMocks();
-
-  resolve4Mock.mockImplementation(async (hostname: string) => {
+  vi.spyOn(dns, "resolve4").mockImplementation(async (hostname: string) => {
     if (hostname === nonexistentDomain) {
       throw dnsError("ENOTFOUND", hostname);
     }
 
     return ["93.184.216.34"];
   });
-  resolve6Mock.mockRejectedValue(dnsError("ENODATA", "mocked-hostname"));
+  vi.spyOn(dns, "resolve6").mockImplementation(async (hostname: string) => {
+    throw dnsError("ENODATA", hostname);
+  });
+  vi.spyOn(dns, "lookup").mockImplementation(async (hostname: string) => {
+    if (hostname === nonexistentDomain) {
+      throw dnsError("ENOTFOUND", hostname);
+    }
+
+    return [{ address: "93.184.216.34", family: 4 }];
+  });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe("Webhook URL Validation", () => {
@@ -70,6 +67,22 @@ describe("Webhook URL Validation", () => {
       await expect(
         validateWebhookURL("http://example.com:3000/hook"),
       ).rejects.toThrow("Only ports 80 and 443 are allowed");
+    });
+
+    // Protocol and port rejections must carry an OutboundUrlValidationError
+    // code, not just a message: callers classify deterministic config faults
+    // off the code, so an uncoded rejection is silently unclassifiable and
+    // retries forever instead of disabling the integration.
+    it.each([
+      ["ftp://example.com", "protocol-not-allowed"],
+      ["file:///etc/passwd", "protocol-not-allowed"],
+      ["https://example.com:8080/hook", "port-not-allowed"],
+      ["http://example.com:3000/hook", "port-not-allowed"],
+    ])("should reject %s with a coded error", async (url, code) => {
+      await expect(validateWebhookURL(url)).rejects.toMatchObject({
+        name: "OutboundUrlValidationError",
+        code,
+      });
     });
 
     it("should allow standard ports", async () => {
@@ -144,8 +157,11 @@ describe("Webhook URL Validation", () => {
       await expect(
         validateWebhookURL(`https://${nonexistentDomain}/hook`),
       ).rejects.toThrow("DNS lookup failed");
-      expect(resolve4Mock).toHaveBeenCalledWith(nonexistentDomain);
-      expect(resolve6Mock).toHaveBeenCalledWith(nonexistentDomain);
+      expect(dns.resolve4).toHaveBeenCalledWith(nonexistentDomain);
+      expect(dns.resolve6).toHaveBeenCalledWith(nonexistentDomain);
+      expect(dns.lookup).toHaveBeenCalledWith(nonexistentDomain, {
+        all: true,
+      });
     });
 
     it("should reject URL-encoded localhost bypass attempts", async () => {
@@ -153,6 +169,41 @@ describe("Webhook URL Validation", () => {
       await expect(
         validateWebhookURL("http://%6C%6F%63%61%6C%68%6F%73%74/hook"),
       ).rejects.toThrow("Blocked hostname detected");
+    });
+
+    it("should reject encoded delimiter userinfo SSRF bypass attempts", async () => {
+      // Percent-encoded delimiters are data to the WHATWG URL parser before
+      // parsing, but become syntax if the whole URL is decoded first.
+      // Validation must parse the same URL string that fetch will execute.
+      const encodedDelimiters = ["%2F", "%23", "%3F", "%5C"];
+
+      for (const delimiter of encodedDelimiters) {
+        await expect(
+          validateWebhookURL(`http://example.com${delimiter}@127.0.0.1/hook`),
+        ).rejects.toThrow(
+          "URL credentials are not allowed. Use authentication headers instead.",
+        );
+      }
+    });
+
+    it("should reject URLs with embedded credentials", async () => {
+      await expect(
+        validateWebhookURL("https://user:pass@example.com/hook"),
+      ).rejects.toThrow(
+        "URL credentials are not allowed. Use authentication headers instead.",
+      );
+    });
+
+    it("should validate IDN hostnames using their punycoded hostname", async () => {
+      await expect(
+        validateWebhookURL("http://тест.example.com/hook"),
+      ).resolves.not.toThrow();
+
+      expect(dns.resolve4).toHaveBeenCalledWith("xn--e1aybc.example.com");
+      expect(dns.resolve6).toHaveBeenCalledWith("xn--e1aybc.example.com");
+      expect(dns.lookup).toHaveBeenCalledWith("xn--e1aybc.example.com", {
+        all: true,
+      });
     });
 
     it("should reject internal/intranet hostnames", async () => {

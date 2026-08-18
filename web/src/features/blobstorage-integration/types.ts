@@ -4,8 +4,14 @@ import {
   BlobStorageIntegrationFileType,
   BlobStorageExportMode,
   AnalyticsIntegrationExportSource,
+  OBSERVATION_FIELD_GROUPS_FULL,
 } from "@langfuse/shared";
-import { validateAzureContainerName } from "@/src/features/blobstorage-integration/validation";
+import {
+  validateAzureContainerName,
+  validateExportFieldGroups,
+  exportStartDateNotInFuture,
+  EXPORT_START_DATE_FUTURE_ERROR,
+} from "@/src/features/blobstorage-integration/validation";
 
 export const blobStorageIntegrationFormSchemaBase = z.object({
   type: z.enum(BlobStorageIntegrationType),
@@ -26,19 +32,30 @@ export const blobStorageIntegrationFormSchemaBase = z.object({
   forcePathStyle: z.boolean(),
   fileType: z
     .enum(BlobStorageIntegrationFileType)
-    .default(BlobStorageIntegrationFileType.JSONL),
+    .default(BlobStorageIntegrationFileType.PARQUET),
   exportMode: z
     .enum(BlobStorageExportMode)
     .default(BlobStorageExportMode.FULL_HISTORY),
-  exportStartDate: z.coerce.date().optional().nullable(),
+  exportStartDate: z.coerce
+    .date()
+    .refine(exportStartDateNotInFuture, {
+      message: EXPORT_START_DATE_FUTURE_ERROR,
+    })
+    .optional()
+    .nullable(),
   exportSource: z
     .enum(AnalyticsIntegrationExportSource)
     .default(AnalyticsIntegrationExportSource.TRACES_OBSERVATIONS),
+  exportFieldGroups: z
+    .array(z.enum(OBSERVATION_FIELD_GROUPS_FULL))
+    .default([...OBSERVATION_FIELD_GROUPS_FULL]),
   compressed: z.boolean().default(true),
 });
 
 export const blobStorageIntegrationFormSchema =
-  blobStorageIntegrationFormSchemaBase.superRefine(validateAzureContainerName);
+  blobStorageIntegrationFormSchemaBase
+    .superRefine(validateAzureContainerName)
+    .superRefine(validateExportFieldGroups);
 
 export type BlobStorageIntegrationFormSchema = z.infer<
   typeof blobStorageIntegrationFormSchema
@@ -46,6 +63,7 @@ export type BlobStorageIntegrationFormSchema = z.infer<
 
 export type BlobStorageSyncStatus =
   | "idle"
+  | "running"
   | "queued"
   | "up_to_date"
   | "disabled"

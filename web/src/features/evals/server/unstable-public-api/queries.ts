@@ -10,6 +10,17 @@ import type {
   StoredPublicEvaluationRuleConfig,
   StoredPublicEvaluatorTemplate,
 } from "./types";
+import { toStoredEvaluatorType } from "./adapters";
+
+const PUBLIC_WRITABLE_EVAL_TARGETS = [
+  EvalTargetObject.EVENT,
+  EvalTargetObject.EXPERIMENT,
+];
+const PUBLIC_READABLE_EVAL_TARGETS = [
+  ...PUBLIC_WRITABLE_EVAL_TARGETS,
+  EvalTargetObject.TRACE,
+  EvalTargetObject.DATASET,
+];
 
 export function getPrismaClient(client?: PrismaClientLike) {
   return client ?? prisma;
@@ -22,7 +33,7 @@ export async function findPublicEvaluatorTemplateOrThrow(params: {
 }) {
   const client = getPrismaClient(params.client);
 
-  const template = await client.evalTemplate.findUnique({
+  const template = await client.evalTemplate.findFirst({
     where: {
       id: params.evaluatorId,
     },
@@ -50,6 +61,7 @@ export async function findLatestPublicEvaluatorTemplateInFamilyOrThrow(params: {
     where: {
       name: params.evaluator.name,
       projectId: params.evaluator.scope === "project" ? params.projectId : null,
+      type: toStoredEvaluatorType(params.evaluator.type),
     },
     orderBy: {
       version: "desc",
@@ -76,7 +88,7 @@ export async function countEvaluationRulesForEvaluator(params: {
     where: {
       projectId: params.projectId,
       targetObject: {
-        in: [EvalTargetObject.EVENT, EvalTargetObject.EXPERIMENT],
+        in: PUBLIC_READABLE_EVAL_TARGETS,
       },
       evalTemplateId: params.evaluatorId,
     },
@@ -98,7 +110,7 @@ export async function countEvaluationRulesForEvaluatorIds(params: {
     where: {
       projectId: params.projectId,
       targetObject: {
-        in: [EvalTargetObject.EVENT, EvalTargetObject.EXPERIMENT],
+        in: PUBLIC_READABLE_EVAL_TARGETS,
       },
       evalTemplateId: {
         in: params.evaluatorIds,
@@ -129,14 +141,15 @@ export async function listPublicEvaluatorTemplates(params: {
     prisma.$queryRaw<Array<{ id: string }>>(
       Prisma.sql`
         WITH latest_templates AS (
-          SELECT DISTINCT ON (project_id, name)
+          SELECT DISTINCT ON (project_id, name, type)
             id,
             project_id,
             name,
+            type,
             updated_at
           FROM eval_templates
-          WHERE project_id = ${params.projectId} OR project_id IS NULL
-          ORDER BY project_id, name, version DESC
+          WHERE (project_id = ${params.projectId} OR project_id IS NULL)
+          ORDER BY project_id, name, type, version DESC
         )
         SELECT id
         FROM latest_templates
@@ -153,9 +166,9 @@ export async function listPublicEvaluatorTemplates(params: {
       Prisma.sql`
         SELECT COUNT(*) as count
         FROM (
-          SELECT DISTINCT project_id, name
+          SELECT DISTINCT project_id, name, type
           FROM eval_templates
-          WHERE project_id = ${params.projectId} OR project_id IS NULL
+          WHERE (project_id = ${params.projectId} OR project_id IS NULL)
         ) latest_template_families
       `,
     ),
@@ -203,6 +216,29 @@ export async function findPublicEvaluationRuleOrThrow(params: {
   projectId: string;
   evaluationRuleId: string;
 }) {
+  return findEvaluationRuleOrThrow({
+    ...params,
+    targetObjects: PUBLIC_WRITABLE_EVAL_TARGETS,
+  });
+}
+
+export async function findReadablePublicEvaluationRuleOrThrow(params: {
+  client?: PrismaClientLike;
+  projectId: string;
+  evaluationRuleId: string;
+}) {
+  return findEvaluationRuleOrThrow({
+    ...params,
+    targetObjects: PUBLIC_READABLE_EVAL_TARGETS,
+  });
+}
+
+async function findEvaluationRuleOrThrow(params: {
+  client?: PrismaClientLike;
+  projectId: string;
+  evaluationRuleId: string;
+  targetObjects: EvalTargetObject[];
+}) {
   const client = getPrismaClient(params.client);
 
   const config = await client.jobConfiguration.findFirst({
@@ -210,7 +246,7 @@ export async function findPublicEvaluationRuleOrThrow(params: {
       id: params.evaluationRuleId,
       projectId: params.projectId,
       targetObject: {
-        in: [EvalTargetObject.EVENT, EvalTargetObject.EXPERIMENT],
+        in: params.targetObjects,
       },
       evalTemplate: {
         is: {
@@ -224,8 +260,7 @@ export async function findPublicEvaluationRuleOrThrow(params: {
           id: true,
           projectId: true,
           name: true,
-          vars: true,
-          prompt: true,
+          type: true,
         },
       },
     },
@@ -267,6 +302,11 @@ export async function countActiveEvaluationRules(params: {
       },
       status: JobConfigState.ACTIVE,
       blockedAt: null,
+      evalTemplate: {
+        is: {
+          OR: [{ projectId: params.projectId }, { projectId: null }],
+        },
+      },
     },
   });
 }
@@ -281,7 +321,7 @@ export async function listPublicEvaluationRuleConfigs(params: {
       where: {
         projectId: params.projectId,
         targetObject: {
-          in: [EvalTargetObject.EVENT, EvalTargetObject.EXPERIMENT],
+          in: PUBLIC_READABLE_EVAL_TARGETS,
         },
         evalTemplate: {
           is: {
@@ -295,8 +335,7 @@ export async function listPublicEvaluationRuleConfigs(params: {
             id: true,
             projectId: true,
             name: true,
-            vars: true,
-            prompt: true,
+            type: true,
           },
         },
       },
@@ -310,7 +349,7 @@ export async function listPublicEvaluationRuleConfigs(params: {
       where: {
         projectId: params.projectId,
         targetObject: {
-          in: [EvalTargetObject.EVENT, EvalTargetObject.EXPERIMENT],
+          in: PUBLIC_READABLE_EVAL_TARGETS,
         },
         evalTemplate: {
           is: {
